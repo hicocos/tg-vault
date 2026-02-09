@@ -48,6 +48,18 @@ docker-compose up -d
 
 ---
 
+## 🌐 反向代理建议 (Reverse Proxy)
+
+如果你使用 Nginx 或 NPM 部署，请参考以下映射关系：
+
+| 访问域名 | 协议 | 转发至宿主机 IP:端口 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `cloud.example.com` | HTTPS | `127.0.0.1:47832` | **前端/网页入口** |
+| `api.example.com` | HTTPS | `127.0.0.1:51947` | **后端/API 接口** |
+
+> [!CAUTION]
+> 开启 HTTPS 后，`.env` 中的所有 URL 必须以 `https://` 开头，否则浏览器会拦截资源。
+
 ## 📦 Docker 镜像说明
 
 如果你希望手动运行镜像，可以使用以下 Docker Hub 官方镜像：
