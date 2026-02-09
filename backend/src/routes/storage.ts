@@ -89,7 +89,7 @@ function formatBytes(bytes: number): string {
 
 
 // 获取存储配置
-router.get('/config', requireAuth, async (_req: Request, res: Response) => {
+router.get('/config', requireAuth, async (req: Request, res: Response) => {
     try {
         const { storageManager } = await import('../services/storage.js');
         const provider = storageManager.getProvider();
@@ -101,9 +101,14 @@ router.get('/config', requireAuth, async (_req: Request, res: Response) => {
             hasRefreshToken: !!(await storageManager.getSetting('onedrive_refresh_token')),
         };
 
+        const protocol = req.protocol;
+        const host = req.get('host');
+        const redirectUri = `${protocol}://${host}/api/storage/onedrive/callback`;
+
         res.json({
             provider: provider.name,
             onedrive: onedriveConfig,
+            redirectUri,
         });
     } catch (error) {
         console.error('获取存储配置失败:', error);

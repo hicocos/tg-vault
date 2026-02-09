@@ -130,9 +130,9 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             // 注意：此时可能还没有 Refresh Token，后端需要处理这种情况
             await fileApi.updateOneDriveConfig(odClientId, odClientSecret, odRefreshToken || 'pending', odTenantId || 'common');
 
-            // 获取后端 API 基础路径，如果没有配置（同域代理模式），则使用当前源
-            const apiBase = (window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin;
-            const redirectUri = `${apiBase.replace(/\/$/, '')}/api/storage/onedrive/callback`;
+            // 获取后端建议的 Redirect URI（最准确，因为它指向真实的 API 地址）
+            const redirectUri = (config as any)?.redirectUri || `${(window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`;
+            console.log(`[OneDrive] Using Redirect URI: ${redirectUri}`);
 
             // 获取授权 URL
             const { authUrl } = await fileApi.getOneDriveAuthUrl(odClientId, odTenantId || 'common', redirectUri);
@@ -299,8 +299,8 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
                                         前往 <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">Microsoft Entra ID 控制台</a> 并登录。授权账号可与最终存储账号不同。
-                                        注册应用时，<b>重定向 URI</b> 请选择 <code>公共客户端/原生</code>，并填写：
-                                        <code className="block mt-1 p-1 bg-muted rounded text-primary">{(window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback</code>
+                                        注册应用时，<b>重定向 URI</b> 请选择 <code>Web</code>（或公共客户端），并填写：
+                                        <code className="block mt-1 p-1 bg-muted rounded text-primary">{(config as any)?.redirectUri || `${(window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`}</code>
                                     </p>
                                 </div>
 

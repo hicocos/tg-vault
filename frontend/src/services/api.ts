@@ -287,7 +287,7 @@ class FileAPI {
     }
 
     // 获取存储配置
-    async getStorageConfig(): Promise<{ provider: string; onedrive: { clientId: string | null; tenantId?: string; hasSecret: boolean; hasRefreshToken: boolean } }> {
+    async getStorageConfig(): Promise<{ provider: string; onedrive: { clientId: string | null; tenantId?: string; hasSecret: boolean; hasRefreshToken: boolean }; redirectUri: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config`, {
             headers: getHeaders(),
         });
