@@ -12,6 +12,24 @@ const router = Router();
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 
+/**
+ * 获取 OneDrive 重定向 URI
+ * 优先使用 DOMAIN 环境变量，其次使用请求头中的 Host
+ */
+function getOneDriveRedirectUri(req: Request): string {
+    const domain = process.env.DOMAIN;
+    if (domain) {
+        // 如果环境变量中有域名，则使用该域名
+        // 假设通过 HTTPS 访问（生产环境标准）
+        return `https://${domain}/api/storage/onedrive/callback`;
+    }
+    // 回退到动态获取
+    const protocol = req.protocol;
+    const host = req.get('host');
+    return `${protocol}://${host}/api/storage/onedrive/callback`;
+}
+
+
 // 获取存储统计
 router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
     try {
@@ -101,9 +119,7 @@ router.get('/config', requireAuth, async (req: Request, res: Response) => {
             hasRefreshToken: !!(await storageManager.getSetting('onedrive_refresh_token')),
         };
 
-        const protocol = req.protocol;
-        const host = req.get('host');
-        const redirectUri = `${protocol}://${host}/api/storage/onedrive/callback`;
+        const redirectUri = getOneDriveRedirectUri(req);
 
         res.json({
             provider: provider.name,
@@ -154,10 +170,8 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
         const clientSecret = await storageManager.getSetting('onedrive_client_secret') || '';
         const tenantId = await storageManager.getSetting('onedrive_tenant_id') || 'common';
 
-        // 我们需要知道当初请求授权时用的 redirectUri，必须与前端发起的完全一致
-        const protocol = req.protocol; // 开启 trust proxy 后，这将正确返回 https
-        const host = req.get('host');
-        const redirectUri = `${protocol}://${host}/api/storage/onedrive/callback`;
+        // 我们需要知道当初请求授权时用的 redirectUri，必须与后端实际可访问地址完全一致
+        const redirectUri = getOneDriveRedirectUri(req);
 
         console.log(`[OneDrive] OAuth Callback, using redirectUri: ${redirectUri}`);
 
