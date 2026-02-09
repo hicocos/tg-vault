@@ -2,15 +2,15 @@ version: '3.8'
 
 services:
   frontend:
-    image: cxaryoro/foomclous-frontend:latest
+    # 使用本地构建的镜像 (需要先运行 docker build)
+    image: foomclous-frontend:latest
     ports:
       - "47832:80"
-    environment:
-      - VITE_API_URL=${VITE_API_URL}
     restart: unless-stopped
 
   backend:
-    image: cxaryoro/foomclous-backend:latest
+    # 使用本地构建的镜像 (需要先运行 docker build)
+    image: foomclous-backend:latest
     ports:
       - "51947:51947"
     environment:
@@ -43,7 +43,7 @@ services:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U foomclous -d foomclous"]
+      test: [ "CMD-SHELL", "pg_isready -U foomclous -d foomclous" ]
       interval: 5s
       timeout: 5s
       retries: 5

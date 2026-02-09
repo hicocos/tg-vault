@@ -6,28 +6,37 @@
 
 ## 🚀 快速部署 (Docker Compose)
 
-这是最简单、最推荐的方式。只需两步即可在服务器上启动完整服务。
+这是最简单、最推荐的方式。
 
-### 1. 下载配置文件
-在服务器上创建一个目录并进入，下载部署所需的 `docker-compose.yml`：
-
+### 1. 克隆仓库
 ```bash
-mkdir foomclous && cd foomclous
-wget https://raw.githubusercontent.com/nccttc/foomclous/main/docker-compose.prod.yml -O docker-compose.yml
+git clone https://github.com/nccttc/foomclous.git
+cd foomclous
 ```
 
-### 2. 配置并运行
-下载 `.env.example` 并重命名为 `.env`，然后根据实际情况修改配置：
+### 2. 配置环境变量
+```bash
+cp .env.example .env
+vi .env  # 修改 DB_PASSWORD, CORS_ORIGIN 等
+```
+
+### 3. 构建并启动 (⚠️ 重要)
+
+由于 `VITE_API_URL` 是**构建时**变量，你需要在构建前端镜像时指定你的 API 地址：
 
 ```bash
-wget https://raw.githubusercontent.com/nccttc/foomclous/main/.env.example -O .env
+# 构建前端 (将 YOUR_API_URL 替换为你的实际地址)
+docker build --build-arg VITE_API_URL=https://your-api.example.com -t foomclous-frontend ./frontend
 
-# 编辑 .env 文件
-# vi .env
+# 构建后端
+docker build -t foomclous-backend ./backend
 
 # 启动服务
-docker-compose up -d
+docker compose -f docker-compose.prod.yml up -d
 ```
+
+> [!IMPORTANT]
+> `VITE_API_URL` 必须在 `docker build` 时通过 `--build-arg` 传入，运行时的 `.env` 无法影响它。
 
 ---
 
@@ -90,25 +99,13 @@ echo -n "your_password" | sha256sum | awk '{print $1}'
 
 ## 📦 Docker 镜像说明
 
-如果你希望手动运行镜像，可以使用以下 Docker Hub 官方镜像：
+> [!WARNING]
+> Docker Hub 上的公共前端镜像 (`cxaryoro/foomclous-frontend`) 使用默认 API 地址编译。
+> **生产环境请务必使用 `--build-arg VITE_API_URL=...` 自行构建前端镜像。**
 
+后端镜像可以直接使用：
 *   **后端 API:** `cxaryoro/foomclous-backend:latest`
-*   **前端 UI:** `cxaryoro/foomclous-frontend:latest`
 *   **数据库:** `postgres:16-alpine`
-
-### 手动单条命令启动示例 (快速测试)
-
-```bash
-# 1. 启动数据库
-docker run -d --name fc-db -e POSTGRES_PASSWORD=pass postgres:16-alpine
-
-# 2. 启动后端
-docker run -d --name fc-api \
-  -e DATABASE_URL=postgresql://foomclous:pass@fc-db:5432/foomclous \
-  -p 51947:51947 \
-  --link fc-db:fc-db \
-  cxaryoro/foomclous-backend:latest
-```
 
 ---
 

@@ -8,8 +8,14 @@ COPY package*.json ./
 RUN npm config set registry https://registry.npmmirror.com
 RUN npm ci
 
-# 复制源代码并构建
+# 复制源代码
 COPY . .
+
+# [重要] 允许构建时指定 API 地址
+# 使用方法: docker build --build-arg VITE_API_URL=https://your-api.domain.com ./frontend
+ARG VITE_API_URL=http://localhost:51947
+ENV VITE_API_URL=${VITE_API_URL}
+
 RUN npm run build
 
 # Production stage
