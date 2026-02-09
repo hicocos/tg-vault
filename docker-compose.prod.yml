@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: cxaryoro/foomclous-frontend:latest
+    ports:
+      - "47832:80"
+    environment:
+      - VITE_API_URL=${VITE_API_URL}
+    restart: unless-stopped
+
+  backend:
+    image: cxaryoro/foomclous-backend:latest
+    ports:
+      - "51947:51947"
+    environment:
+      - DATABASE_URL=postgresql://foomclous:${DB_PASSWORD}@postgres:5432/foomclous
+      - PORT=${PORT:-51947}
+      - UPLOAD_DIR=/data/uploads
+      - THUMBNAIL_DIR=/data/thumbnails
+      - CHUNK_DIR=/data/chunks
+      - CORS_ORIGIN=${CORS_ORIGIN}
+      - ACCESS_PASSWORD_HASH=${ACCESS_PASSWORD_HASH:-}
+      - DOMAIN=${DOMAIN}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+    volumes:
+      - foomclous-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=foomclous
+      - POSTGRES_USER=foomclous
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foomclous -d foomclous"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  foomclous-data:
+  postgres-data:
