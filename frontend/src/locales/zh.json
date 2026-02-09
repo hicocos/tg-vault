@@ -1,0 +1,75 @@
+{
+    "app": {
+        "title": "FoomClous",
+        "subtitle": "管理和组织您的数字资产。",
+        "searchPlaceholder": "搜索文件...",
+        "upload": "上传",
+        "select": "选择",
+        "viewAll": "查看全部",
+        "recent": "最近文件",
+        "dropTitle": "点击或拖拽文件上传",
+        "dropActive": "释放文件以上传",
+        "dropSubtitle": "SVG, PNG, JPG 或 GIF (最大 800x400px)",
+        "release": "释放以上传"
+    },
+    "sidebar": {
+        "files": "我的文件",
+        "dashboard": "仪表盘",
+        "settings": "设置",
+        "media": "媒体库",
+        "documents": "文档",
+        "trash": "回收站",
+        "categories": {
+            "images": "图片",
+            "videos": "视频",
+            "audio": "音频",
+            "docs": "文档"
+        },
+        "storage": {
+            "used": "已用 {{used}} GB / 共 {{total}} GB",
+            "uc": "存储空间"
+        }
+    },
+    "file": {
+        "size": "大小",
+        "date": "日期",
+        "download": "下载",
+        "preview": "预览",
+        "items": "{{count}} 项",
+        "delete": "删除"
+    },
+    "delete": {
+        "title": "确认删除？",
+        "description": "这将永久删除 “{{name}}”。此操作无法撤销。",
+        "cancel": "取消",
+        "confirm": "删除"
+    },
+    "empty": {
+        "title": "未找到文件",
+        "description": "尝试拖拽文件到这里，或检查筛选条件。"
+    },
+    "settings": {
+        "title": "设置",
+        "general": {
+            "title": "常规",
+            "language": "语言",
+            "theme": "主题",
+            "themeLight": "浅色",
+            "themeDark": "深色",
+            "themeSystem": "自动"
+        },
+        "account": {
+            "title": "账户",
+            "name": "姓名",
+            "email": "邮箱",
+            "plan": "当前套餐",
+            "upgrade": "升级套餐"
+        },
+        "storage": {
+            "title": "存储空间",
+            "total": "总空间",
+            "used": "已用",
+            "free": "剩余"
+        }
+    }
+}

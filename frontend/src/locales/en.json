@@ -1,0 +1,75 @@
+{
+    "app": {
+        "title": "FoomClous",
+        "subtitle": "Manage and organize your digital assets.",
+        "searchPlaceholder": "Search files...",
+        "upload": "Upload",
+        "select": "Select",
+        "viewAll": "View all",
+        "recent": "Recent Files",
+        "dropTitle": "Click or drag files to upload",
+        "dropActive": "Drop files now",
+        "dropSubtitle": "SVG, PNG, JPG or GIF (max. 800x400px)",
+        "release": "Release to upload"
+    },
+    "sidebar": {
+        "files": "My Files",
+        "dashboard": "Dashboard",
+        "settings": "Settings",
+        "media": "Media",
+        "documents": "Documents",
+        "trash": "Trash",
+        "categories": {
+            "images": "Images",
+            "videos": "Videos",
+            "audio": "Audio",
+            "docs": "Docs"
+        },
+        "storage": {
+            "used": "{{used}} GB of {{total}} GB used",
+            "uc": "Storage"
+        }
+    },
+    "file": {
+        "size": "Size",
+        "date": "Date",
+        "download": "Download",
+        "preview": "Preview",
+        "items": "{{count}} items",
+        "delete": "Delete"
+    },
+    "delete": {
+        "title": "Are you sure?",
+        "description": "This will permanently delete \"{{name}}\". This action cannot be undone.",
+        "cancel": "Cancel",
+        "confirm": "Delete"
+    },
+    "empty": {
+        "title": "No files found",
+        "description": "Try dragging some files here or check your filters."
+    },
+    "settings": {
+        "title": "Settings",
+        "general": {
+            "title": "General",
+            "language": "Language",
+            "theme": "Theme",
+            "themeLight": "Light",
+            "themeDark": "Dark",
+            "themeSystem": "System"
+        },
+        "account": {
+            "title": "Account",
+            "name": "Name",
+            "email": "Email",
+            "plan": "Current Plan",
+            "upgrade": "Upgrade"
+        },
+        "storage": {
+            "title": "Storage",
+            "total": "Total Storage",
+            "used": "Used",
+            "free": "Free"
+        }
+    }
+}
