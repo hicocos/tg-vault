@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import checkDiskSpaceModule from 'check-disk-space';
 import { query } from '../db/index.js';
+import { requireAuth } from './auth.js';
 import os from 'os';
 import path from 'path';
 
@@ -12,7 +13,7 @@ const router = Router();
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 
 // 获取存储统计
-router.get('/stats', async (_req: Request, res: Response) => {
+router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
     try {
         // 获取服务器磁盘空间（使用上传目录所在的路径，Docker 中反映卷的空间）
         const diskPath = os.platform() === 'win32' ? 'C:' : path.resolve(UPLOAD_DIR);
@@ -52,7 +53,7 @@ router.get('/stats', async (_req: Request, res: Response) => {
 });
 
 // 获取文件类型统计
-router.get('/stats/types', async (_req: Request, res: Response) => {
+router.get('/stats/types', requireAuth, async (_req: Request, res: Response) => {
     try {
         const result = await query(`
             SELECT 
@@ -88,7 +89,7 @@ function formatBytes(bytes: number): string {
 
 
 // 获取存储配置
-router.get('/config', async (_req: Request, res: Response) => {
+router.get('/config', requireAuth, async (_req: Request, res: Response) => {
     try {
         const { storageManager } = await import('../services/storage.js');
         const provider = storageManager.getProvider();
@@ -111,7 +112,7 @@ router.get('/config', async (_req: Request, res: Response) => {
 });
 
 // 获取 OneDrive 授权 URL
-router.post('/config/onedrive/auth-url', async (req: Request, res: Response) => {
+router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: Response) => {
     try {
         const { clientId, tenantId, redirectUri } = req.body;
         if (!clientId || !redirectUri) {
@@ -189,7 +190,7 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
 });
 
 // 更新 OneDrive 配置
-router.put('/config/onedrive', async (req: Request, res: Response) => {
+router.put('/config/onedrive', requireAuth, async (req: Request, res: Response) => {
     try {
         const { clientId, clientSecret, refreshToken, tenantId } = req.body;
 
@@ -208,7 +209,7 @@ router.put('/config/onedrive', async (req: Request, res: Response) => {
 });
 
 // 切换存储提供商
-router.post('/switch', async (req: Request, res: Response) => {
+router.post('/switch', requireAuth, async (req: Request, res: Response) => {
     try {
         const { provider } = req.body;
         const { storageManager, StorageManager } = await import('../services/storage.js');
