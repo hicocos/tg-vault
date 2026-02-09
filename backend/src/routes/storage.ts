@@ -149,10 +149,12 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
         const clientSecret = await storageManager.getSetting('onedrive_client_secret') || '';
         const tenantId = await storageManager.getSetting('onedrive_tenant_id') || 'common';
 
-        // 我们需要知道当初请求授权时用的 redirectUri，通常就是当前 URL 的前缀
-        const protocol = req.protocol;
+        // 我们需要知道当初请求授权时用的 redirectUri，必须与前端发起的完全一致
+        const protocol = req.protocol; // 开启 trust proxy 后，这将正确返回 https
         const host = req.get('host');
         const redirectUri = `${protocol}://${host}/api/storage/onedrive/callback`;
+
+        console.log(`[OneDrive] OAuth Callback, using redirectUri: ${redirectUri}`);
 
         if (!clientId) {
             return res.send('配置信息丢失（Client ID 未找到），请返回设置页面重试。');
