@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="backend/logo.png" alt="FoomClous Logo" width="120" />
+  <img src="backend/logo.png" alt="FoomClous Logo" width="150" />
 </p>
 
 <h1 align="center">☁️ FoomClous</h1>
