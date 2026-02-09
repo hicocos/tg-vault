@@ -21,11 +21,33 @@ async function initializeDatabase() {
         const schemaPath = path.join(__dirname, 'schema.sql');
         const schemaSql = await fs.readFile(schemaPath, 'utf-8');
 
-        // 分割 SQL 语句（按分号分隔）
-        const statements = schemaSql
-            .split(';')
-            .map(s => s.trim())
-            .filter(s => s.length > 0 && !s.startsWith('--'));
+        // 智能分割 SQL 语句（处理 PL/pgSQL 的 $$ 块）
+        const statements: string[] = [];
+        let current = '';
+        let inDollarQuote = false;
+
+        for (let i = 0; i < schemaSql.length; i++) {
+            const char = schemaSql[i];
+            current += char;
+
+            // 检测 $$ 块的开始和结束
+            if (char === '$' && schemaSql[i + 1] === '$') {
+                inDollarQuote = !inDollarQuote;
+                current += '$';
+                i++; // 跳过下一个 $
+            } else if (char === ';' && !inDollarQuote) {
+                const stmt = current.trim();
+                if (stmt.length > 1 && !stmt.startsWith('--')) {
+                    statements.push(stmt.slice(0, -1)); // 移除末尾的分号
+                }
+                current = '';
+            }
+        }
+        // 添加最后一条语句（如果没有以分号结尾）
+        const lastStmt = current.trim();
+        if (lastStmt.length > 0 && !lastStmt.startsWith('--')) {
+            statements.push(lastStmt);
+        }
 
         for (const statement of statements) {
             try {
