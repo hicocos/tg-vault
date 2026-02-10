@@ -147,6 +147,29 @@ echo -n "your_password" | sha256sum | awk '{print $1}'
 
 ---
 
+## 🔄 维护与更新
+
+### 1. 更新项目
+要获取最新功能的代码并更新服务器，请在项目目录下运行：
+```bash
+# 进入项目目录
+cd /opt/foomclous
+
+# 拉取最新代码
+git pull origin main
+
+# 重新构建并启动（自动应用改动）
+docker compose up -d --build
+```
+
+### 2. 清理 Docker 资源
+频繁构建可能会占用较多磁盘空间，可以使用以下命令清理废弃的镜像、容器和网络：
+```bash
+docker system prune -f
+```
+
+---
+
 ## ✨ 功能特性
 
 *   📦 **极速上传**: 支持大文件切片、断点续传。
