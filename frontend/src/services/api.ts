@@ -76,20 +76,23 @@ class FileAPI {
     }
 
     // 智能上传：小文件直传，大文件分块上传
-    async uploadFile(file: File, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
+    async uploadFile(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
         // 超过 80MB 使用分块上传（留一些余量）
         if (file.size > 80 * 1024 * 1024) {
-            return this.chunkedUpload(file, onProgress);
+            return this.chunkedUpload(file, folder, onProgress);
         }
-        return this.simpleUpload(file, onProgress);
+        return this.simpleUpload(file, folder, onProgress);
     }
 
     // 简单上传（适用于小文件）
-    private simpleUpload(file: File, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
+    private simpleUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
             formData.append('file', file);
+            if (folder) {
+                formData.append('folder', folder);
+            }
 
             // 进度监听
             xhr.upload.addEventListener('progress', (event) => {
@@ -137,7 +140,7 @@ class FileAPI {
     }
 
     // 分块上传（适用于大文件）
-    private async chunkedUpload(file: File, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
+    private async chunkedUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let uploadedBytes = 0;
 
@@ -150,6 +153,7 @@ class FileAPI {
                 totalChunks,
                 mimeType: file.type || 'application/octet-stream',
                 totalSize: file.size,
+                folder,
             }),
         });
 
@@ -214,11 +218,11 @@ class FileAPI {
     }
 
     // 批量上传
-    async uploadFiles(files: File[], onProgress?: (fileIndex: number, progress: UploadProgress) => void): Promise<{ success: boolean; files: FileData[] }> {
+    async uploadFiles(files: File[], folder?: string, onProgress?: (fileIndex: number, progress: UploadProgress) => void): Promise<{ success: boolean; files: FileData[] }> {
         const results: FileData[] = [];
 
         for (let i = 0; i < files.length; i++) {
-            const result = await this.uploadFile(files[i], (progress) => {
+            const result = await this.uploadFile(files[i], folder, (progress) => {
                 onProgress?.(i, progress);
             });
             if (result.file) {

@@ -66,6 +66,7 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
     }
 
     const file = req.file;
+    const { folder } = req.body;
     const originalName = decodeFilename(file.originalname);
     const mimeType = file.mimetype;
     const size = file.size;
@@ -135,10 +136,10 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
 
         const result = await query(
             `INSERT INTO files 
-            (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source) 
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+            (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
             RETURNING id, created_at`,
-            [originalName, storedName, type, mimeType, size, storedPath, thumbnailPath, width, height, provider.name]
+            [originalName, storedName, type, mimeType, size, storedPath, thumbnailPath, width, height, provider.name, folder || null]
         );
 
         const newFile = result.rows[0];

@@ -14,6 +14,7 @@ import { LoginPage } from "./components/pages/LoginPage";
 import { ViewToggle } from "./components/ui/ViewToggle";
 import { FileMenu } from "./components/ui/FileMenu";
 import { DeleteAlert } from "./components/ui/DeleteAlert";
+import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { UploadQueueModal, type QueueItem } from "./components/ui/UploadQueueModal";
 import { fileApi, type FileData, type StorageStats as StorageStatsType } from "./services/api";
 import { authService } from "./services/auth";
@@ -42,6 +43,9 @@ function App() {
   const [currentFolder, setCurrentFolder] = useState<string | null>(null); // 当前选中的文件夹
 
   const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // 文件夹区域折叠状态，默认折叠
+
+  const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
 
   // 排序状态
   const [sortConfig, setSortConfig] = useState<{ key: 'name' | 'date'; direction: 'asc' | 'desc' }>({
@@ -163,6 +167,15 @@ function App() {
   const handleDrop = async (newFiles: File[]) => {
     if (newFiles.length === 0) return;
 
+    if (newFiles.length > 1) {
+      setPendingFiles(newFiles);
+      setIsFolderModalOpen(true);
+    } else {
+      startUpload(newFiles);
+    }
+  };
+
+  const startUpload = async (newFiles: File[], folder?: string) => {
     // 1. 创建队列项
     const newItems: QueueItem[] = newFiles.map(file => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -186,7 +199,7 @@ function App() {
         setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
 
         try {
-          await fileApi.uploadFile(item.file, (progress) => {
+          await fileApi.uploadFile(item.file, folder, (progress) => {
             setUploadQueue(prev => prev.map(q => q.id === item.id ? {
               ...q,
               status: 'uploading',
@@ -635,6 +648,13 @@ function App() {
         onClose={() => setDeletingFile(null)}
         onConfirm={handleConfirmDelete}
         fileName={deletingFile?.name}
+      />
+
+      <FolderPromptModal
+        isOpen={isFolderModalOpen}
+        onClose={() => setIsFolderModalOpen(false)}
+        onConfirm={(folderName) => startUpload(pendingFiles, folderName)}
+        onCancel={() => startUpload(pendingFiles)}
       />
     </AppLayout >
   );

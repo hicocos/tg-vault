@@ -27,6 +27,7 @@ const uploadSessions = new Map<string, {
     uploadedChunks: Set<number>;
     mimeType: string;
     totalSize: number;
+    folder?: string;
     createdAt: Date;
 }>();
 
@@ -85,7 +86,7 @@ function formatFileSize(bytes: number): string {
 // 1. 初始化分块上传
 router.post('/init', (req: Request, res: Response) => {
     try {
-        const { filename, totalChunks, mimeType, totalSize } = req.body;
+        const { filename, totalChunks, mimeType, totalSize, folder } = req.body;
 
         if (!filename || !totalChunks || !mimeType || !totalSize) {
             return res.status(400).json({ error: '缺少必要参数' });
@@ -102,6 +103,7 @@ router.post('/init', (req: Request, res: Response) => {
             uploadedChunks: new Set(),
             mimeType,
             totalSize,
+            folder,
             createdAt: new Date(),
         });
 
@@ -242,8 +244,8 @@ router.post('/complete', async (req: Request, res: Response) => {
 
         // 保存到数据库
         const result = await query(`
-            INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING *
         `, [
             session.filename,
@@ -256,6 +258,7 @@ router.post('/complete', async (req: Request, res: Response) => {
             dimensions.width,
             dimensions.height,
             provider.name, // 使用 provider 名称
+            session.folder || null,
         ]);
 
         const savedFile = result.rows[0];
