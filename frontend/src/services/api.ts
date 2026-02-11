@@ -361,6 +361,20 @@ class FileAPI {
         return response.json();
     }
 
+    // 删除账户
+    async deleteAccount(accountId: string): Promise<{ success: boolean; message: string }> {
+        const response = await fetch(`${API_BASE}/api/storage/accounts/${accountId}`, {
+            method: 'DELETE',
+            headers: getHeaders(),
+        });
+        if (response.status === 401) throw new Error('UNAUTHORIZED');
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || '删除账户失败');
+        }
+        return response.json();
+    }
+
     // 健康检查
     async healthCheck(): Promise<{ status: string; timestamp: string }> {
         const response = await fetch(`${API_BASE}/health`);

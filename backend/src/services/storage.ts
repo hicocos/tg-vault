@@ -674,6 +674,11 @@ export class StorageManager {
         return res.rows;
     }
 
+    // 从内存中移除 Provider
+    removeProvider(key: string) {
+        this.providers.delete(key);
+    }
+
     // 添加新的 OneDrive 账户
     async addOneDriveAccount(name: string, clientId: string, clientSecret: string, refreshToken: string, tenantId: string = 'common') {
         const res = await query(

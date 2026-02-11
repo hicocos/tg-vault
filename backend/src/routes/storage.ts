@@ -308,4 +308,41 @@ router.get('/accounts', requireAuth, async (req: Request, res: Response) => {
     }
 });
 
+// 删除账户
+router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { storageManager } = await import('../services/storage.js');
+
+        // 不允许删除当前激活的账户
+        if (storageManager.getActiveAccountId() === id) {
+            return res.status(400).json({ error: '无法删除当前正在使用的账户，请先切换到其他账户或本地存储。' });
+        }
+
+        // 检查账户是否存在
+        const accountRes = await query('SELECT id, name FROM storage_accounts WHERE id = $1', [id]);
+        if (accountRes.rows.length === 0) {
+            return res.status(404).json({ error: '账户不存在' });
+        }
+
+        const accountName = accountRes.rows[0].name;
+
+        // 删除该账户关联的文件记录（可选，也可以保留文件记录但清除 storage_account_id）
+        // 这里选择保留文件记录，但清除关联，使其成为"孤立"记录
+        await query('UPDATE files SET storage_account_id = NULL WHERE storage_account_id = $1', [id]);
+
+        // 删除账户
+        await query('DELETE FROM storage_accounts WHERE id = $1', [id]);
+
+        // 从内存中移除 provider
+        storageManager.removeProvider(`onedrive:${id}`);
+
+        console.log(`[Storage] Account deleted: ${accountName} (${id})`);
+        res.json({ success: true, message: `已删除账户: ${accountName}` });
+    } catch (error) {
+        console.error('删除账户失败:', error);
+        res.status(500).json({ error: '删除账户失败' });
+    }
+});
+
 export default router;

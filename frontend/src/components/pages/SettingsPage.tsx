@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle } from "lucide-react";
+import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2 } from "lucide-react";
 import { Button } from "../ui/Button";
 import { LanguageToggle } from "../ui/LanguageToggle";
 import { useTheme } from "../../hooks/useTheme";
@@ -125,6 +125,18 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             alert(error.message);
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    const handleDeleteAccount = async (accountId: string, accountName: string) => {
+        if (!window.confirm(`确定要删除账户 "${accountName}" 吗？\n\n该账户中已上传的文件记录会保留，但将不再关联到任何账户。`)) return;
+        try {
+            const result = await fileApi.deleteAccount(accountId);
+            alert(result.message);
+            const data = await fileApi.getStorageConfig();
+            setConfig(data);
+        } catch (error: any) {
+            alert(error.message);
         }
     };
 
@@ -315,15 +327,26 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                             <span className="text-xs font-semibold">正在使用</span>
                                         </div>
                                     ) : (
-                                        <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            className="h-8 text-xs hover:bg-primary/10 hover:text-primary"
-                                            onClick={() => handleSwitchProvider('onedrive', account.id)}
-                                            disabled={isSaving}
-                                        >
-                                            切换到此账户
-                                        </Button>
+                                        <>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                className="h-8 text-xs hover:bg-primary/10 hover:text-primary"
+                                                onClick={() => handleSwitchProvider('onedrive', account.id)}
+                                                disabled={isSaving}
+                                            >
+                                                切换到此账户
+                                            </Button>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                                onClick={() => handleDeleteAccount(account.id, account.name)}
+                                                disabled={isSaving}
+                                            >
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                            </Button>
+                                        </>
                                     )}
                                 </div>
                             </div>
