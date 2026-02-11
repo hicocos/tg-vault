@@ -154,7 +154,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
             try {
                 const params = new URLSearchParams();
                 params.append('client_id', this.clientId);
-                params.append('scope', 'Files.ReadWrite.All offline_access');
+                params.append('scope', 'Files.ReadWrite.All User.Read offline_access');
 
                 // 只有在 clientSecret 存在时才添加 (支持 confidential 和 public client)
                 if (this.clientSecret) {
