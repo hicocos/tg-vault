@@ -512,6 +512,20 @@ function App() {
               uploadProgress={totalUploadProgress}
             />
 
+            <div className="sticky top-0 z-30 bg-background/80 backdrop-blur-sm -mx-4 px-4 pt-2">
+              <BulkActionToolbar
+                isVisible={isSelectionMode}
+                selectedFilesCount={selectedFileIds.length}
+                selectedFoldersCount={selectedFolderNames.length}
+                onCancel={() => {
+                  setIsSelectionMode(false);
+                  setSelectedFileIds([]);
+                  setSelectedFolderNames([]);
+                }}
+                onDelete={handleBatchDelete}
+              />
+            </div>
+
             {/* Files View */}
             <div className="flex-1 flex flex-col mt-8">
               <div className="flex items-center justify-between mb-4">
@@ -734,18 +748,6 @@ function App() {
         onClose={() => setIsFolderModalOpen(false)}
         onConfirm={(folderName) => startUpload(pendingFiles, folderName)}
         onCancel={() => startUpload(pendingFiles)}
-      />
-
-      <BulkActionToolbar
-        isVisible={isSelectionMode}
-        selectedFilesCount={selectedFileIds.length}
-        selectedFoldersCount={selectedFolderNames.length}
-        onCancel={() => {
-          setIsSelectionMode(false);
-          setSelectedFileIds([]);
-          setSelectedFolderNames([]);
-        }}
-        onDelete={handleBatchDelete}
       />
     </AppLayout >
   );

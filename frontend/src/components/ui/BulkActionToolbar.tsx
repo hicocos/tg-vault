@@ -21,23 +21,23 @@ export const BulkActionToolbar = ({
         <AnimatePresence>
             {isVisible && (
                 <motion.div
-                    initial={{ y: 100, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    exit={{ y: 100, opacity: 0 }}
-                    transition={{ type: "spring", stiffness: 260, damping: 20 }}
-                    className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[90%] max-w-lg"
+                    initial={{ height: 0, opacity: 0, y: -20 }}
+                    animate={{ height: "auto", opacity: 1, y: 0 }}
+                    exit={{ height: 0, opacity: 0, y: -20 }}
+                    transition={{ duration: 0.3, ease: "easeInOut" }}
+                    className="z-40 w-full overflow-hidden"
                 >
-                    <div className="bg-card/80 backdrop-blur-xl border border-border shadow-2xl rounded-2xl p-4 flex items-center justify-between gap-4">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-primary/20 p-2 rounded-xl">
-                                <CheckSquare className="h-5 w-5 text-primary" />
+                    <div className="bg-card/60 backdrop-blur-md border border-primary/20 shadow-lg rounded-2xl p-3 flex items-center justify-between gap-4 mb-6">
+                        <div className="flex items-center gap-3 pl-1">
+                            <div className="bg-primary/10 p-1.5 rounded-lg">
+                                <CheckSquare className="h-4 w-4 text-primary" />
                             </div>
                             <div className="flex flex-col">
-                                <span className="text-sm font-semibold truncate">
-                                    已选择 {selectedFilesCount + selectedFoldersCount} 个项目
+                                <span className="text-xs font-semibold">
+                                    选中 {selectedFilesCount + selectedFoldersCount} 项
                                 </span>
-                                <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-medium">
-                                    {selectedFoldersCount} 文件夹 • {selectedFilesCount} 文件
+                                <span className="text-[9px] text-muted-foreground uppercase font-medium">
+                                    {selectedFoldersCount} 文件夹 · {selectedFilesCount} 文件
                                 </span>
                             </div>
                         </div>
@@ -46,21 +46,21 @@ export const BulkActionToolbar = ({
                             <Button
                                 variant="ghost"
                                 size="sm"
-                                className="h-9 px-3 text-xs flex items-center gap-2 hover:bg-muted"
+                                className="h-8 px-3 text-xs flex items-center gap-1.5 hover:bg-muted"
                                 onClick={onCancel}
                             >
-                                <X className="h-4 w-4" />
+                                <X className="h-3.5 w-3.5" />
                                 <span>取消</span>
                             </Button>
                             <Button
                                 variant="destructive"
                                 size="sm"
-                                className="h-9 px-4 text-xs flex items-center gap-2 shadow-lg shadow-red-500/20"
+                                className="h-8 px-3 text-xs flex items-center gap-1.5 shadow-md shadow-red-500/10"
                                 onClick={onDelete}
                                 disabled={selectedFilesCount + selectedFoldersCount === 0}
                             >
-                                <Trash2 className="h-4 w-4" />
-                                <span>删除所选</span>
+                                <Trash2 className="h-3.5 w-3.5" />
+                                <span>删除</span>
                             </Button>
                         </div>
                     </div>
