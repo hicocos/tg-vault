@@ -573,12 +573,16 @@ export class StorageManager {
 
             // 3. 加载所有 OneDrive 账户
             const accountsRes = await query('SELECT * FROM storage_accounts WHERE type = $1', ['onedrive']);
+            // 获取全局 Secret 作为回退（兼容旧版本或用户未特定输入的情况）
+            const globalSecretRes = await query("SELECT value FROM system_settings WHERE key = 'onedrive_client_secret'");
+            const globalSecret = globalSecretRes.rows[0]?.value || '';
+
             for (const row of accountsRes.rows) {
                 const config = row.config;
                 const oneDrive = new OneDriveStorageProvider(
                     row.id,
                     config.clientId,
-                    config.clientSecret || '',
+                    config.clientSecret || globalSecret || '',
                     config.refreshToken,
                     config.tenantId || 'common'
                 );
