@@ -59,28 +59,60 @@ interface DownloadTask {
     id: string;
     execute: () => Promise<void>;
     fileName: string;
+    status: 'pending' | 'active' | 'success' | 'failed';
+    error?: string;
+    startTime?: number;
+    endTime?: number;
+    totalSize?: number;
+    downloadedSize?: number;
 }
 
 // 下载队列管理类
 class DownloadQueue {
     private queue: DownloadTask[] = [];
-    private activeCount = 0;
+    private active: DownloadTask[] = [];
+    private history: DownloadTask[] = []; // 保留最近的历史记录
+    private maxHistory = 50;
     private maxConcurrent = 2; // 用户要求并发限制为 2
 
-    async add(fileName: string, execute: () => Promise<void>): Promise<void> {
+    async add(fileName: string, execute: () => Promise<void>, totalSize?: number): Promise<void> {
         const id = uuidv4();
         return new Promise((resolve, reject) => {
             const task: DownloadTask = {
                 id,
                 fileName,
+                status: 'pending',
+                totalSize,
+                downloadedSize: 0,
                 execute: async () => {
+                    // Move from queue to active
+                    const taskIndex = this.queue.findIndex(t => t.id === id);
+                    if (taskIndex > -1) {
+                        this.queue.splice(taskIndex, 1);
+                    }
+                    this.active.push(task);
+                    task.status = 'active';
+                    task.startTime = Date.now();
+
                     try {
                         await execute();
+                        task.status = 'success';
                         resolve();
                     } catch (error) {
+                        task.status = 'failed';
+                        task.error = (error as Error).message;
                         reject(error);
                     } finally {
-                        this.activeCount--;
+                        task.endTime = Date.now();
+                        // Move from active to history
+                        const activeIndex = this.active.findIndex(t => t.id === id);
+                        if (activeIndex > -1) {
+                            this.active.splice(activeIndex, 1);
+                        }
+                        this.history.unshift(task);
+                        if (this.history.length > this.maxHistory) {
+                            this.history.pop();
+                        }
                         this.processNext();
                     }
                 }
@@ -93,32 +125,164 @@ class DownloadQueue {
     }
 
     private processNext() {
-        if (this.activeCount >= this.maxConcurrent || this.queue.length === 0) {
+        if (this.active.length >= this.maxConcurrent || this.queue.length === 0) {
+            return;
+        }
+
+        const task = this.queue[0]; // Don't shift here, let execute() move it
+        if (task && task.status === 'pending') {
+            // We initiate execution, but actual move happened inside the wrapper
+            // Wait, if we don't shift here, how do we prevent double execution?
+            // The wrapper modifies the arrays. But we need to make sure we don't call execute twice.
+            // Actually, the previous implementation shifted here.
+            // Let's stick to shifting here for simplicity, but we need to track it in 'active'
+
+            // CORRECT APPROACH:
+            // shift from queue, push to active, then execute.
+        }
+
+        // Let's refine the logic to avoid race conditions
+        // The simple wrapper above defines the *task behavior*, but the *scheduling* is here.
+
+        const nextTask = this.queue.shift();
+        if (nextTask) {
+            // We can't push to active here because the wrapper does it? 
+            // No, the wrapper logic I wrote above is:
+            // execute: async () => { ... this.active.push(task) ... }
+            // This assumes execute is called. 
+
+            // Let's adjust the wrapper logic to rely on the queue manager.
+            console.log(`[Queue] 🚀 Processing task: ${nextTask.fileName}.`);
+            nextTask.execute();
+        }
+    }
+
+    getStats() {
+        return {
+            active: this.active.length,
+            pending: this.queue.length,
+            total: this.active.length + this.queue.length
+        };
+    }
+
+    getDetailedStatus() {
+        return {
+            active: this.active,
+            pending: this.queue,
+            history: this.history
+        };
+    }
+
+    // Update progress method
+    updateProgress(taskId: string, downloaded: number) {
+        // Find in active
+        const task = this.active.find(t => t.id === taskId);
+        if (task) {
+            task.downloadedSize = downloaded;
+        }
+    }
+}
+
+// Redefine class with correct logic
+class BetterDownloadQueue {
+    private queue: DownloadTask[] = [];
+    private active: DownloadTask[] = [];
+    private history: DownloadTask[] = [];
+    private maxHistory = 50;
+    private maxConcurrent = 2;
+
+    async add(fileName: string, execute: () => Promise<void>, totalSize: number = 0): Promise<void> {
+        const id = uuidv4();
+        // Since execute is the wrapper, we don't return the promise of execute directly,
+        // but we return a promise that resolves when the task finishes.
+
+        // This is tricky because the original `add` returned a Promise that resolved when the execution finished.
+        // We need to maintain that compatibility.
+
+        return new Promise((resolve, reject) => {
+            const task: DownloadTask = {
+                id,
+                fileName,
+                status: 'pending',
+                totalSize,
+                downloadedSize: 0,
+                // The actual execution logic
+                execute: async () => {
+                    task.status = 'active';
+                    task.startTime = Date.now();
+                    this.active.push(task);
+
+                    try {
+                        await execute();
+                        task.status = 'success';
+                        resolve();
+                    } catch (error) {
+                        task.status = 'failed';
+                        task.error = (error instanceof Error) ? error.message : String(error);
+                        reject(error);
+                    } finally {
+                        task.endTime = Date.now();
+                        // Remove from active
+                        const idx = this.active.findIndex(t => t.id === id);
+                        if (idx !== -1) this.active.splice(idx, 1);
+
+                        // Add to history
+                        this.history.unshift(task);
+                        if (this.history.length > this.maxHistory) this.history.pop();
+
+                        this.processNext();
+                    }
+                }
+            };
+
+            this.queue.push(task);
+            console.log(`[Queue] 📥 Task added: ${fileName}. Queue size: ${this.queue.length}`);
+            this.processNext();
+        });
+    }
+
+    private processNext() {
+        if (this.active.length >= this.maxConcurrent || this.queue.length === 0) {
             return;
         }
 
         const task = this.queue.shift();
         if (task) {
-            this.activeCount++;
-            console.log(`[Queue] 🚀 Processing task: ${task.fileName}. Active: ${this.activeCount}, Pending: ${this.queue.length}`);
+            console.log(`[Queue] 🚀 Processing task: ${task.fileName}. Active: ${this.active.length + 1}, Pending: ${this.queue.length}`);
+            // Execute the wrapped function
             task.execute();
         }
     }
 
     getStats() {
         return {
-            active: this.activeCount,
+            active: this.active.length,
             pending: this.queue.length,
-            total: this.activeCount + this.queue.length
+            total: this.active.length + this.queue.length
+        };
+    }
+
+    getDetailedStatus() {
+        return {
+            active: [...this.active],
+            pending: [...this.queue],
+            history: [...this.history]
         };
     }
 }
 
-const downloadQueue = new DownloadQueue();
+const downloadQueue = new BetterDownloadQueue();
+
+let lastSilentNotificationTime = 0;
+const SILENT_NOTIFICATION_COOLDOWN = 60000; // 1 minute
 
 // 导出获取队列统计信息的函数
 export function getDownloadQueueStats() {
     return downloadQueue.getStats();
+}
+
+export function getTaskStatus() {
+    return downloadQueue.getDetailedStatus();
 }
 
 // 多文件上传队列管理
@@ -805,12 +969,26 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         try {
             // 如果排队任务过多，通过控制台记录而不是给每一项都发回复来减少 Flood
             const stats = downloadQueue.getStats();
-            if (stats.pending < 10) {
+
+            // 阈值调整为 9
+            if (stats.pending >= 9) {
+                const now = Date.now();
+                if (now - lastSilentNotificationTime > SILENT_NOTIFICATION_COOLDOWN) {
+                    try {
+                        await safeReply(message, {
+                            message: `🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: ${stats.pending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态`
+                        });
+                        lastSilentNotificationTime = now;
+                        console.log(`[Queue] 🤐 Sent Silent Mode notification.`);
+                    } catch (e) {
+                        console.error('🤖 发送静默模式通知失败:', e);
+                    }
+                }
+                console.log(`[Queue] 🤐 High pending count (${stats.pending}), skipping initial status msg for ${finalFileName}`);
+            } else {
                 statusMsg = await safeReply(message, {
                     message: `⏳ 正在下载文件: ${finalFileName}\n${generateProgressBar(0, 1)}\n\n${typeEmoji} ${formatBytes(0)} / ${formatBytes(totalSize)}`
                 }) as Api.Message;
-            } else {
-                console.log(`[Queue] 🤐 High pending count (${stats.pending}), skipping initial status msg for ${finalFileName}`);
             }
         } catch (e) {
             console.error('🤖 发送初始下载状态消息失败:', e);

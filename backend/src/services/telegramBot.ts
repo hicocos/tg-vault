@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { storageManager } from '../services/storage.js';
 import { authenticatedUsers, passwordInputState, isAuthenticated, loadAuthenticatedUsers, persistAuthenticatedUser } from './telegramState.js';
-import { handleStart, handleHelp, handleStorage, handleList, handleDelete } from './telegramCommands.js';
+import { handleStart, handleHelp, handleStorage, handleList, handleDelete, handleTasks } from './telegramCommands.js';
 import { handleFileUpload, handleCleanupCallback } from './telegramUpload.js';
 import { cleanupOrphanFiles, startPeriodicCleanup } from './orphanCleanup.js';
 import { verifyPassword, formatBytes } from '../utils/telegramUtils.js';
@@ -232,7 +232,13 @@ export async function initTelegramBot(): Promise<void> {
 
         const session = new StringSession(sessionString);
         client = new TelegramClient(session, apiId, apiHash, {
-            connectionRetries: 5,
+            connectionRetries: 15,
+            retryDelay: 2000,
+            useWSS: false,
+            deviceModel: 'FoomClous Bot',
+            systemVersion: '1.0.0',
+            appVersion: '1.0.0',
+            floodSleepThreshold: 120,
         });
 
         console.log('🤖 Telegram Bot 正在启动...');
@@ -268,6 +274,7 @@ export async function initTelegramBot(): Promise<void> {
                     new Api.BotCommand({ command: 'start', description: '开始使用 / 验证身份' }),
                     new Api.BotCommand({ command: 'storage', description: '查看存储空间统计' }),
                     new Api.BotCommand({ command: 'list', description: '查看最近上传的文件' }),
+                    new Api.BotCommand({ command: 'tasks', description: '查看任务队列状态' }),
                     new Api.BotCommand({ command: 'help', description: '获取帮助信息' }),
                 ]
             }));
@@ -363,6 +370,15 @@ export async function initTelegramBot(): Promise<void> {
                     }
                     const args = text.split(' ').slice(1);
                     await handleDelete(message, args);
+                    return;
+                }
+
+                if (text === '/tasks' || text === '/task') {
+                    if (!isAuthenticated(senderId)) {
+                        await message.reply({ message: '🔐 请先发送 /start 验证密码' });
+                        return;
+                    }
+                    await handleTasks(message);
                     return;
                 }
 

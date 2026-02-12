@@ -5,7 +5,7 @@ import os from 'os';
 import fs from 'fs';
 import { formatBytes, getTypeEmoji } from '../utils/telegramUtils.js';
 import { authenticatedUsers, passwordInputState, isAuthenticated } from './telegramState.js';
-import { getDownloadQueueStats } from './telegramUpload.js';
+import { getDownloadQueueStats, getTaskStatus } from './telegramUpload.js';
 import { storageManager } from './storage.js';
 
 // ESM compatibility
@@ -14,7 +14,7 @@ const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceMo
 export async function handleStart(message: Api.Message, senderId: number): Promise<void> {
     if (isAuthenticated(senderId)) {
         await message.reply({
-            message: `👋 欢迎回来!\n\n您已通过验证，可以直接使用:\n\n📤 发送或转发任意文件上传（支持最大2GB）\n📊 /storage - 查看存储空间\n📋 /list - 查看最近上传\n❓ /help - 显示帮助`,
+            message: ` 欢迎回来!\n\n您已通过验证，可以直接使用:\n\n📤 发送或转发任意文件上传（支持最大2GB）\n📊 /storage - 查看存储空间\n📋 /list - 查看最近上传\n❓ /help - 显示帮助`,
         });
     } else {
         passwordInputState.set(senderId, { password: '' });
@@ -23,7 +23,7 @@ export async function handleStart(message: Api.Message, senderId: number): Promi
 
 export async function handleHelp(message: Api.Message): Promise<void> {
     await message.reply({
-        message: `📖 **FoomClous Bot 帮助**\n\n**命令:**\n├ /start - 开始/验证\n├ /storage - 查看存储空间\n├ /list [n] - 查看最近上传 (默认10)\n├ /delete <ID> - 删除文件\n└ /help - 显示帮助\n\n**上传文件:**\n直接发送或转发任意文件即可上传\n✨ 支持最大 **2GB** 文件！`,
+        message: `📖 **FoomClous Bot 帮助**\n\n**命令:**\n├ /start - 开始/验证\n├ /storage - 查看存储空间\n├ /list [n] - 查看最近上传 (默认10)\n├ /tasks - 查看任务队列状态\n├ /delete <ID> - 删除文件\n└ /help - 显示帮助\n\n**上传文件:**\n直接发送或转发任意文件即可上传\n✨ 支持最大 **2GB** 文件！`,
     });
 }
 
@@ -180,5 +180,64 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
     } catch (error) {
         console.error('🤖 删除文件失败:', error);
         await message.reply({ message: `❌ 删除文件失败: ${(error as Error).message}` });
+    }
+}
+
+export async function handleTasks(message: Api.Message): Promise<void> {
+    try {
+        const status = getTaskStatus();
+        const activeCount = status.active.length;
+        const pendingCount = status.pending.length;
+        const historyCount = status.history.length;
+
+        if (activeCount === 0 && pendingCount === 0 && historyCount === 0) {
+            await message.reply({ message: '📭 当前没有正在进行的任务，也没有历史记录。' });
+            return;
+        }
+
+        let reply = `📋 **任务队列状态**\n`;
+        reply += `🔄 进行中: ${activeCount} | ⏳ 等待中: ${pendingCount}\n\n`;
+
+        if (activeCount > 0) {
+            reply += `**🔄 正在处理:**\n`;
+            status.active.forEach((task) => {
+                reply += `• ${task.fileName}\n`;
+                if (task.totalSize && task.downloadedSize) {
+                    const progress = Math.round((task.downloadedSize / task.totalSize) * 100);
+                    reply += `  └ ${progress}% (${formatBytes(task.downloadedSize)}/${formatBytes(task.totalSize)})\n`;
+                } else {
+                    reply += `  └ 正在下载/上传...\n`;
+                }
+            });
+            reply += `\n`;
+        }
+
+        if (pendingCount > 0) {
+            reply += `**⏳ 等待队列 (前 5 个):**\n`;
+            status.pending.slice(0, 5).forEach((task, index) => {
+                reply += `${index + 1}. ${task.fileName}\n`;
+            });
+            if (pendingCount > 5) {
+                reply += `... 以及其他 ${pendingCount - 5} 个任务\n`;
+            }
+            reply += `\n`;
+        }
+
+        if (historyCount > 0) {
+            reply += `**🕒 最近完成 (前 5 个):**\n`;
+            status.history.slice(0, 5).forEach((task) => {
+                const icon = task.status === 'success' ? '✅' : '❌';
+                reply += `${icon} ${task.fileName}\n`;
+                if (task.status === 'failed' && task.error) {
+                    reply += `  └ 错误: ${task.error}\n`;
+                }
+            });
+        }
+
+        await message.reply({ message: reply });
+
+    } catch (error) {
+        console.error('🤖 获取任务列表失败:', error);
+        await message.reply({ message: '❌ 获取任务列表失败' });
     }
 }
