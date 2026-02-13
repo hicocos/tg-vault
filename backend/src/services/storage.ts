@@ -39,6 +39,15 @@ export interface IStorageProvider {
      * 获取文件大小（可选）
      */
     getFileSize?(storedPath: string): Promise<number>;
+
+
+    /**
+     * 创建分享链接
+     * @param storedPath 存储路径或标识符
+     * @param password 访问密码（可选）
+     * @param expiration 过期时间 ISO 字符串（可选）
+     */
+    createShareLink?(storedPath: string, password?: string, expiration?: string): Promise<{ link: string; error?: string }>;
 }
 
 // 本地存储实现
@@ -88,6 +97,12 @@ export class LocalStorageProvider implements IStorageProvider {
         if (fs.existsSync(storedPath)) {
             await fs.promises.unlink(storedPath);
         }
+    }
+
+    async createShareLink(storedPath: string, password?: string, expiration?: string): Promise<{ link: string; error?: string }> {
+        // 本地存储暂不支持生成外部访问链接，除非我们自己实现一个分享页面
+        // 这里返回错误提示
+        return { link: '', error: '本地存储暂不支持生成分享链接，请使用 OneDrive 存储。' };
     }
 }
 
@@ -496,6 +511,66 @@ export class OneDriveStorageProvider implements IStorageProvider {
         } catch (error: any) {
             console.error('[OneDrive] Get file size failed:', error.message);
             return 0;
+        }
+    }
+
+    /**
+     * 创建分享链接
+     */
+    async createShareLink(storedPath: string, password?: string, expiration?: string): Promise<{ link: string; error?: string }> {
+        const token = await this.getAccessToken();
+
+        try {
+            const body: any = {
+                type: 'view',
+                scope: 'anonymous' // 任何人（可能需要根据组织策略调整）
+            };
+
+            if (password) {
+                body.password = password;
+            }
+
+            if (expiration) {
+                // 确保时间格式是 ISO 8601 UTC
+                body.expirationDateTime = expiration;
+            }
+
+            console.log(`[OneDrive] Creating share link for ${storedPath} with params:`, { ...body, password: body.password ? '***' : undefined });
+
+            const response = await axios.post(
+                `https://graph.microsoft.com/v1.0/me/drive/items/${storedPath}/createLink`,
+                body,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 30000
+                }
+            );
+
+            if (response.data && response.data.link && response.data.link.webUrl) {
+                console.log('[OneDrive] Share link created successfully');
+                return { link: response.data.link.webUrl };
+            } else {
+                return { link: '', error: 'OneDrive 未返回有效的分享链接' };
+            }
+
+        } catch (error: any) {
+            console.error('[OneDrive] Create share link failed:', {
+                status: error.response?.status,
+                error: error.response?.data?.error
+            });
+
+            // 处理特定错误
+            const errorData = error.response?.data?.error;
+            if (errorData?.code === 'notSupported' || errorData?.code === 'invalidRequest') {
+                if (password || expiration) {
+                    return { link: '', error: '您的 OneDrive 账户可能不支持设置密码或过期时间，请尝试不带这些选项重试，或检查 OneDrive 账户类型（部分个人版/商业版限制）。' };
+                }
+            }
+
+            return { link: '', error: `创建分享链接失败: ${errorData?.message || error.message}` };
         }
     }
 }

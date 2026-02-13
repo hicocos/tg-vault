@@ -259,7 +259,22 @@ class FileAPI {
             body: JSON.stringify({ fileIds, folderNames }),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('批量删除失败');
+        return response.json();
+    }
+
+    // 创建分享链接
+    async createShareLink(fileId: string, password?: string, expiration?: string): Promise<{ link: string }> {
+        const response = await fetch(`${API_BASE}/api/files/${fileId}/share`, {
+            method: 'POST',
+            headers: getHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ password, expiration }),
+        });
+
+        if (response.status === 401) throw new Error('UNAUTHORIZED');
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || '创建分享链接失败');
+        }
         return response.json();
     }
 

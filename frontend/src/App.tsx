@@ -300,6 +300,25 @@ function App() {
     }
   };
 
+  const handleShare = async (password: string, expiration: string) => {
+    if (selectedFileIds.length !== 1 || selectedFolderNames.length > 0) {
+      throw new Error("只能分享单个文件");
+    }
+
+    const fileId = selectedFileIds[0];
+    try {
+      const result = await fileApi.createShareLink(fileId, password, expiration);
+      return result.link;
+    } catch (error: any) {
+      console.error("Share failed:", error);
+      if (error.message === 'UNAUTHORIZED') {
+        authService.clearToken();
+        setIsAuthenticated(false);
+      }
+      throw error;
+    }
+  };
+
   const toggleFileSelection = (id: string) => {
     setSelectedFileIds(prev =>
       prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
@@ -523,6 +542,7 @@ function App() {
                   setSelectedFolderNames([]);
                 }}
                 onDelete={handleBatchDelete}
+                onShare={handleShare}
               />
             </div>
 

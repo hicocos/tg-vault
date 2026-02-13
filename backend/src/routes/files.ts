@@ -410,4 +410,44 @@ function formatRelativeTime(date: Date): string {
     return new Date(date).toLocaleDateString('zh-CN');
 }
 
+// 创建分享链接
+router.post('/:id/share', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { password, expiration } = req.body;
+
+        const result = await query('SELECT * FROM files WHERE id = $1', [id]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: '文件不存在' });
+        }
+
+        const file = result.rows[0];
+
+        // 只有 OneDrive 支持
+        if (file.source !== 'onedrive') {
+            return res.status(400).json({ error: '目前仅支持 OneDrive 文件分享' });
+        }
+
+        const { storageManager } = await import('../services/storage.js');
+        const provider = storageManager.getProvider(`onedrive:${file.storage_account_id}`);
+
+        if (!provider || !provider.createShareLink) {
+            return res.status(400).json({ error: '当前存储提供商不支持分享' });
+        }
+
+        const resultLink = await provider.createShareLink(file.path, password, expiration);
+
+        if (resultLink.error) {
+            return res.status(400).json({ error: resultLink.error });
+        }
+
+        res.json({ link: resultLink.link });
+
+    } catch (error) {
+        console.error('创建分享链接失败:', error);
+        res.status(500).json({ error: '创建分享链接失败' });
+    }
+});
+
 export default router;
