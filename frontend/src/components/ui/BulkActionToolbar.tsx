@@ -46,29 +46,32 @@ export const BulkActionToolbar = ({
         setIsCopying(true);
         setErrorMsg(null);
         try {
-            let formattedExpiration = expiration;
+            let formattedExpiration = "";
             if (expiration) {
-                // Remove any non-digit characters to check format
+                let date: Date | null = null;
                 const cleanDate = expiration.replace(/\D/g, '');
-                if (cleanDate.length === 8) { // YYYYMMDD
-                    const year = cleanDate.substring(0, 4);
-                    const month = cleanDate.substring(4, 6);
-                    const day = cleanDate.substring(6, 8);
 
-                    // Create date object (set to end of day just in case)
-                    const date = new Date(`${year}-${month}-${day}T23:59:59Z`);
-                    if (!isNaN(date.getTime())) {
-                        formattedExpiration = date.toISOString();
-                    } else {
-                        throw new Error("无效的日期格式，请使用 YYYY/MM/DD");
+                // Strategy 1: YYYYMMDD (strict 8 digits)
+                if (cleanDate === expiration && cleanDate.length === 8) {
+                    const year = parseInt(cleanDate.substring(0, 4));
+                    const month = parseInt(cleanDate.substring(4, 6)) - 1; // Month is 0-indexed
+                    const day = parseInt(cleanDate.substring(6, 8));
+                    date = new Date(Date.UTC(year, month, day, 23, 59, 59));
+                }
+                // Strategy 2: YYYYMMD or YYYYMDD etc (loose digits) - unsafe to guess, better fail
+                // Strategy 3: Standard JS Date parsing (for 2024/01/01, 2024-01-01)
+                else {
+                    const parsed = new Date(expiration);
+                    if (!isNaN(parsed.getTime())) {
+                        // Set to end of day in UTC
+                        date = new Date(Date.UTC(parsed.getFullYear(), parsed.getMonth(), parsed.getDate(), 23, 59, 59));
                     }
-                } else if (expiration.includes('/') || expiration.includes('-')) {
-                    const date = new Date(expiration);
-                    if (!isNaN(date.getTime())) {
-                        formattedExpiration = date.toISOString();
-                    } else {
-                        throw new Error("无效的日期格式，请使用 YYYY/MM/DD");
-                    }
+                }
+
+                if (date && !isNaN(date.getTime())) {
+                    formattedExpiration = date.toISOString();
+                } else {
+                    throw new Error("日期格式错误。请使用 YYYY/MM/DD 或 YYYYMMDD 格式 (例如: 2026/02/14)");
                 }
             }
 
