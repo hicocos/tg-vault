@@ -72,7 +72,7 @@ export const BulkActionToolbar = ({
                         transition={{ duration: 0.3, ease: "easeInOut" }}
                         className="z-40 w-full overflow-hidden"
                     >
-                        <div className="bg-card/60 backdrop-blur-md border border-primary/20 shadow-lg rounded-2xl p-3 flex items-center justify-between gap-4">
+                        <div className="bg-card border border-primary/20 shadow-lg rounded-2xl p-3 flex items-center justify-between gap-4">
                             <div className="flex items-center gap-3 pl-1">
                                 <div className="bg-primary/10 p-1.5 rounded-lg">
                                     <CheckSquare className="h-4 w-4 text-primary" />
@@ -135,7 +135,7 @@ export const BulkActionToolbar = ({
                                     exit={{ height: 0, opacity: 0 }}
                                     className="overflow-hidden mt-2"
                                 >
-                                    <div className="bg-card/90 backdrop-blur-xl border border-border shadow-xl rounded-xl p-4 flex flex-col gap-4">
+                                    <div className="bg-card border border-border shadow-xl rounded-xl p-4 flex flex-col gap-4">
                                         <div className="flex items-start md:items-center flex-col md:flex-row gap-4">
                                             {/* Expiration Input */}
                                             <div className="flex-1 w-full relative group">
