@@ -118,13 +118,27 @@ export class AliyunOSSStorageProvider implements IStorageProvider {
         accessKeySecret: string,
         bucket: string
     ) {
+        const sanitizedRegion = this.sanitizeRegion(region);
         this.client = new OSS({
-            region: region,
+            region: sanitizedRegion,
             accessKeyId: accessKeyId,
             accessKeySecret: accessKeySecret,
             bucket: bucket,
             secure: true
         });
+    }
+
+    private sanitizeRegion(region: string): string {
+        let r = region.trim().toLowerCase();
+        // 移除协议头
+        r = r.replace(/^https?:\/\//, '');
+        // 如果输入的是完整的 endpoint (如 oss-cn-hangzhou.aliyuncs.com)，提取 region 部分
+        if (r.includes('.aliyuncs.com')) {
+            r = r.split('.')[0];
+        }
+        // 如果以 oss- 开头，ali-oss SDK 通常可以自动处理，但有些版本可能只需要 cn-hangzhou
+        // 实际上 ali-oss 会自动处理 oss- 前缀，所以保留或移除通常都可以，但要确保没有多余的后缀
+        return r;
     }
 
     async saveFile(tempPath: string, fileName: string): Promise<string> {
