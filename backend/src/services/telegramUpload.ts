@@ -592,9 +592,7 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
         }
     };
 
-    downloadQueue.add(file.fileName, queueTask).catch(err => {
-        console.error(`Unhandled error in download task for ${file.fileName}:`, err);
-    });
+    return downloadQueue.add(file.fileName, queueTask);
 }
 
 // 处理批量文件上传队列
@@ -692,24 +690,31 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
     } else if (queue.chatId) {
         // 静默模式下的完成逻辑
         const chatIdStr = queue.chatId.toString();
-        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+        await runStatusAction(queue.chatId, async () => {
+            const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
             const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-            if (lastMsgId) {
+            console.log(`[Batch] 🏁 Completion check for chat ${chatIdStr}: isSilent=${isSilent}, lastMsgId=${lastMsgId}`);
+
+            if (isSilent && lastMsgId) {
                 const successful = queue.files.filter(f => f.status === 'success');
                 if (successful.length > 0) {
                     const types = Array.from(new Set(successful.map(f => getTypeEmoji(f.mimeType)))).join(' ');
                     const provider = storageManager.getProvider();
                     const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')));
 
-                    await safeEditMessage(client, queue.chatId!, {
+                    console.log(`[Batch] ✨ Updating silent notification ${lastMsgId} to success`);
+                    const result = await safeEditMessage(client, queue.chatId!, {
                         message: lastMsgId,
                         text: `✅ **多文件上传完成!**\n🏷️ 类型: ${types}\n📍 存储: ${providerName}`
                     });
-                    // 更新为非静默状态（因为已经显示了完成信息）
-                    lastStatusMessageIsSilent.set(chatIdStr, false);
+                    if (result) {
+                        lastStatusMessageIsSilent.set(chatIdStr, false);
+                    } else {
+                        console.warn(`[Batch] ⚠️ Failed to update silent notification ${lastMsgId}`);
+                    }
                 }
             }
-        }
+        });
     }
 
     mediaGroupQueues.delete(mediaGroupId);
@@ -974,23 +979,33 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             } else {
                 // 单文件成功后的静默模式检查
                 const stats = downloadQueue.getStats();
-                // 如果队列为空且当前是静默模式，更新状态
+                const chatIdStr = message.chatId!.toString();
+
+                // 如果队列即将为空且当前是静默模式，更新状态
+                // 注意：在 execute() 内部，stats.active 至少包含当前任务，所以 active <= 1 且 pending === 0 意味着这是最后一个
                 if (stats.pending === 0 && stats.active <= 1) {
-                    const chatIdStr = message.chatId!.toString();
-                    if (lastStatusMessageIsSilent.get(chatIdStr)) {
+                    await runStatusAction(message.chatId, async () => {
+                        const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
                         const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-                        if (lastMsgId) {
+                        console.log(`[Single] 🏁 Completion check for chat ${chatIdStr}: isSilent=${isSilent}, lastMsgId=${lastMsgId}`);
+
+                        if (isSilent && lastMsgId) {
                             const provider = storageManager.getProvider();
                             const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')));
                             const typeEmoji = getTypeEmoji(mimeType);
 
-                            await safeEditMessage(client, message.chatId!, {
+                            console.log(`[Single] ✨ Updating silent notification ${lastMsgId} to success`);
+                            const result = await safeEditMessage(client, message.chatId!, {
                                 message: lastMsgId,
                                 text: `✅ **上传成功!**\n🏷️ 类型: ${typeEmoji}\n📍 存储: ${providerName}`
                             });
-                            lastStatusMessageIsSilent.set(chatIdStr, false);
+                            if (result) {
+                                lastStatusMessageIsSilent.set(chatIdStr, false);
+                            } else {
+                                console.warn(`[Single] ⚠️ Failed to update silent notification ${lastMsgId}`);
+                            }
                         }
-                    }
+                    });
                 }
             }
         };
