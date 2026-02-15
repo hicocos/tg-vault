@@ -10,16 +10,6 @@
 - **[上传架构说明](./upload_architecture.md)**  
   深入了解 FoomClous 的文件上传逻辑，包括切片上传、断点续传和存储抽象层设计。
 
-## 🚀 部署与维护
-
-- **[Docker 部署指南](../README.md#docker-部署)**  
-  快速使用 Docker Compose 启动您的私有云盘。
-
-- **[Docker 清理指南](./docker-cleanup-guide.md)**  
-  如何安全地清理 Docker 容器、镜像和未使用的卷，保持服务器整洁。
-
-- **[Docker Hub 使用说明](./DOCKER_HUB.md)**  
-  关于项目镜像在 Docker Hub 上的发布和拉取说明。
 
 ---
 
