@@ -184,6 +184,7 @@ async function runStatusAction(chatId: Api.TypeEntityLike | undefined, action: (
 
 // 用于追踪每个会话最后一条状态消息 ID 的映射
 const lastStatusMessageIdMap = new Map<string, number>();
+const lastStatusMessageIsSilent = new Map<string, boolean>();
 
 /**
  * 安全删除并追踪最后一条状态消息
@@ -199,15 +200,18 @@ async function deleteLastStatusMessage(client: TelegramClient, chatId: Api.TypeE
             // 忽略删除失败的情况
         }
         lastStatusMessageIdMap.delete(chatIdStr);
+        lastStatusMessageIsSilent.delete(chatIdStr);
     }
 }
 
 /**
  * 更新最后一条状态消息 ID
  */
-function updateLastStatusMessageId(chatId: Api.TypeEntityLike | undefined, msgId: number | undefined) {
+function updateLastStatusMessageId(chatId: Api.TypeEntityLike | undefined, msgId: number | undefined, isSilent: boolean = false) {
     if (!chatId || !msgId) return;
-    lastStatusMessageIdMap.set(chatId.toString(), msgId);
+    const chatIdStr = chatId.toString();
+    lastStatusMessageIdMap.set(chatIdStr, msgId);
+    lastStatusMessageIsSilent.set(chatIdStr, isSilent);
 }
 
 // 导出获取队列统计信息的函数
@@ -660,7 +664,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
                     message: `🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: ${totalPending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态`
                 });
                 if (sMsg) {
-                    updateLastStatusMessageId(queue.chatId, sMsg.id);
+                    updateLastStatusMessageId(queue.chatId, sMsg.id, true);
                 }
                 lastSilentNotificationTimeMap.set(chatIdStr, now);
             }
@@ -671,7 +675,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
             });
             if (statusMsg) {
                 queue.statusMsgId = statusMsg.id;
-                updateLastStatusMessageId(queue.chatId, statusMsg.id);
+                updateLastStatusMessageId(queue.chatId, statusMsg.id, false);
             }
         }
     });
@@ -685,6 +689,27 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
                 text: generateBatchStatusMessage(queue),
             });
         });
+    } else if (queue.chatId) {
+        // 静默模式下的完成逻辑
+        const chatIdStr = queue.chatId.toString();
+        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+            const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
+            if (lastMsgId) {
+                const successful = queue.files.filter(f => f.status === 'success');
+                if (successful.length > 0) {
+                    const types = Array.from(new Set(successful.map(f => getTypeEmoji(f.mimeType)))).join(' ');
+                    const provider = storageManager.getProvider();
+                    const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')));
+
+                    await safeEditMessage(client, queue.chatId!, {
+                        message: lastMsgId,
+                        text: `✅ **多文件上传完成!**\n🏷️ 类型: ${types}\n📍 存储: ${providerName}`
+                    });
+                    // 更新为非静默状态（因为已经显示了完成信息）
+                    lastStatusMessageIsSilent.set(chatIdStr, false);
+                }
+            }
+        }
     }
 
     mediaGroupQueues.delete(mediaGroupId);
@@ -795,7 +820,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                         message: `🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: ${stats.pending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态`
                     });
                     if (sMsg) {
-                        updateLastStatusMessageId(message.chatId!, sMsg.id);
+                        updateLastStatusMessageId(message.chatId!, sMsg.id, true);
                     }
                     lastSilentNotificationTimeMap.set(chatIdStr, now);
                 }
@@ -805,7 +830,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     message: `⏳ 正在下载文件: ${finalFileName}\n${generateProgressBar(0, 1)}\n\n${typeEmoji} ${formatBytes(0)} / ${formatBytes(totalSize)}`
                 }) as Api.Message;
                 if (statusMsg) {
-                    updateLastStatusMessageId(message.chatId!, statusMsg.id);
+                    updateLastStatusMessageId(message.chatId!, statusMsg.id, false);
                 }
             }
         });
@@ -945,6 +970,27 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await safeReply(message, {
                         message: `❌ 上传失败: ${finalFileName}\n原因: ${lastError || '未知错误'}`
                     });
+                }
+            } else {
+                // 单文件成功后的静默模式检查
+                const stats = downloadQueue.getStats();
+                // 如果队列为空且当前是静默模式，更新状态
+                if (stats.pending === 0 && stats.active <= 1) {
+                    const chatIdStr = message.chatId!.toString();
+                    if (lastStatusMessageIsSilent.get(chatIdStr)) {
+                        const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
+                        if (lastMsgId) {
+                            const provider = storageManager.getProvider();
+                            const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')));
+                            const typeEmoji = getTypeEmoji(mimeType);
+
+                            await safeEditMessage(client, message.chatId!, {
+                                message: lastMsgId,
+                                text: `✅ **上传成功!**\n🏷️ 类型: ${typeEmoji}\n📍 存储: ${providerName}`
+                            });
+                            lastStatusMessageIsSilent.set(chatIdStr, false);
+                        }
+                    }
                 }
             }
         };
