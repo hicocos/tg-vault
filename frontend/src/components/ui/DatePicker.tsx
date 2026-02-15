@@ -72,7 +72,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                     date.getFullYear() === today.getFullYear();
             })();
 
-            const isPast = date < new Date(new Date().setHours(0, 0, 0, 0)) && !isToday;
+            const isPast = date < new Date(minDate.setHours(0, 0, 0, 0)) && !isToday;
 
             days.push(
                 <button
@@ -101,7 +101,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
             initial={{ opacity: 0, scale: 0.95, y: -10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: -10 }}
-            className="absolute z-50 mt-2 p-4 bg-zinc-900 border border-zinc-800 shadow-2xl rounded-2xl w-[320px] text-zinc-100"
+            className="absolute z-50 mt-2 p-4 bg-white dark:bg-zinc-900 border border-border shadow-2xl rounded-2xl w-[320px] text-foreground"
         >
             {/* Header */}
             <div className="flex items-center justify-between mb-4">
@@ -109,13 +109,13 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                     <span>{viewDate.getMonth() + 1} 月 {viewDate.getFullYear()}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                    <button onClick={handlePrevMonth} className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors">
+                    <button onClick={handlePrevMonth} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
                         <ChevronLeft className="h-4 w-4" />
                     </button>
-                    <button onClick={handleNextMonth} className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors">
+                    <button onClick={handleNextMonth} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
                         <ChevronRight className="h-4 w-4" />
                     </button>
-                    <button onClick={onClose} className="p-1.5 hover:bg-zinc-800 rounded-lg transition-colors ml-1">
+                    <button onClick={onClose} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors ml-1">
                         <X className="h-4 w-4" />
                     </button>
                 </div>
@@ -124,7 +124,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
             {/* Weekdays */}
             <div className="grid grid-cols-7 mb-2">
                 {weekDays.map(day => (
-                    <div key={day} className="h-9 w-9 flex items-center justify-center text-[10px] font-bold text-zinc-500 uppercase tracking-wider">
+                    <div key={day} className="h-9 w-9 flex items-center justify-center text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
                         周{day}
                     </div>
                 ))}
@@ -135,14 +135,14 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                 {renderDays()}
             </div>
 
-            <div className="mt-4 pt-3 border-t border-zinc-800 flex justify-between items-center">
+            <div className="mt-4 pt-3 border-t border-border flex justify-between items-center">
                 <button
                     onClick={() => onChange(new Date())}
                     className="text-xs text-primary hover:underline font-medium"
                 >
                     今天
                 </button>
-                <div className="text-[10px] text-zinc-500">
+                <div className="text-[10px] text-muted-foreground">
                     请选择过期时间
                 </div>
             </div>
