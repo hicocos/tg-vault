@@ -267,41 +267,41 @@ function extractFileInfo(message: Api.Message): { fileName: string; mimeType: st
         if (message.document) {
             const doc = message.document as Api.Document;
             const fileNameAttr = doc.attributes?.find((a: any) => a.className === 'DocumentAttributeFilename') as any;
-            fileName = fileNameAttr?.fileName || \`file_\${Date.now()}\`;
+            fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
             mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
 
             // 如果是音频/视频但没有文件名属性，尝试根据类型生成
             if (fileName.startsWith('file_')) {
                 const videoAttr = doc.attributes?.find((a: any) => a.className === 'DocumentAttributeVideo');
                 const audioAttr = doc.attributes?.find((a: any) => a.className === 'DocumentAttributeAudio');
-                if (videoAttr) fileName = \`video_\${Date.now()}.mp4\`;
-                else if (audioAttr) fileName = \`audio_\${Date.now()}.mp3\`;
+                if (videoAttr) fileName = `video_${Date.now()}.mp4`;
+                else if (audioAttr) fileName = `audio_${Date.now()}.mp3`;
             }
         } else if (message.photo) {
-            fileName = \`photo_\${Date.now()}.jpg\`;
+            fileName = `photo_${Date.now()}.jpg`;
             mimeType = 'image/jpeg';
         } else if (message.video) {
             const video = message.video as Api.Document;
             const fileNameAttr = video.attributes?.find((a: any) => a.className === 'DocumentAttributeFilename') as any;
-            fileName = fileNameAttr?.fileName || \`video_\${Date.now()}.mp4\`;
+            fileName = fileNameAttr?.fileName || `video_${Date.now()}.mp4`;
             mimeType = video.mimeType || 'video/mp4';
         } else if (message.audio) {
             const audio = message.audio as Api.Document;
             const fileNameAttr = audio.attributes?.find((a: any) => a.className === 'DocumentAttributeFilename') as any;
-            fileName = fileNameAttr?.fileName || \`audio_\${Date.now()}.mp3\`;
+            fileName = fileNameAttr?.fileName || `audio_${Date.now()}.mp3`;
             mimeType = audio.mimeType || 'audio/mpeg';
         } else if (message.voice) {
-            fileName = \`voice_\${Date.now()}.ogg\`;
+            fileName = `voice_${Date.now()}.ogg`;
             mimeType = 'audio/ogg';
         } else if (message.sticker) {
-            fileName = \`sticker_\${Date.now()}.webp\`;
+            fileName = `sticker_${Date.now()}.webp`;
             mimeType = 'image/webp';
         } else {
             const media = message.media as any;
             if (media.document && media.document instanceof Api.Document) {
                 const doc = media.document;
                 const fileNameAttr = doc.attributes?.find((a: any) => a.className === 'DocumentAttributeFilename') as any;
-                fileName = fileNameAttr?.fileName || \`file_\${Date.now()}\`;
+                fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
                 mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
             } else {
                 return null;
@@ -324,14 +324,14 @@ async function downloadAndSaveFile(
     onProgress?: (downloaded: number, total: number) => void
 ): Promise<{ filePath: string; actualSize: number; storedName: string } | null> {
     const ext = path.extname(fileName) || '';
-    const storedName = \`\${uuidv4()}\${ext}\`;
+    const storedName = `${uuidv4()}${ext}`;
     let saveDir = targetDir || UPLOAD_DIR;
 
     if (!fs.existsSync(saveDir)) {
         try {
             fs.mkdirSync(saveDir, { recursive: true });
         } catch (err) {
-            console.error(\`🤖 创建下载目录失败: \${saveDir}\`, err);
+            console.error(`🤖 创建下载目录失败: ${saveDir}`, err);
             if (saveDir === UPLOAD_DIR) throw err;
             saveDir = UPLOAD_DIR;
         }
@@ -397,20 +397,20 @@ function generateBatchStatusMessage(queue: MediaGroupQueue): string {
         }
     }
 
-    let message = \`\${statusIcon} **\${statusText}**\n\n\`;
+    let message = `${statusIcon} **${statusText}**\n\n`;
 
     if (completed < total) {
         const stats = downloadQueue.getStats();
         if (stats.pending > 0 || stats.active >= 2) {
-            message += \`⏳ 已加入下载队列 (当前排队: \${stats.pending})\n💡 请耐心等待，Bot 将按顺序处理任务。\n\n\`;
+            message += `⏳ 已加入下载队列 (当前排队: ${stats.pending})\n💡 请耐心等待，Bot 将按顺序处理任务。\n\n`;
         }
     }
 
     if (queue.folderName) {
-        message += \`📁 文件夹: \${queue.folderName}\n\`;
+        message += `📁 文件夹: ${queue.folderName}\n`;
     }
-    message += \`📊 进度: \${completed}/\${total}\n\`;
-    message += \`\${generateProgressBar(completed, total)}\n\n\`;
+    message += `📊 进度: ${completed}/${total}\n`;
+    message += `${generateProgressBar(completed, total)}\n\n`;
 
     queue.files.forEach((file) => {
         let fileIcon = '⏳';
@@ -440,8 +440,8 @@ function generateBatchStatusMessage(queue: MediaGroupQueue): string {
         }
 
         const typeEmoji = getTypeEmoji(file.mimeType);
-        message += \`\${fileIcon} \${typeEmoji} \${file.fileName}\n\`;
-        message += \`    └ \${fileStatus}\n\`;
+        message += `${fileIcon} ${typeEmoji} ${file.fileName}\n`;
+        message += `    └ ${fileStatus}\n`;
     });
 
     return message;
@@ -497,10 +497,10 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
             const folderName = queue?.folderName || null;
             const activeAccountId = storageManager.getActiveAccountId();
 
-            await query(\`
+            await query(`
                 INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-            \`, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, folderName, activeAccountId]);
+            `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, folderName, activeAccountId]);
 
             file.status = 'success';
             file.size = actualSize;
@@ -514,7 +514,7 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
             if (localFilePath && fs.existsSync(localFilePath)) {
                 try {
                     fs.unlinkSync(localFilePath);
-                    console.log(\`🤖 上传尝试失败，已自动清理本地垃圾缓存: \${localFilePath}\`);
+                    console.log(`🤖 上传尝试失败，已自动清理本地垃圾缓存: ${localFilePath}`);
                 } catch (e) {
                     console.error('🤖 自动清理垃圾缓存失败:', e);
                 }
@@ -542,7 +542,7 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
             if (queue && queue.statusMsgId && queue.chatId) {
                 await safeEditMessage(client, queue.chatId as Api.TypeEntityLike, {
                     message: queue.statusMsgId,
-                    text: generateBatchStatusMessage(queue).replace(file.fileName, \`\${file.fileName} (重试中...)\`),
+                    text: generateBatchStatusMessage(queue).replace(file.fileName, `${file.fileName} (重试中...)`),
                 });
             }
 
@@ -563,7 +563,7 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
     };
 
     downloadQueue.add(file.fileName, queueTask).catch(err => {
-        console.error(\`Unhandled error in download task for \${file.fileName}:\`, err);
+        console.error(`Unhandled error in download task for ${file.fileName}:`, err);
     });
 }
 
@@ -588,7 +588,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
 
     if (!folderName) {
         const now = new Date();
-        folderName = \`batch_\${now.getFullYear()}\${String(now.getMonth() + 1).padStart(2, '0')}\${String(now.getDate()).padStart(2, '0')}_\${String(now.getHours()).padStart(2, '0')}\${String(now.getMinutes()).padStart(2, '0')}\${String(now.getSeconds()).padStart(2, '0')}\`;
+        folderName = `batch_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
     }
 
     let sanitizedFolderName = sanitizeFilename(folderName);
@@ -598,8 +598,8 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
         try {
             fs.mkdirSync(folderPath, { recursive: true });
         } catch (err) {
-            console.error(\`🤖 创建批量上传文件夹失败: \${folderPath}\`, err);
-            const fallbackFolderName = \`fallback_\${Date.now()}\`;
+            console.error(`🤖 创建批量上传文件夹失败: ${folderPath}`, err);
+            const fallbackFolderName = `fallback_${Date.now()}`;
             const fallbackPath = path.join(UPLOAD_DIR, fallbackFolderName);
             try {
                 if (!fs.existsSync(fallbackPath)) {
@@ -625,7 +625,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
             const now = Date.now();
             if (now - lastSilentNotificationTime > SILENT_NOTIFICATION_COOLDOWN) {
                 await safeReply(firstMessage, {
-                    message: \`🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: \${totalPending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态\`
+                    message: `🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: ${totalPending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态`
                 });
                 lastSilentNotificationTime = now;
             }
@@ -688,11 +688,11 @@ export async function handleCleanupCallback(cleanupId: string): Promise<{ succes
         pendingCleanups.delete(cleanupId);
         return {
             success: true,
-            message: \`✅ 已清理 \${cleanupInfo.fileName} 的垃圾缓存 (\${formatBytes(cleanupInfo.size)})\`
+            message: `✅ 已清理 ${cleanupInfo.fileName} 的垃圾缓存 (${formatBytes(cleanupInfo.size)})`
         };
     } catch (error) {
         console.error('🤖 清理垃圾缓存失败:', error);
-        return { success: false, message: \`清理失败: \${(error as Error).message}\` };
+        return { success: false, message: `清理失败: ${(error as Error).message}` };
     }
 }
 
@@ -746,7 +746,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const ext = path.extname(fileName);
             const sanitizedCaption = sanitizeFilename(caption.trim());
             if (!sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase()) && ext) {
-                finalFileName = \`\${sanitizedCaption}\${ext}\`;
+                finalFileName = `${sanitizedCaption}${ext}`;
             } else {
                 finalFileName = sanitizedCaption;
             }
@@ -762,14 +762,14 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 const now = Date.now();
                 if (now - lastSilentNotificationTime > SILENT_NOTIFICATION_COOLDOWN) {
                     await safeReply(message, {
-                        message: \`🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: \${stats.pending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态\`
+                        message: `🤐 **检测到多文件上传，已切换到静默模式**\n\n当前排队任务: ${stats.pending} 个\nBot 将在后台继续处理所有文件，请耐心等待。\n\n💡 发送 /tasks 查看实时任务状态`
                     });
                     lastSilentNotificationTime = now;
                 }
             } else {
                 await deleteLastStatusMessage(client, message.chatId!);
                 statusMsg = await safeReply(message, {
-                    message: \`⏳ 正在下载文件: \${finalFileName}\n\${generateProgressBar(0, 1)}\n\n\${typeEmoji} \${formatBytes(0)} / \${formatBytes(totalSize)}\`
+                    message: `⏳ 正在下载文件: ${finalFileName}\n${generateProgressBar(0, 1)}\n\n${typeEmoji} ${formatBytes(0)} / ${formatBytes(totalSize)}`
                 }) as Api.Message;
                 if (statusMsg) {
                     updateLastStatusMessageId(message.chatId!, statusMsg.id);
@@ -783,7 +783,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         if (statusMsg && (stats.active >= 2 || stats.pending > 0)) {
             await safeEditMessage(client, message.chatId!, {
                 message: statusMsg.id,
-                text: \`⏳ 已加入下载队列 (当前排队: \${stats.pending})\n\n📄 文件: \${finalFileName}\n💡 请耐心等待，Bot 将按顺序处理任务。\`
+                text: `⏳ 已加入下载队列 (当前排队: ${stats.pending})\n\n📄 文件: ${finalFileName}\n💡 请耐心等待，Bot 将按顺序处理任务。`
             });
         }
 
@@ -796,7 +796,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             lastUpdateTime = now;
             await safeEditMessage(client, message.chatId!, {
                 message: statusMsg.id,
-                text: \`⏳ 正在下载文件: \${finalFileName}\n\${generateProgressBar(downloaded, total)}\n\n\${typeEmoji} \${formatBytes(downloaded)} / \${formatBytes(total)}\`,
+                text: `⏳ 正在下载文件: ${finalFileName}\n${generateProgressBar(downloaded, total)}\n\n${typeEmoji} ${formatBytes(downloaded)} / ${formatBytes(total)}`,
             });
         };
 
@@ -821,7 +821,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 if (statusMsg) {
                     await safeEditMessage(client, message.chatId!, {
                         message: statusMsg.id,
-                        text: \`💾 正在保存文件...\n\${generateProgressBar(1, 1)}\n\n\${typeEmoji} \${finalFileName}\`,
+                        text: `💾 正在保存文件...\n${generateProgressBar(1, 1)}\n\n${typeEmoji} ${finalFileName}`,
                     });
                 }
 
@@ -830,7 +830,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 try {
                     thumbnailPath = await generateThumbnail(localFilePath, storedName, mimeType);
                     dimensions = await getImageDimensions(localFilePath, mimeType);
-                } catch (thumbErr) {}
+                } catch (thumbErr) { }
 
                 const provider = storageManager.getProvider();
                 let finalPath = localFilePath;
@@ -850,15 +850,15 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 }
 
                 const activeAccountId = storageManager.getActiveAccountId();
-                await query(\`
+                await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                \`, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, null, activeAccountId]);
+                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, null, activeAccountId]);
 
                 if (statusMsg) {
                     await client.editMessage(message.chatId!, {
                         message: statusMsg.id,
-                        text: \`✅ 文件上传成功!\n\${generateProgressBar(1, 1)}\n\n📄 文件名: \${finalFileName}\n📦 大小: \${formatBytes(actualSize)}\n🏷️ 类型: \${fileType}\n📍 存储: \${provider.name === 'onedrive' ? '☁️ OneDrive' : '💾 本地'}\`,
+                        text: `✅ 文件上传成功!\n${generateProgressBar(1, 1)}\n\n📄 文件名: ${finalFileName}\n📦 大小: ${formatBytes(actualSize)}\n🏷️ 类型: ${fileType}\n📍 存储: ${provider.name === 'onedrive' ? '☁️ OneDrive' : '💾 本地'}`,
                     });
                 }
                 return true;
@@ -867,7 +867,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 if (localFilePath && fs.existsSync(localFilePath)) {
                     try {
                         fs.unlinkSync(localFilePath);
-                    } catch (e) {}
+                    } catch (e) { }
                 }
                 lastLocalPath = undefined;
                 return false;
@@ -879,7 +879,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             if (!success && retryCount < maxRetries) {
                 retryCount++;
                 if (lastLocalPath && fs.existsSync(lastLocalPath)) {
-                    try { fs.unlinkSync(lastLocalPath); } catch (e) {}
+                    try { fs.unlinkSync(lastLocalPath); } catch (e) { }
                 }
                 lastLocalPath = undefined;
 
@@ -887,9 +887,9 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     try {
                         await client.editMessage(message.chatId!, {
                             message: statusMsg.id,
-                            text: \`🔄 上传失败，正在重试...\n\${generateProgressBar(0, 1)}\n\n\${typeEmoji} \${finalFileName}\`,
+                            text: `🔄 上传失败，正在重试...\n${generateProgressBar(0, 1)}\n\n${typeEmoji} ${finalFileName}`,
                         });
-                    } catch (e) {}
+                    } catch (e) { }
                 }
                 success = await attemptSingleUpload();
             }
@@ -898,18 +898,18 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 if (statusMsg) {
                     await client.editMessage(message.chatId!, {
                         message: statusMsg.id,
-                        text: \`❌ 上传失败: \${finalFileName}\n原因: \${lastError || '未知错误'}\`
+                        text: `❌ 上传失败: ${finalFileName}\n原因: ${lastError || '未知错误'}`
                     }).catch(() => { });
                 } else {
                     await safeReply(message, {
-                        message: \`❌ 上传失败: \${finalFileName}\n原因: \${lastError || '未知错误'}\`
+                        message: `❌ 上传失败: ${finalFileName}\n原因: ${lastError || '未知错误'}`
                     });
                 }
             }
         };
 
         downloadQueue.add(finalFileName, singleUploadTask).catch(err => {
-            console.error(\`🤖 单文件下载任务异常: \${finalFileName}\`, err);
+            console.error(`🤖 单文件下载任务异常: ${finalFileName}`, err);
         });
     }
 }
