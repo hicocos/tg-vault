@@ -70,11 +70,31 @@ FoomClous 支持多种存储后端。您可以根据对速度、容量和成本�
 
 ## 6. 阿里云 OSS
 
-国内用户推荐，响应速度极快。
+国内用户推荐，响应速度快，成本低。
 
-- **Region**: 所在的地域 ID (如 `oss-cn-shanghai`)。
-- **Credentials**: AccessKey ID & Secret。
-- **Bucket**: 存储桶名称。
+### 详细配置步骤
+
+#### 1. 创建存储桶 (Bucket)
+1. 登录 [阿里云 OSS 控制台](https://oss.console.aliyun.com/)。
+2. 点击 **“创建 Bucket”**。
+3. **名称**: 自定义（如 `foomclous-data`）。
+4. **地域**: 选择距离您最近的地域（例如：华东 1 上海）。
+   - **重要**: 记住地域 ID，如 `oss-cn-shanghai`。
+5. **读写权限**: 建议选择 **“私有”**（FoomClous 会通过后端签名访问，确保安全）。
+
+#### 2. 获取 AccessKey (推荐使用 RAM 用户)
+1. 进入 [RAM 访问控制台](https://ram.console.aliyun.com/)。
+2. 创建一个 **“用户”**，勾选 **“OpenAPI 调用访问”**。
+3. 创建成功后，保存好 **AccessKey ID** 和 **AccessKey Secret**。
+4. **添加权限**: 给该用户授予 `AliyunOSSFullAccess` 权限。
+
+#### 3. 填写配置项
+- **Region**: 您的地域 ID (例如 `oss-cn-shanghai`)。
+- **AccessKey ID**: 您保存的 ID。
+- **AccessKey Secret**: 您保存的 Secret。
+- **Bucket**: 您创建的存储桶名称。
+
+---
 
 ## 🔄 如何切换活动账户？
 
