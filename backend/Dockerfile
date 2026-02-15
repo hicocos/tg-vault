@@ -3,8 +3,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# 设置构建时的内存限制，防止在小内存服务器上 build 失败
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+# esbuild 极快且内存占用低，不再需要调高 Node 内存限制
 
 # 复制依赖文件
 # 复制依赖文件
