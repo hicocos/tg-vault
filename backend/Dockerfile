@@ -29,8 +29,8 @@ RUN npm install --omit=dev
 
 # 复制构建产物
 COPY --from=builder /app/dist ./dist
-# 复制数据库方案文件 (tsc 不会自动复制非 TS 文件)
-COPY --from=builder /app/src/db/schema.sql ./dist/db/schema.sql
+# 复制数据库方案文件 (esbuild 模式下与 index.js 同级)
+COPY --from=builder /app/src/db/schema.sql ./dist/schema.sql
 
 # 创建数据目录
 RUN mkdir -p /data/uploads /data/thumbnails
