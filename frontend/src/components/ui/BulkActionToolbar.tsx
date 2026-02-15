@@ -135,7 +135,7 @@ export const BulkActionToolbar = ({
                         animate={{ height: "auto", opacity: 1, y: 0 }}
                         exit={{ height: 0, opacity: 0, y: -20 }}
                         transition={{ duration: 0.3, ease: "easeInOut" }}
-                        className="z-40 w-full overflow-hidden"
+                        className="z-40 w-full"
                     >
                         <div className="bg-white dark:bg-zinc-900 border border-primary/20 shadow-lg rounded-2xl p-3 flex items-center justify-between gap-4">
                             <div className="flex items-center gap-3 pl-1">
@@ -198,7 +198,7 @@ export const BulkActionToolbar = ({
                                     initial={{ height: 0, opacity: 0 }}
                                     animate={{ height: "auto", opacity: 1 }}
                                     exit={{ height: 0, opacity: 0 }}
-                                    className="overflow-hidden mt-2"
+                                    className="mt-2"
                                 >
                                     <div className="bg-white dark:bg-zinc-900 border border-border shadow-xl rounded-xl p-4 flex flex-col gap-4">
 
@@ -220,7 +220,7 @@ export const BulkActionToolbar = ({
                                                         />
                                                         <AnimatePresence>
                                                             {showDatePicker && (
-                                                                <div className="absolute bottom-full mb-2 left-0">
+                                                                <div className="absolute top-full mt-2 left-0 z-[60]">
                                                                     <DatePicker
                                                                         selectedDate={selectedExpDate}
                                                                         onChange={handleDateSelect}
