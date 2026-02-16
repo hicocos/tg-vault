@@ -434,7 +434,20 @@ function generateBatchStatusMessage(queue: MediaGroupQueue): string {
         message += `📁 文件夹: ${queue.folderName}\n`;
     }
     message += `📊 进度: ${completed}/${total}\n`;
-    message += `${generateProgressBar(completed, total)}\n\n`;
+    message += `${generateProgressBar(completed, total)}\n`;
+
+    // 添加类型和存储信息
+    if (successful > 0 || completed === total) {
+        const successFiles = queue.files.filter(f => f.status === 'success');
+        const types = Array.from(new Set(successFiles.map(f => getTypeEmoji(f.mimeType)))).join(' ') || '❓';
+        const provider = storageManager.getProvider();
+        const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : (provider.name === 'google_drive' ? '☁️ Google Drive' : '💾 本地'))));
+
+        message += `🏷️ 类型: ${types}\n`;
+        message += `📍 存储: ${providerName}\n`;
+    }
+
+    message += '\n';
 
     queue.files.forEach((file) => {
         let fileIcon = '⏳';
@@ -700,7 +713,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
                 if (successful.length > 0) {
                     const types = Array.from(new Set(successful.map(f => getTypeEmoji(f.mimeType)))).join(' ');
                     const provider = storageManager.getProvider();
-                    const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')));
+                    const providerName = provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : (provider.name === 'google_drive' ? '☁️ Google Drive' : '💾 本地'))));
 
                     console.log(`[Batch] ✨ Updating silent notification ${lastMsgId} to success`);
                     const result = await safeEditMessage(client, queue.chatId!, {
@@ -926,7 +939,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(message.chatId, async () => {
                         await client.editMessage(message.chatId!, {
                             message: statusMsg!.id,
-                            text: `✅ 文件上传成功!\n${generateProgressBar(1, 1)}\n\n📄 文件名: ${finalFileName}\n📦 大小: ${formatBytes(actualSize)}\n🏷️ 类型: ${fileType}\n📍 存储: ${provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : '💾 本地')))}`,
+                            text: `✅ 文件上传成功!\n${generateProgressBar(1, 1)}\n\n📄 文件名: ${finalFileName}\n📦 大小: ${formatBytes(actualSize)}\n🏷️ 类型: ${fileType}\n📍 存储: ${provider.name === 'onedrive' ? '☁️ OneDrive' : (provider.name === 'aliyun_oss' ? '☁️ 阿里云 OSS' : (provider.name === 's3' ? '📦 S3 存储' : (provider.name === 'webdav' ? '🌐 WebDAV' : (provider.name === 'google_drive' ? '☁️ Google Drive' : '💾 本地'))))}`,
                         });
                     });
                 }
