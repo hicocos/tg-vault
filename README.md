@@ -149,22 +149,6 @@ FoomClous 已内置支持 TOTP 双重验证（如 Google Authenticator）。
 
 ---
 
-## 🌐 反向代理与 CDN 安全
-
-如果你使用 Cloudflare 或 CDN，系统已自动支持获取真实客户端 IP。
-
-### 1. Nginx 配置
-为了让后端识别真实 IP，请在 Nginx 的 `location` 块中加入：
-```nginx
-proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-```
-
-### 2. 获取真实 IP
-后端会自动识别 `CF-Connecting-IP` (Cloudflare) 和 `X-Forwarded-For`。
-
----
-
 ## 🌐 反向代理建议 (Reverse Proxy)
 
 如果你使用 Nginx 或 NPM 部署，请参考以下映射关系：
