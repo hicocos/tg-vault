@@ -16,7 +16,7 @@ import helmet from 'helmet';
 dotenv.config();
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', 1); // Trust the first proxy
 const PORT = process.env.PORT || 51947;
 
 // 确保上传目录存在

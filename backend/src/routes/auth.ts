@@ -85,6 +85,7 @@ const loginLimiter = rateLimit({
     message: { error: '尝试次数过多，请 15 分钟后再试' },
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { trustProxy: false },
 });
 
 // 登录接口
