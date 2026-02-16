@@ -450,13 +450,14 @@ router.post('/:id/share', async (req: Request, res: Response) => {
 
         const file = result.rows[0];
 
-        // 只有 OneDrive 支持
-        if (file.source !== 'onedrive') {
-            return res.status(400).json({ error: '目前仅支持 OneDrive 文件分享' });
+        // 检查存储源是否支持分享
+        const supportedSources = ['onedrive', 'google_drive'];
+        if (!supportedSources.includes(file.source)) {
+            return res.status(400).json({ error: '当前存储源暂不支持文件分享' });
         }
 
         const { storageManager } = await import('../services/storage.js');
-        const provider = storageManager.getProvider(`onedrive:${file.storage_account_id}`);
+        const provider = storageManager.getProvider(`${file.source}:${file.storage_account_id}`);
 
         if (!provider || !provider.createShareLink) {
             return res.status(400).json({ error: '当前存储提供商不支持分享' });

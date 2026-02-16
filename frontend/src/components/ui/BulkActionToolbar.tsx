@@ -317,7 +317,7 @@ export const BulkActionToolbar = ({
 
                                         {!generatedLink && (
                                             <div className="text-[10px] text-muted-foreground/60 px-1">
-                                                * 如果 OneDrive 账户不支持密码/日期设置，请留空直接生成
+                                                * 部分云存储（如 Google Drive 或普通版 OneDrive）暂不支持通过 API 设置密码或过期时间，此时请留空直接生成。
                                             </div>
                                         )}
                                     </div>
