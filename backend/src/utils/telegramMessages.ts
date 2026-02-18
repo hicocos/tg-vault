@@ -426,6 +426,87 @@ export function buildSilentBatchComplete(types: string, providerName: string): s
     return `✅ **多文件上传完成！**\n🏷️ 类型: ${types}\n📍 ${getProviderDisplayName(providerName)}`;
 }
 
+// ─── 合并单文件状态 ──────────────────────────────────────────
+
+export interface ConsolidatedUploadFile {
+    fileName: string;
+    typeEmoji: string;
+    phase: 'queued' | 'downloading' | 'saving' | 'success' | 'failed' | 'retrying';
+    downloaded?: number;
+    total?: number;
+    size?: number;
+    error?: string;
+    providerName?: string;
+    fileType?: string;
+}
+
+/**
+ * 合并显示所有活跃的单文件上传任务到一条消息
+ * 当有 2+ 个任务同时进行时使用，替代删除旧消息的行为
+ */
+export function buildConsolidatedStatus(files: ConsolidatedUploadFile[]): string {
+    const total = files.length;
+    const completed = files.filter(f => f.phase === 'success' || f.phase === 'failed').length;
+    const successCount = files.filter(f => f.phase === 'success').length;
+    const failedCount = files.filter(f => f.phase === 'failed').length;
+
+    let statusIcon: string;
+    let statusText: string;
+
+    if (completed === total) {
+        if (failedCount === 0) { statusIcon = '✅'; statusText = '所有文件上传完成！'; }
+        else if (successCount === 0) { statusIcon = '❌'; statusText = '文件上传失败'; }
+        else { statusIcon = '⚠️'; statusText = '部分文件上传完成'; }
+    } else {
+        statusIcon = '📦'; statusText = `正在处理 ${total} 个文件...`;
+    }
+
+    const lines: string[] = [
+        `${statusIcon} **${statusText}**`,
+        `📊 进度: ${completed}/${total}`,
+        generateProgressBar(completed, total),
+        '',
+    ];
+
+    files.forEach(file => {
+        let icon: string;
+        let detail: string;
+
+        switch (file.phase) {
+            case 'downloading':
+                icon = '⬇️';
+                if (file.downloaded !== undefined && file.total) {
+                    const pct = Math.round((file.downloaded / file.total) * 100);
+                    detail = `下载中 ${pct}% (${formatBytes(file.downloaded)}/${formatBytes(file.total)})`;
+                } else {
+                    detail = '下载中...';
+                }
+                break;
+            case 'saving':
+                icon = '💾'; detail = '保存中...'; break;
+            case 'success':
+                icon = '✅';
+                const parts: string[] = [];
+                if (file.size) parts.push(formatBytes(file.size));
+                if (file.providerName) parts.push(getProviderDisplayName(file.providerName));
+                detail = parts.join(' · ') || '完成';
+                break;
+            case 'failed':
+                icon = '❌'; detail = file.error || '失败'; break;
+            case 'retrying':
+                icon = '🔄'; detail = '重试中...'; break;
+            case 'queued':
+            default:
+                icon = '🕒'; detail = '排队中'; break;
+        }
+
+        lines.push(`${icon} ${file.typeEmoji} ${file.fileName}`);
+        lines.push(`    └ ${detail}`);
+    });
+
+    return lines.join('\n');
+}
+
 /** 系统启动清理通知 */
 export function buildCleanupNotice(deletedCount: number, freedSpace: string): string {
     return [
