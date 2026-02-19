@@ -6,6 +6,7 @@
  */
 
 import { formatBytes, getTypeEmoji } from './telegramUtils.js';
+import { cleanupOrphanFiles } from '../services/orphanCleanup.js';
 
 // ─── 存储提供商显示名称 ───────────────────────────────────────
 
@@ -24,20 +25,20 @@ export function getProviderDisplayName(providerName: string): string {
 
 // ─── 进度条渲染 ─────────────────────────────────────────────
 
-export function generateProgressBar(completed: number, total: number, barLength: number = 16): string {
-    if (total <= 0) return '░'.repeat(barLength) + ' 0%';
+export function generateProgressBar(completed: number, total: number, barLength: number = 20): string {
+    if (total <= 0) return '[' + '='.repeat(barLength - 1) + '-' + '] 0%';
     const ratio = Math.min(completed / total, 1);
     const percentage = Math.round(ratio * 100);
-    const filledLength = Math.round(ratio * barLength);
-    const emptyLength = barLength - filledLength;
-    return '█'.repeat(filledLength) + '░'.repeat(emptyLength) + ` ${percentage}%`;
+    const filledLength = Math.round(ratio * (barLength - 1));
+    const emptyLength = (barLength - 1) - filledLength;
+    return '[' + '='.repeat(filledLength) + '>' + '-'.repeat(emptyLength) + '] ' + percentage + '%';
 }
 
 export function generateProgressBarWithSpeed(
     completed: number,
     total: number,
     startTime?: number,
-    barLength: number = 16
+    barLength: number = 20
 ): string {
     const bar = generateProgressBar(completed, total, barLength);
     if (!startTime || completed <= 0) return bar;
@@ -463,10 +464,10 @@ export interface ConsolidatedBatchEntry {
 /**
  * 合并显示所有活跃任务（单文件 + 批量）到一条消息
  */
-export function buildConsolidatedStatus(
+export async function buildConsolidatedStatus(
     singleFiles: ConsolidatedUploadFile[],
     batches: ConsolidatedBatchEntry[]
-): string {
+): Promise<string> {
     const totalSingle = singleFiles.length;
     const totalBatches = batches.length;
     const totalTasks = totalSingle + totalBatches;
@@ -480,14 +481,105 @@ export function buildConsolidatedStatus(
     let statusText = `正在处理 ${totalTasks} 个任务...`;
 
     if (allCompleted && totalTasks > 0) {
-        statusIcon = '✅';
-        statusText = '所有任务处理完成';
+        // 计算完成统计
+        const successfulSingles = singleFiles.filter(f => f.phase === 'success').length;
+        const failedSingles = singleFiles.filter(f => f.phase === 'failed').length;
+        const successfulBatches = batches.reduce((sum, b) => sum + (b.successful || 0), 0);
+        const failedBatches = batches.reduce((sum, b) => sum + (b.failed || 0), 0);
+        
+        const totalSuccessful = successfulSingles + successfulBatches;
+        const totalFailed = failedSingles + failedBatches;
+        const totalSize = [...singleFiles.filter(f => f.phase === 'success'), ...batches.flatMap(b => [])]
+            .reduce((sum, f) => sum + (f.size || 0), 0);
+
+        statusIcon = totalFailed === 0 ? '🎉' : '⚠️';
+        statusText = totalFailed === 0 ? '任务全部完成！' : `任务完成 (${totalFailed} 个失败)`;
     }
 
     const lines: string[] = [
         `${statusIcon} **${statusText}**`,
         '',
     ];
+
+    // 添加完成统计摘要
+    if (allCompleted && totalTasks > 0) {
+        const successfulSingles = singleFiles.filter(f => f.phase === 'success').length;
+        const failedSingles = singleFiles.filter(f => f.phase === 'failed').length;
+        const successfulBatches = batches.reduce((sum, b) => sum + (b.successful || 0), 0);
+        const failedBatches = batches.reduce((sum, b) => sum + (b.failed || 0), 0);
+        
+        const totalSuccessful = successfulSingles + successfulBatches;
+        const totalFailed = failedSingles + failedBatches;
+        const totalSize = [...singleFiles.filter(f => f.phase === 'success'), ...batches.flatMap(b => [])]
+            .reduce((sum, f) => sum + (f.size || 0), 0);
+
+        // 如果有失败文件，执行清理
+        let cleanupStats: { deletedCount: number; freedSpace: string } | null = null;
+        if (totalFailed > 0) {
+            try {
+                const stats = await cleanupOrphanFiles();
+                if (stats.deletedCount > 0) {
+                    cleanupStats = {
+                        deletedCount: stats.deletedCount,
+                        freedSpace: stats.freedSpace
+                    };
+                }
+            } catch (error) {
+                console.error('🧹 自动清理失败:', error);
+            }
+        }
+
+        lines.push('📊 **完成摘要**');
+        lines.push(LINE);
+        lines.push(`✅ 成功: ${totalSuccessful} 个文件`);
+        if (totalFailed > 0) {
+            lines.push(`❌ 失败: ${totalFailed} 个文件`);
+        }
+        if (totalSize > 0) {
+            lines.push(`📦 总大小: ${formatBytes(totalSize)}`);
+        }
+        
+        // 显示存储提供商
+        const providers = new Set<string>();
+        singleFiles.filter(f => f.phase === 'success' && f.providerName).forEach(f => providers.add(f.providerName!));
+        batches.filter(b => b.providerName).forEach(b => providers.add(b.providerName!));
+        if (providers.size > 0) {
+            lines.push(`📍 存储: ${Array.from(providers).map(p => getProviderDisplayName(p)).join(', ')}`);
+        }
+        
+        lines.push('');
+        lines.push(`⏰ 完成时间: ${new Date().toLocaleString('zh-CN', {
+            month: '2-digit',
+            day: '2-digit', 
+            hour: '2-digit',
+            minute: '2-digit'
+        })}`);
+        
+        // 添加清理通知（如果有失败文件）
+        if (totalFailed > 0) {
+            lines.push('');
+            lines.push('🧹 **自动清理完成**');
+            lines.push('  已清理服务器缓存垃圾文件');
+            if (cleanupStats && cleanupStats.deletedCount > 0) {
+                lines.push(`  🗑️ 删除 ${cleanupStats.deletedCount} 个孤儿文件`);
+                lines.push(`  💾 释放空间 ${cleanupStats.freedSpace}`);
+            } else {
+                lines.push('  ✅ 没有发现需要清理的垃圾文件');
+            }
+        }
+        
+        lines.push('');
+        
+        // 添加友好的结束消息
+        if (totalFailed === 0) {
+            lines.push('🎊 所有文件已安全上传到云端！');
+            lines.push('💡 您可以随时使用 /list 查看上传记录');
+        } else {
+            lines.push('💡 部分文件上传失败，已自动清理服务器缓存');
+            lines.push('🔄 您可以重新发送失败的文件');
+        }
+        lines.push('');
+    }
 
     const activeSingles = singleFiles.filter(f => f.phase === 'downloading' || f.phase === 'saving' || f.phase === 'retrying');
     const queuedSingles = singleFiles.filter(f => f.phase === 'queued');
@@ -536,7 +628,7 @@ export function buildConsolidatedStatus(
     }
 
     // 2. 渲染批量任务 (文件夹)
-    if (activeBatches.length > 0 || doneBatches.length > 0) {
+    if ((activeBatches.length > 0 || doneBatches.length > 0) && !allCompleted) {
         if (activeSingles.length > 0) lines.push('');
 
         [...activeBatches, ...doneBatches].forEach(batch => {
@@ -568,8 +660,8 @@ export function buildConsolidatedStatus(
         });
     }
 
-    // 4. 渲染已完成的单文件任务
-    if (doneSingles.length > 0) {
+    // 4. 渲染已完成的单文件任务 (仅在部分失败时显示详情)
+    if (doneSingles.length > 0 && !allCompleted) {
         if (activeSingles.length > 0 || totalBatches > 0 || queuedSingles.length > 0) lines.push('');
         doneSingles.forEach(file => {
             let icon: string;

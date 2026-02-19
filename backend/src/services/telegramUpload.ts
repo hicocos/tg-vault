@@ -406,7 +406,7 @@ async function refreshConsolidatedMessage(client: TelegramClient, chatId: Api.Ty
 
     if (files.length === 0 && batches.length === 0) return;
 
-    const text = buildConsolidatedStatus(files, batches);
+    const text = await buildConsolidatedStatus(files, batches);
     const existingMsgId = lastStatusMessageIdMap.get(chatIdStr);
     const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
 
