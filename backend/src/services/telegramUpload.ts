@@ -52,7 +52,7 @@ async function safeEditMessage(client: TelegramClient, chatId: Api.TypeEntityLik
     }
 }
 
-async function ensureSilentNotice(client: TelegramClient, message: Api.Message, pendingCount: number) {
+async function ensureSilentNotice(client: TelegramClient, message: Api.Message, taskCount: number) {
     const chatId = message.chatId;
     if (!chatId) return;
     const chatIdStr = chatId.toString();
@@ -63,7 +63,7 @@ async function ensureSilentNotice(client: TelegramClient, message: Api.Message, 
     if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !lastMsgId) {
         await deleteLastStatusMessage(client, chatId);
         const sMsg = await safeReply(message, {
-            message: buildSilentModeNotice(pendingCount)
+            message: buildSilentModeNotice(taskCount)
         });
         if (sMsg) {
             updateLastStatusMessageId(chatId, sMsg.id, true);
@@ -934,9 +934,10 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         if (message.chatId) {
             const chatId = message.chatId;
             const stats = downloadQueue.getStats();
-            if (stats.pending >= 9) {
+            const totalTasks = stats.active + stats.pending + 1;
+            if (totalTasks > 6) {
                 await runStatusAction(chatId, async () => {
-                    await ensureSilentNotice(client, message, stats.pending);
+                    await ensureSilentNotice(client, message, totalTasks);
                 });
 
                 const sess = getSilentSession(chatId.toString());
@@ -985,8 +986,9 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const stats = downloadQueue.getStats();
             const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
 
-            if (stats.pending >= 9) {
-                await ensureSilentNotice(client, message, stats.pending);
+            const totalTasks = stats.active + stats.pending + 1;
+            if (totalTasks > 6) {
+                await ensureSilentNotice(client, message, totalTasks);
 
                 // 静默模式下：把当前新任务计入静默会话总数
                 const sess = getSilentSession(chatIdStr);
