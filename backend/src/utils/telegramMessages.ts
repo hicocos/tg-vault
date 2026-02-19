@@ -487,6 +487,7 @@ export function buildConsolidatedStatus(
         batches.forEach(batch => {
             const isDone = batch.completed === batch.totalFiles;
             const icon = isDone ? (batch.failed === 0 ? '✅' : '⚠️') : '📂';
+            lines.push(`${icon} 📁 ${batch.folderName}`);
             if (!isDone) {
                 const progress = generateProgressBar(batch.completed, batch.totalFiles);
                 lines.push(`    ${progress} (${batch.completed}/${batch.totalFiles})`);

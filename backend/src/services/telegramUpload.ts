@@ -645,7 +645,8 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
         }
     };
 
-    return downloadQueue.add(file.fileName, queueTask);
+    const taskDisplayName = queue?.folderName ? `${queue.folderName}/${file.fileName}` : file.fileName;
+    return downloadQueue.add(taskDisplayName, queueTask);
 }
 
 // 处理批量文件上传队列
