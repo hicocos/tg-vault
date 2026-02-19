@@ -10,7 +10,8 @@ import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../ut
 import { handleStart, handleHelp, handleStorage, handleList, handleDelete, handleTasks } from './telegramCommands.js';
 import { handleFileUpload, handleCleanupCallback } from './telegramUpload.js';
 import { cleanupOrphanFiles, startPeriodicCleanup } from './orphanCleanup.js';
-import { verifyPassword, formatBytes } from '../utils/telegramUtils.js';
+import { verifyPassword } from '../utils/telegramUtils.js';
+import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildCleanupNotice } from '../utils/telegramMessages.js';
 import { query } from '../db/index.js';
 
 // Session File Path
@@ -91,7 +92,7 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
             passwordInputState.delete(userId);
             await client.editMessage(update.peer, {
                 message: update.msgId,
-                text: '已取消密码输入。\n\n发送 /start 重新开始',
+                text: MSG.AUTH_CANCELLED,
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
             return;
@@ -113,18 +114,18 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
                             });
                             await client.editMessage(update.peer, {
                                 message: update.msgId,
-                                text: `🔐 密码验证通过！\n\n请输入您的 **2FA 6 位验证码** 以完成登录：`,
+                                text: MSG.AUTH_2FA_PROMPT,
                             });
-                            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请输入 2FA 验证码' }));
+                            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_2FA_TOAST }));
                             return;
                         }
 
                         await persistAuthenticatedUser(userId);
                         await client.editMessage(update.peer, {
                             message: update.msgId,
-                            text: `✅ 密码验证成功!\n\n现在您可以:\n📤 发送或转发任意文件上传（支持最大2GB）\n📊 /storage 查看存储空间`,
+                            text: buildAuthSuccess(),
                         });
-                        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '✅ 验证成功!' }));
+                        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_SUCCESS }));
 
                         // Set persistent menu for user if possible (not possible with inline, needs separate command)
                         // But we can send a hint
@@ -159,10 +160,10 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
                     state.password = '';
                     await client.editMessage(update.peer, {
                         message: update.msgId,
-                        text: '❌ 密码错误，请重新输入：',
+                        text: MSG.AUTH_WRONG,
                         buttons: generatePasswordKeyboard(0),
                     });
-                    await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '❌ 密码错误' }));
+                    await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_WRONG }));
                     return;
                 }
             }
@@ -171,7 +172,7 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
         // Update keyboard
         await client.editMessage(update.peer, {
             message: update.msgId,
-            text: '🔐 请使用下方键盘输入密码：',
+            text: MSG.AUTH_INPUT_PROMPT,
             buttons: generatePasswordKeyboard(state.password.length),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
@@ -310,11 +311,7 @@ export async function initTelegramBot(): Promise<void> {
                 for (const userId of authenticatedUsers.keys()) {
                     try {
                         await client.sendMessage(userId, {
-                            message: `🧹 **系统启动清理完成**\n\n` +
-                                `📊 清理统计:\n` +
-                                `• 删除孤儿文件: ${stats.deletedCount} 个\n` +
-                                `• 释放空间: ${stats.freedSpace}\n\n` +
-                                `💡 这些是之前上传失败残留的垃圾文件`
+                            message: buildCleanupNotice(stats.deletedCount, stats.freedSpace)
                         });
                     } catch (e) {
                         // 用户可能已删除对话或阻止了 Bot
@@ -352,7 +349,7 @@ export async function initTelegramBot(): Promise<void> {
                     if (!isAuthenticated(senderId)) {
                         // Send password keyboard if not authenticated
                         await message.reply({
-                            message: `👋 欢迎使用 FoomClous Bot!\n\n🔐 请使用下方键盘输入密码：`,
+                            message: buildStartPrompt(),
                             buttons: generatePasswordKeyboard(0),
                         });
                     }
@@ -369,7 +366,7 @@ export async function initTelegramBot(): Promise<void> {
 
                         const qrMessage = await client.sendFile(chatId, {
                             file: tempPath,
-                            caption: '🔐 **双重验证 (2FA) 设置**\n\n1. 请使用 Google Authenticator 或其他 2FA App 扫描此二维码。\n2. 扫描完成后，**请直接在此发送 App 生成的 6 位验证码**以激活 2FA。\n\n*提示：激活成功后此二维码将自动删除。*'
+                            caption: build2FASetupCaption()
                         });
 
                         userStates.set(senderId, {
@@ -380,7 +377,7 @@ export async function initTelegramBot(): Promise<void> {
                         fs.unlinkSync(tempPath);
                     } catch (e) {
                         console.error('生成 2FA 二维码失败:', e);
-                        await client.sendMessage(chatId, { message: '❌ 生成二维码失败，请检查控制台日志。' });
+                        await client.sendMessage(chatId, { message: MSG.AUTH_2FA_QR_FAIL });
                     }
                     return;
                 }
@@ -392,7 +389,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 if (text === '/storage') {
                     if (!isAuthenticated(senderId)) {
-                        await message.reply({ message: '🔐 请先发送 /start 验证密码' });
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;
                     }
                     await handleStorage(message);
@@ -401,7 +398,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 if (text === '/list' || text.startsWith('/list ')) {
                     if (!isAuthenticated(senderId)) {
-                        await message.reply({ message: '🔐 请先发送 /start 验证密码' });
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;
                     }
                     const args = text.split(' ').slice(1);
@@ -411,7 +408,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 if (text.startsWith('/delete ')) {
                     if (!isAuthenticated(senderId)) {
-                        await message.reply({ message: '🔐 请先发送 /start 验证密码' });
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;
                     }
                     const args = text.split(' ').slice(1);
@@ -421,7 +418,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 if (text === '/tasks' || text === '/task') {
                     if (!isAuthenticated(senderId)) {
-                        await message.reply({ message: '🔐 请先发送 /start 验证密码' });
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;
                     }
                     await handleTasks(message);
@@ -439,10 +436,10 @@ export async function initTelegramBot(): Promise<void> {
                         if (verified) {
                             if (userState.state === TelegramUserState.WAITING_2FA_SETUP) {
                                 await activate2FA();
-                                await message.reply({ message: '✅ 2FA 已成功激活！\n您的账户现在受到额外保护。' });
+                                await message.reply({ message: MSG.AUTH_2FA_ACTIVATED });
                             } else {
                                 await persistAuthenticatedUser(senderId);
-                                await message.reply({ message: '✅ 2FA 验证成功，欢迎回来！' });
+                                await message.reply({ message: MSG.AUTH_2FA_LOGIN_OK });
                             }
 
                             // Clean up sensitive messages
@@ -459,7 +456,7 @@ export async function initTelegramBot(): Promise<void> {
                             userStates.delete(senderId);
                             return;
                         } else {
-                            const errorMsg = await message.reply({ message: '❌ 验证码错误，请重新输入 6 位数字：' });
+                            const errorMsg = await message.reply({ message: MSG.AUTH_2FA_WRONG });
 
                             // Delete invalid code message and error message potentially? 
                             // Let's at least delete user message
@@ -479,7 +476,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 // Unauthenticated User Text
                 if (!isAuthenticated(senderId) && text && !text.startsWith('/')) {
-                    await message.reply({ message: '❓ 请发送 /start 使用键盘输入密码' });
+                    await message.reply({ message: MSG.UNKNOWN_TEXT });
                 }
             } catch (error) {
                 console.error('🤖 处理消息时发生意外错误:', error);
