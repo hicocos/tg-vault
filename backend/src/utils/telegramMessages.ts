@@ -482,32 +482,16 @@ export function buildConsolidatedStatus(
         '',
     ];
 
-    // 1. 渲染批量任务 (文件夹)
-    if (totalBatches > 0) {
-        batches.forEach(batch => {
-            const isDone = batch.completed === batch.totalFiles;
-            const icon = isDone ? (batch.failed === 0 ? '✅' : '⚠️') : '📂';
-            lines.push(`${icon} 📁 ${batch.folderName}`);
-            if (!isDone) {
-                const progress = generateProgressBar(batch.completed, batch.totalFiles);
-                lines.push(`    ${progress} (${batch.completed}/${batch.totalFiles})`);
-            } else {
-                lines.push(`    ✅ ${batch.successful}  ❌ ${batch.failed}`);
-            }
+    const activeSingles = singleFiles.filter(f => f.phase === 'downloading' || f.phase === 'saving' || f.phase === 'retrying');
+    const queuedSingles = singleFiles.filter(f => f.phase === 'queued');
+    const doneSingles = singleFiles.filter(f => f.phase === 'success' || f.phase === 'failed');
 
-            if (batch.queuePending && batch.queuePending > 0 && !isDone) {
-                lines.push(`    ⏳ 队列: ${batch.queuePending}`);
-            }
-            if (batch.providerName && isDone) {
-                lines.push(`    📍 ${getProviderDisplayName(batch.providerName)}`);
-            }
-        });
-        if (totalSingle > 0) lines.push('');
-    }
+    const activeBatches = batches.filter(b => b.completed < b.totalFiles);
+    const doneBatches = batches.filter(b => b.completed === b.totalFiles);
 
-    // 2. 渲染单文件任务
-    if (totalSingle > 0) {
-        singleFiles.forEach(file => {
+    // 1. 渲染正在进行的单文件任务
+    if (activeSingles.length > 0) {
+        activeSingles.forEach(file => {
             let icon: string;
             let detail: string;
 
@@ -537,6 +521,65 @@ export function buildConsolidatedStatus(
                 case 'queued':
                 default:
                     icon = '🕒'; detail = '排队'; break;
+            }
+
+            lines.push(`${icon} ${file.typeEmoji} ${file.fileName}`);
+            lines.push(`    └ ${detail}`);
+        });
+    }
+
+    // 2. 渲染批量任务 (文件夹)
+    if (activeBatches.length > 0 || doneBatches.length > 0) {
+        if (activeSingles.length > 0) lines.push('');
+
+        [...activeBatches, ...doneBatches].forEach(batch => {
+            const isDone = batch.completed === batch.totalFiles;
+            const icon = isDone ? (batch.failed === 0 ? '✅' : '⚠️') : '📂';
+            lines.push(`${icon} 📁 ${batch.folderName}`);
+            if (!isDone) {
+                const progress = generateProgressBar(batch.completed, batch.totalFiles);
+                lines.push(`    ${progress} (${batch.completed}/${batch.totalFiles})`);
+            } else {
+                lines.push(`    ✅ ${batch.successful}  ❌ ${batch.failed}`);
+            }
+
+            if (batch.queuePending && batch.queuePending > 0 && !isDone) {
+                lines.push(`    ⏳ 队列: ${batch.queuePending}`);
+            }
+            if (batch.providerName && isDone) {
+                lines.push(`    📍 ${getProviderDisplayName(batch.providerName)}`);
+            }
+        });
+    }
+
+    // 3. 渲染排队中的单文件任务（必须在正在进行任务下面）
+    if (queuedSingles.length > 0) {
+        if (activeSingles.length > 0 || totalBatches > 0) lines.push('');
+        queuedSingles.forEach(file => {
+            lines.push(`🕒 ${file.typeEmoji} ${file.fileName}`);
+            lines.push(`    └ 排队`);
+        });
+    }
+
+    // 4. 渲染已完成的单文件任务
+    if (doneSingles.length > 0) {
+        if (activeSingles.length > 0 || totalBatches > 0 || queuedSingles.length > 0) lines.push('');
+        doneSingles.forEach(file => {
+            let icon: string;
+            let detail: string;
+
+            switch (file.phase) {
+                case 'success':
+                    icon = '✅';
+                    const parts: string[] = [];
+                    if (file.size) parts.push(formatBytes(file.size));
+                    detail = parts.join(' · ') || '完成';
+                    break;
+                case 'failed':
+                default:
+                    icon = '❌';
+                    detail = file.error || '失败';
+                    break;
             }
 
             lines.push(`${icon} ${file.typeEmoji} ${file.fileName}`);
