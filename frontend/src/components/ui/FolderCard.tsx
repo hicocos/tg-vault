@@ -103,7 +103,7 @@ export const FolderCard = ({
                     )}
 
                     {!isSelectionMode && isFavorite && (
-                        <div className="absolute top-2 left-2 bg-yellow-400/90 backdrop-blur-md p-1.5 rounded-full border border-yellow-300/50 shadow-sm z-10">
+                        <div className="absolute top-2 right-2 bg-yellow-400/90 backdrop-blur-md p-1.5 rounded-full border border-yellow-300/50 shadow-sm z-10">
                             <Star className="h-3 w-3 text-yellow-700 fill-current" />
                         </div>
                     )}
