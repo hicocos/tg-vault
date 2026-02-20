@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS files (
     height INT,
     source VARCHAR(50) DEFAULT 'web',
     folder VARCHAR(255),  -- 多文件上传时的文件夹名称
+    is_favorite BOOLEAN DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS files (
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_files_type ON files(type);
 CREATE INDEX IF NOT EXISTS idx_files_created_at ON files(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_files_is_favorite ON files(is_favorite);
 
 -- API Keys 表
 CREATE TABLE IF NOT EXISTS api_keys (

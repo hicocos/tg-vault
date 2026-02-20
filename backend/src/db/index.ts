@@ -15,6 +15,19 @@ export const pool = new Pool({
     connectionString: process.env.DATABASE_URL || 'postgresql://foomclous:password@localhost:5432/foomclous',
 });
 
+async function ensureFavoritesColumn() {
+    try {
+        await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS is_favorite BOOLEAN DEFAULT false`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_files_is_favorite ON files(is_favorite)`);
+    } catch (err: any) {
+        if (err?.code === '42P01') {
+            return;
+        }
+        console.error('❌ 数据库迁移失败 (收藏字段):', err);
+        throw err;
+    }
+}
+
 // 自动初始化数据库表结构
 async function initializeDatabase() {
     try {
@@ -60,6 +73,8 @@ async function initializeDatabase() {
                 throw err;
             }
         }
+
+        await ensureFavoritesColumn();
 
         console.log('✅ 数据库表结构初始化完成');
     } catch (err: any) {
