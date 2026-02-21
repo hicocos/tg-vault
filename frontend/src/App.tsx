@@ -497,6 +497,7 @@ function App() {
       const matchesCategory =
         currentCategory === "favorites" ||
         currentCategory === "all" ||
+        (currentCategory === "ytdlp" && file.folder === "ytdlp") ||
         (currentCategory === "media" && ["image", "video", "audio"].includes(file.type)) ||
         (currentCategory === "image" && file.type === "image") ||
         (currentCategory === "video" && file.type === "video") ||

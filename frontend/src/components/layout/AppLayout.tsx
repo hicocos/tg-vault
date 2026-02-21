@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Folder, Settings, Menu, Image as ImageIcon, Video, Music, FileText, ChevronRight, X, Star } from "lucide-react";
+import { Folder, Settings, Menu, Image as ImageIcon, Video, Music, FileText, ChevronRight, X, Star, Download } from "lucide-react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
@@ -76,6 +76,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
             ]
         },
         { id: "document", icon: FileText, label: t("sidebar.categories.docs") },
+        { id: "ytdlp", icon: Download, label: "YT-DLP" },
         { id: "favorites", icon: Star, label: t("sidebar.favorites") || "Favorites" },
         { id: "settings", icon: Settings, label: t("sidebar.settings") },
     ];
@@ -88,6 +89,13 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
                 <div className={cn("flex-1 space-y-1 overflow-y-auto scrollbar-hide", mobile ? "" : "px-4 py-6")}>
                     {categories.map((cat) => (
                         <React.Fragment key={cat.id}>
+                            {cat.id === 'ytdlp' && !collapsed && (
+                                <div className="px-3 pt-3 pb-1">
+                                    <div className="text-[11px] font-semibold tracking-wider text-muted-foreground/80 uppercase">
+                                        YT-DLP
+                                    </div>
+                                </div>
+                            )}
                             {cat.hasSubItems ? (
                                 <>
                                     <SidebarItem
