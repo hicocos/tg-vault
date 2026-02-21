@@ -391,7 +391,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 // /ytdlp <url>
                 {
-                    const match = text.match(/^\/ytdlp(?:@\w+)?(?:\s+(.*))?$/i);
+                    const match = text.match(/^\s*\/ytdlp(?:@\w+)?(?:\s+([\s\S]*))?\s*$/i);
                     if (match) {
                         console.log(`🤖 /ytdlp command received from ${senderId}: ${text}`);
                     if (!isAuthenticated(senderId)) {
