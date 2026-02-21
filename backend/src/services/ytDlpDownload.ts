@@ -7,6 +7,7 @@ import os from 'os';
 import { query } from '../db/index.js';
 import { storageManager } from './storage.js';
 import { formatBytes, getFileType, getMimeTypeFromFilename, sanitizeFilename } from '../utils/telegramUtils.js';
+import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
 
 type YtDlpTaskStatus = 'pending' | 'active' | 'success' | 'failed';
 
@@ -142,6 +143,14 @@ async function uploadDownloadedFile(localFilePath: string, originalFileName: str
     const stats = await fs.promises.stat(localFilePath);
     const size = stats.size;
 
+    let thumbnailPath: string | null = null;
+    let dimensions: { width?: number; height?: number } = {};
+    try {
+        thumbnailPath = await generateThumbnail(localFilePath, storedName, mimeType);
+        dimensions = await getImageDimensions(localFilePath, mimeType);
+    } catch {
+    }
+
     let finalPath = localFilePath;
     if (provider.name !== 'local') {
         finalPath = await provider.saveFile(localFilePath, storedName, mimeType);
@@ -156,7 +165,7 @@ async function uploadDownloadedFile(localFilePath: string, originalFileName: str
     await query(`
         INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-    `, [safeName, storedName, fileType, mimeType, size, finalPath, null, null, null, provider.name, folder, activeAccountId]);
+    `, [safeName, storedName, fileType, mimeType, size, finalPath, thumbnailPath, dimensions.width, dimensions.height, provider.name, folder, activeAccountId]);
 
     return { finalPath, providerName: provider.name, size, storedName, folder };
 }
