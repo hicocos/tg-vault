@@ -97,8 +97,11 @@ export function sanitizeFilename(name: string): string {
 
     // Take ONLY the first line if it's a multi-line caption
     const firstLine = name.split('\n')[0].trim();
+    const originalExt = path.extname(firstLine);
+    const ext = (originalExt && originalExt.length <= 15) ? originalExt : '';
+    const withoutExt = ext ? firstLine.slice(0, -ext.length) : firstLine;
 
-    let sanitized = firstLine
+    let sanitized = withoutExt
         .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_') // Remove invalid chars
         .replace(/\s+/g, ' ')                   // Collapse whitespace
         .trim();
@@ -108,14 +111,18 @@ export function sanitizeFilename(name: string): string {
 
     if (!sanitized) return 'unknown';
 
-    // Limit character length first
-    let result = sanitized.substring(0, 50);
+    // Limit character length first (preserve extension)
+    const MAX_CHARS = 50;
+    const baseMaxChars = Math.max(1, MAX_CHARS - ext.length);
+    let base = sanitized.substring(0, baseMaxChars);
+    let result = `${base}${ext}`;
 
     // Further limit by byte length (UTF-8) to ensure it stays well under the 255-byte limit
     // 150 bytes is a safe limit for most filesystems considering the prefix paths
     const MAX_BYTES = 150;
-    while (Buffer.byteLength(result, 'utf8') > MAX_BYTES && result.length > 0) {
-        result = result.substring(0, result.length - 1);
+    while (Buffer.byteLength(result, 'utf8') > MAX_BYTES && base.length > 0) {
+        base = base.substring(0, base.length - 1);
+        result = `${base}${ext}`;
     }
 
     return result || 'unknown';
