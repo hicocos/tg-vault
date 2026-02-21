@@ -343,11 +343,6 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         }
     };
 
-    // 计算 FoomClous 在服务器中的占比
-    const foomclousPercent = storageStats
-        ? Math.round((storageStats.foomclous.usedBytes / storageStats.server.totalBytes) * 100)
-        : 0;
-
     const handleSetup2FA = async () => {
         if (show2FA) {
             setShow2FA(false);
@@ -1547,7 +1542,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
                             {/* FoomClous 使用量 */}
                             <div className="space-y-3">
-                                <div className="flex items-center justify-between">
+                                <div className="flex items-center">
                                     <div className="flex items-center gap-3">
                                         <div className="h-10 w-10 rounded-full bg-blue-500/10 flex items-center justify-center text-blue-500">
                                             <Cloud className="h-5 w-5" />
@@ -1562,21 +1557,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                             </div>
                                         </div>
                                     </div>
-                                    <span className="text-lg font-semibold text-blue-500">
-                                        {foomclousPercent}%
-                                    </span>
                                 </div>
-                                <div className="h-3 w-full bg-secondary/50 rounded-full overflow-hidden">
-                                    <motion.div
-                                        initial={{ width: 0 }}
-                                        animate={{ width: `${Math.min(foomclousPercent, 100)}%` }}
-                                        transition={{ duration: 1, ease: "easeOut" }}
-                                        className="h-full bg-blue-500 rounded-full"
-                                    />
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    FoomClous 占用服务器总存储的 {foomclousPercent}%
-                                </p>
                             </div>
 
                             {/* 可用空间 */}
