@@ -25,7 +25,8 @@
 ### 1. 克隆仓库
 ```bash
 git clone https://github.com/nccttc/FoomClous.git
-cd FoomClous
+mv FoomClous foomclous
+cd foomclous
 ```
 
 ### 2. 配置环境变量
