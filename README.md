@@ -22,9 +22,19 @@
 
 这是最简单、最推荐的方式。
 
+### 0. 一键部署（推荐）
+
+如果你不想手动执行构建/编排命令，可以直接运行一键脚本（全程中文提示，中途按提示输入参数即可）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nccttc/FoomClous/main/install.sh | bash
+```
+
+脚本会交互询问并生成必要配置（如 `VITE_API_URL`、`DOMAIN`、`CORS_ORIGIN`、`.env`、`docker-compose.prod.yml`、`init.sql`），然后自动构建镜像并启动服务。
+
 ### 1. 克隆仓库
 ```bash
-git clone https://github.com/nccttc/foomclous.git
+git clone https://github.com/nccttc/FoomClous.git
 cd foomclous
 ```
 
