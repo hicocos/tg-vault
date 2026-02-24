@@ -8,6 +8,121 @@ require_cmd() {
   fi
 }
 
+has_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+need_root_or_sudo() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if has_cmd sudo; then
+      SUDO=(sudo)
+    else
+      echo "需要 root 权限或 sudo 才能安装依赖。请使用 root 运行，或先安装 sudo。" >&2
+      exit 1
+    fi
+  else
+    SUDO=()
+  fi
+}
+
+detect_os_id() {
+  if [[ -f /etc/os-release ]]; then
+    . /etc/os-release
+    echo "${ID:-}"
+  else
+    echo ""
+  fi
+}
+
+start_docker_service() {
+  if has_cmd systemctl; then
+    "${SUDO[@]}" systemctl enable --now docker >/dev/null 2>&1 || "${SUDO[@]}" systemctl start docker >/dev/null 2>&1 || true
+    return
+  fi
+  if has_cmd service; then
+    "${SUDO[@]}" service docker start >/dev/null 2>&1 || true
+    return
+  fi
+  if [[ -x /etc/init.d/docker ]]; then
+    "${SUDO[@]}" /etc/init.d/docker start >/dev/null 2>&1 || true
+  fi
+}
+
+install_docker() {
+  local os_id
+  os_id="$(detect_os_id)"
+  echo "检测到系统：${os_id:-unknown}"
+
+  if ! has_cmd mktemp; then
+    echo "缺少必要命令：mktemp（自动安装 Docker 需要它）。请先安装 mktemp 后重试。" >&2
+    exit 1
+  fi
+
+  if has_cmd apk; then
+    echo "正在使用 apk 安装 Docker..."
+    "${SUDO[@]}" apk add --no-cache docker docker-cli-compose >/dev/null 2>&1 || "${SUDO[@]}" apk add --no-cache docker docker-compose
+    start_docker_service
+    return
+  fi
+
+  if has_cmd apt-get || has_cmd yum || has_cmd dnf; then
+    echo "将使用 Docker 官方安装脚本进行安装（需要联网下载）。"
+    local installer
+    installer="$(mktemp)"
+    "${DOWNLOADER[@]}" https://get.docker.com > "${installer}"
+    "${SUDO[@]}" sh "${installer}"
+    rm -f "${installer}" >/dev/null 2>&1 || true
+    start_docker_service
+    return
+  fi
+
+  echo "无法识别系统包管理器，无法自动安装 Docker。请手动安装后重试。" >&2
+  exit 1
+}
+
+ensure_docker_and_compose() {
+  if ! has_cmd docker; then
+    echo "缺少必要命令：docker" >&2
+    read -r -p "是否自动安装 Docker？(y/N)：" AUTO_INSTALL
+    if [[ "${AUTO_INSTALL}" == "y" || "${AUTO_INSTALL}" == "Y" ]]; then
+      need_root_or_sudo
+      install_docker
+    else
+      echo "已取消。请先安装 Docker 后再运行本脚本。" >&2
+      exit 1
+    fi
+  fi
+
+  if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE=(docker compose)
+    return
+  fi
+  if has_cmd docker-compose; then
+    DOCKER_COMPOSE=(docker-compose)
+    return
+  fi
+
+  echo "缺少必要命令：docker compose（或 docker-compose）" >&2
+  read -r -p "是否尝试自动安装 Docker Compose？(y/N)：" AUTO_INSTALL_COMPOSE
+  if [[ "${AUTO_INSTALL_COMPOSE}" == "y" || "${AUTO_INSTALL_COMPOSE}" == "Y" ]]; then
+    need_root_or_sudo
+    install_docker
+    if docker compose version >/dev/null 2>&1; then
+      DOCKER_COMPOSE=(docker compose)
+      return
+    fi
+    if has_cmd docker-compose; then
+      DOCKER_COMPOSE=(docker-compose)
+      return
+    fi
+    echo "Docker Compose 安装后仍不可用，请手动检查：docker compose version" >&2
+    exit 1
+  fi
+
+  echo "已取消。请先安装 Docker Compose 后再运行本脚本。" >&2
+  exit 1
+}
+
 require_cmd mkdir
 require_cmd rm
 
@@ -20,16 +135,7 @@ else
   exit 1
 fi
 
-require_cmd docker
-
-if docker compose version >/dev/null 2>&1; then
-  DOCKER_COMPOSE=(docker compose)
-elif command -v docker-compose >/dev/null 2>&1; then
-  DOCKER_COMPOSE=(docker-compose)
-else
-  echo "缺少必要命令：docker compose（或 docker-compose）" >&2
-  exit 1
-fi
+ensure_docker_and_compose
 
 REPO_SLUG_DEFAULT="nccttc/foomclous"
 BRANCH_DEFAULT="main"
