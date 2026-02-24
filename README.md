@@ -24,7 +24,7 @@
 
 ### 1. 克隆仓库
 ```bash
-git clone https://github.com/nccttc/FoomClous.git
+git clone https://github.com/nccttc/FoomClous.git foomclous
 cd foomclous
 ```
 
