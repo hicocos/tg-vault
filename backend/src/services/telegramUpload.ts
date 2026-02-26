@@ -952,18 +952,18 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         // 静默模式：多文件转发时也要在阈值下触发静默提示，并统计总任务数
         if (message.chatId) {
             const chatId = message.chatId;
-            const stats = downloadQueue.getStats();
-            const totalTasks = stats.active + stats.pending + 1;
             const chatIdStr = chatId.toString();
-            const silentActive = lastStatusMessageIsSilent.get(chatIdStr);
-            if (silentActive || totalTasks >= 3) {
-                await runStatusAction(chatId, async () => {
-                    await ensureSilentNotice(client, message, totalTasks);
-
-                    const sess = silentActive ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
+            await runStatusAction(chatId, async () => {
+                const stats = downloadQueue.getStats();
+                const totalTasks = stats.active + stats.pending + 1;
+                const isSilent = lastStatusMessageIsSilent.get(chatIdStr) || silentSessionMap.has(chatIdStr);
+                if (isSilent || totalTasks >= 3) {
+                    const sess = isSilent ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
                     sess.total = Math.max(sess.total, totalTasks);
-                });
-            }
+
+                    await ensureSilentNotice(client, message, totalTasks);
+                }
+            });
         }
     } else {
         let finalFileName = fileName;
@@ -1008,13 +1008,12 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
 
             const totalTasks = stats.active + stats.pending + 1;
-            const silentActive = lastStatusMessageIsSilent.get(chatIdStr);
-            if (silentActive || totalTasks >= 3) {
-                await ensureSilentNotice(client, message, totalTasks);
-
-                // 静默模式下：把当前新任务计入静默会话总数
-                const sess = silentActive ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
+            const isSilent = lastStatusMessageIsSilent.get(chatIdStr) || silentSessionMap.has(chatIdStr);
+            if (isSilent || totalTasks >= 3) {
+                const sess = isSilent ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
                 sess.total = Math.max(sess.total, totalTasks);
+
+                await ensureSilentNotice(client, message, totalTasks);
             } else if (useConsolidated()) {
                 // 多文件并行或混合模式：使用合并状态消息
                 await refreshConsolidatedMessage(client, chatId, message);
