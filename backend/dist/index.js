@@ -2542,6 +2542,9 @@ async function checkAndResetSession(client2, chatId) {
 }
 async function refreshConsolidatedMessage(client2, chatId, replyTo) {
   const chatIdStr = chatId.toString();
+  if (lastStatusMessageIsSilent.get(chatIdStr)) {
+    return;
+  }
   const files = getConsolidatedFiles(chatIdStr);
   const batches = getConsolidatedBatches(chatIdStr);
   if (files.length === 0 && batches.length === 0) return;

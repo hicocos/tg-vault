@@ -401,6 +401,12 @@ async function checkAndResetSession(client: TelegramClient, chatId: Api.TypeEnti
 /** 更新合并状态消息 */
 async function refreshConsolidatedMessage(client: TelegramClient, chatId: Api.TypeEntityLike, replyTo?: Api.Message) {
     const chatIdStr = chatId.toString();
+
+    // 静默模式下不更新合并状态消息，避免覆盖静默通知
+    if (lastStatusMessageIsSilent.get(chatIdStr)) {
+        return;
+    }
+
     const files = getConsolidatedFiles(chatIdStr);
     const batches = getConsolidatedBatches(chatIdStr);
 
