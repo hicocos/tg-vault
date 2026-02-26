@@ -418,6 +418,15 @@ function isAllConsolidatedTasksDone(chatId: string): boolean {
     return filesDone && batchesDone;
 }
 
+function getOutstandingTaskCount(chatIdStr: string): number {
+    const files = getConsolidatedFiles(chatIdStr);
+    const batches = getConsolidatedBatches(chatIdStr);
+
+    const outstandingFiles = files.filter(f => f.phase !== 'success' && f.phase !== 'failed').length;
+    const outstandingBatchFiles = batches.reduce((acc, b) => acc + Math.max(0, b.totalFiles - b.completed), 0);
+    return outstandingFiles + outstandingBatchFiles;
+}
+
 
 
 /** Check if this is a start of a new session and cleanup old statuses */
@@ -985,8 +994,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const chatId = message.chatId;
             const chatIdStr = chatId.toString();
             await runStatusAction(chatId, async () => {
-                const stats = downloadQueue.getStats();
-                const totalTasks = stats.active + stats.pending + 1;
+                const totalTasks = Math.max(1, getOutstandingTaskCount(chatIdStr));
                 const isSilent = silentSessionMap.has(chatIdStr);
                 if (isSilent || totalTasks >= 3) {
                     const sess = isSilent ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
@@ -1035,10 +1043,9 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         const useConsolidated = () => getActiveUploadCount(chatIdStr) >= 2 || getActiveBatchCount(chatIdStr) > 0;
 
         await runStatusAction(chatId, async () => {
-            const stats = downloadQueue.getStats();
             const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
 
-            const totalTasks = stats.active + stats.pending + 1;
+            const totalTasks = Math.max(1, getOutstandingTaskCount(chatIdStr));
             const isSilent = silentSessionMap.has(chatIdStr);
             if (isSilent || totalTasks >= 3) {
                 const sess = isSilent ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
