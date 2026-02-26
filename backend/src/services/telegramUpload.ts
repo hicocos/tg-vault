@@ -941,12 +941,14 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const chatId = message.chatId;
             const stats = downloadQueue.getStats();
             const totalTasks = stats.active + stats.pending + 1;
-            if (totalTasks >= 3) {
+            const chatIdStr = chatId.toString();
+            const silentActive = lastStatusMessageIsSilent.get(chatIdStr);
+            if (silentActive || totalTasks >= 3) {
                 await runStatusAction(chatId, async () => {
                     await ensureSilentNotice(client, message, totalTasks);
                 });
 
-                const sess = getSilentSession(chatId.toString());
+                const sess = getSilentSession(chatIdStr);
                 sess.total += 1;
             }
         }
@@ -993,7 +995,8 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
 
             const totalTasks = stats.active + stats.pending + 1;
-            if (totalTasks >= 3) {
+            const silentActive = lastStatusMessageIsSilent.get(chatIdStr);
+            if (silentActive || totalTasks >= 3) {
                 await ensureSilentNotice(client, message, totalTasks);
 
                 // 静默模式下：把当前新任务计入静默会话总数
@@ -1015,7 +1018,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         });
 
         const stats = downloadQueue.getStats();
-        if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0)) {
+        if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0) && !lastStatusMessageIsSilent.get(chatIdStr)) {
             await runStatusAction(chatId, async () => {
                 await safeEditMessage(client, chatId, {
                     message: statusMsg!.id,
@@ -1032,6 +1035,10 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             lastUpdateTime = now;
 
             updateUploadPhase(chatId.toString(), uploadId, { phase: 'downloading', downloaded, total });
+
+            if (lastStatusMessageIsSilent.get(chatIdStr)) {
+                return;
+            }
 
             if (useConsolidated()) {
                 await runStatusAction(chatId, async () => {
@@ -1071,7 +1078,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await refreshConsolidatedMessage(client, chatId);
                     });
-                } else if (statusMsg) {
+                } else if (statusMsg && !lastStatusMessageIsSilent.get(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
                         await safeEditMessage(client, chatId, {
                             message: statusMsg!.id,
@@ -1116,7 +1123,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await refreshConsolidatedMessage(client, chatId);
                     });
-                } else if (statusMsg) {
+                } else if (statusMsg && !lastStatusMessageIsSilent.get(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
@@ -1151,7 +1158,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await refreshConsolidatedMessage(client, chatId);
                     });
-                } else if (statusMsg) {
+                } else if (statusMsg && !lastStatusMessageIsSilent.get(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
@@ -1175,7 +1182,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await refreshConsolidatedMessage(client, chatId);
                     });
-                } else if (statusMsg) {
+                } else if (statusMsg && !lastStatusMessageIsSilent.get(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
