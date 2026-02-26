@@ -239,6 +239,12 @@ function getSilentSession(chatIdStr: string): SilentSession {
     return s;
 }
 
+function startSilentSession(chatIdStr: string, total: number): SilentSession {
+    const s = { total, completed: 0, failed: 0 };
+    silentSessionMap.set(chatIdStr, s);
+    return s;
+}
+
 async function finalizeSilentSessionIfDone(client: TelegramClient, chatId: Api.TypeEntityLike) {
     const chatIdStr = chatId.toString();
     const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
@@ -948,8 +954,8 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await ensureSilentNotice(client, message, totalTasks);
                 });
 
-                const sess = getSilentSession(chatIdStr);
-                sess.total += 1;
+                const sess = silentActive ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
+                sess.total = Math.max(sess.total, totalTasks);
             }
         }
     } else {
@@ -1000,8 +1006,8 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 await ensureSilentNotice(client, message, totalTasks);
 
                 // 静默模式下：把当前新任务计入静默会话总数
-                const sess = getSilentSession(chatIdStr);
-                sess.total += 1;
+                const sess = silentActive ? getSilentSession(chatIdStr) : startSilentSession(chatIdStr, totalTasks);
+                sess.total = Math.max(sess.total, totalTasks);
             } else if (useConsolidated()) {
                 // 多文件并行或混合模式：使用合并状态消息
                 await refreshConsolidatedMessage(client, chatId, message);
