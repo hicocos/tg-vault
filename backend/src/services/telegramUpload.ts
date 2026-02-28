@@ -313,28 +313,38 @@ async function finalizeSilentSessionIfDone(client: TelegramClient, chatId: Api.T
 }
 
 /**
+ * 计算后台文件总数（单文件 + 批量文件）
+ */
+function getBackgroundFileCount(chatIdStr: string): number {
+    const singleFiles = getActiveUploadCount(chatIdStr);
+    const batches = getConsolidatedBatches(chatIdStr);
+    const batchFiles = batches.reduce((sum, b) => sum + b.totalFiles, 0);
+    return singleFiles + batchFiles;
+}
+
+/**
  * 集中化静默模式触发逻辑
- * 在每次注册新任务后调用，检查是否需要进入静默模式
+ * 后台文件数量超过 3 个时进入静默模式
  */
 async function trySilentMode(client: TelegramClient, chatId: Api.TypeEntityLike, message: Api.Message) {
     const chatIdStr = chatId.toString();
-    const totalTasks = getActiveUploadCount(chatIdStr) + getActiveBatchCount(chatIdStr);
+    const fileCount = getBackgroundFileCount(chatIdStr);
     const isSilent = silentSessionMap.has(chatIdStr);
 
-    console.log(`[TG][silent] tryCheck chat=${chatIdStr} totalTasks=${totalTasks} isSilent=${isSilent}`);
+    console.log(`[TG][silent] tryCheck chat=${chatIdStr} fileCount=${fileCount} isSilent=${isSilent}`);
 
-    if (totalTasks >= 3) {
+    if (fileCount > 3) {
         if (!isSilent) {
             // 首次进入静默模式
             await deleteLastStatusMessage(client, chatId);
-            startSilentSession(chatIdStr, totalTasks);
-            console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} tasks=${totalTasks}`);
+            startSilentSession(chatIdStr, fileCount);
+            console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
         } else {
             // 已在静默模式，更新计数
             const sess = getSilentSession(chatIdStr);
-            sess.total = Math.max(sess.total, totalTasks);
+            sess.total = Math.max(sess.total, fileCount);
         }
-        await ensureSilentNotice(client, message, totalTasks);
+        await ensureSilentNotice(client, message, fileCount);
     }
 }
 
