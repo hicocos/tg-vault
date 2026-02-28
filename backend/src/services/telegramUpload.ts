@@ -313,13 +313,20 @@ async function finalizeSilentSessionIfDone(client: TelegramClient, chatId: Api.T
 }
 
 /**
- * 计算后台文件总数（单文件 + 批量文件）
+ * 计算后台文件总数 = 下载队列中的文件(active+pending) + 已注册但未入队的文件
  */
 function getBackgroundFileCount(chatIdStr: string): number {
-    const singleFiles = getActiveUploadCount(chatIdStr);
+    // 下载队列中正在处理和排队的文件
+    const queueStats = downloadQueue.getStats();
+    // 已注册到追踪器但可能尚未入队的单文件
+    const trackedFiles = getActiveUploadCount(chatIdStr);
+    // 已注册到追踪器的批量文件
     const batches = getConsolidatedBatches(chatIdStr);
     const batchFiles = batches.reduce((sum, b) => sum + b.totalFiles, 0);
-    return singleFiles + batchFiles;
+    // 取较大值：队列中的文件 vs 追踪器中的文件
+    const count = Math.max(queueStats.total, trackedFiles + batchFiles);
+    console.log(`[TG][silent] fileCount: queue=${queueStats.total}(active=${queueStats.active},pending=${queueStats.pending}) tracked=${trackedFiles}+${batchFiles} => ${count}`);
+    return count;
 }
 
 /**
