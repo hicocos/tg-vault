@@ -865,13 +865,15 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
         file.targetDir = targetDir;
     }
 
-    // 立即显示合并状态
-    await runStatusAction(chatId, async () => {
-        const stats = downloadQueue.getStats();
-        // 如果是大量文件且之前是静默模式，可能需要保持静默或发送静默通知
-        // 这里简化逻辑：直接使用合并视图
-        await refreshConsolidatedMessage(client, chatId, firstMessage);
-    });
+    // 立即显示合并状态（静默模式下跳过）
+    if (!silentSessionMap.has(chatId.toString())) {
+        await runStatusAction(chatId, async () => {
+            const stats = downloadQueue.getStats();
+            // 如果是大量文件且之前是静默模式，可能需要保持静默或发送静默通知
+            // 这里简化逻辑：直接使用合并视图
+            await refreshConsolidatedMessage(client, chatId, firstMessage);
+        });
+    }
 
     // 批量上传时的回调，用于更新 Batch Entry
     const onBatchProgress = async () => {
@@ -887,9 +889,12 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
             queuePending: stats.pending
         });
 
-        await runStatusAction(chatId, async () => {
-            await refreshConsolidatedMessage(client, chatId);
-        });
+        // 静默模式下跳过合并状态更新
+        if (!silentSessionMap.has(chatId.toString())) {
+            await runStatusAction(chatId, async () => {
+                await refreshConsolidatedMessage(client, chatId);
+            });
+        }
     };
 
     // 定时更新状态（作为补充，防止回调太频繁或丢失）
@@ -1143,7 +1148,9 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
 
             if (useConsolidated()) {
                 await runStatusAction(chatId, async () => {
-                    await refreshConsolidatedMessage(client, chatId);
+                    if (!silentSessionMap.has(chatIdStr)) {
+                        await refreshConsolidatedMessage(client, chatId);
+                    }
                 });
             } else if (statusMsg) {
                 await runStatusAction(chatId, async () => {
@@ -1175,9 +1182,11 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
 
                 // 保存阶段
                 updateUploadPhase(chatId.toString(), uploadId, { phase: 'saving' });
-                if (useConsolidated()) {
+                if (useConsolidated() && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
-                        await refreshConsolidatedMessage(client, chatId);
+                        if (!silentSessionMap.has(chatIdStr)) {
+                            await refreshConsolidatedMessage(client, chatId);
+                        }
                     });
                 } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
@@ -1255,9 +1264,11 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 lastLocalPath = undefined;
 
                 updateUploadPhase(chatId.toString(), uploadId, { phase: 'retrying' });
-                if (useConsolidated()) {
+                if (useConsolidated() && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
-                        await refreshConsolidatedMessage(client, chatId);
+                        if (!silentSessionMap.has(chatIdStr)) {
+                            await refreshConsolidatedMessage(client, chatId);
+                        }
                     });
                 } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
@@ -1279,9 +1290,11 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await finalizeSilentSessionIfDone(client, chatId);
                 }
                 updateUploadPhase(chatIdStr, uploadId, { phase: 'failed', error: lastError || '未知错误' });
-                if (useConsolidated()) {
+                if (useConsolidated() && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
-                        await refreshConsolidatedMessage(client, chatId);
+                        if (!silentSessionMap.has(chatIdStr)) {
+                            await refreshConsolidatedMessage(client, chatId);
+                        }
                     });
                 } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
                     await runStatusAction(chatId, async () => {
