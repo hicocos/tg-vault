@@ -291,14 +291,16 @@ async function finalizeSilentSessionIfDone(client: TelegramClient, chatId: Api.T
     const chatIdStr = chatId.toString();
     if (!silentSessionMap.has(chatIdStr)) return;
 
-    const s = silentSessionMap.get(chatIdStr);
     const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
-    if (!s || !silentMsgId || s.total <= 0) return;
+    if (!silentMsgId) return;
 
-    if (s.completed >= s.total) {
-        const text = buildSilentAllTasksComplete(s.failed);
+    const outstanding = getOutstandingTaskCount(chatIdStr);
+    if (outstanding === 0) {
+        const s = silentSessionMap.get(chatIdStr);
+        const text = buildSilentAllTasksComplete(s?.failed || 0);
         await safeEditMessage(client, chatId, { message: silentMsgId, text });
         silentSessionMap.delete(chatIdStr);
+        silentNoticeMessageIdMap.delete(chatIdStr);
     }
 }
 
