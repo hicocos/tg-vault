@@ -2,7 +2,6 @@ import { TelegramClient, Api } from 'telegram';
 import { NewMessageEvent } from 'telegram/events/index.js';
 import fs from 'fs';
 import path from 'path';
-import { v4 as uuidv4 } from 'uuid';
 import { query } from '../db/index.js';
 import { generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
 import { storageManager } from '../services/storage.js';
@@ -164,7 +163,7 @@ class BetterDownloadQueue {
     private maxConcurrent = 2; // 用户要求并发限制为 2
 
     async add(fileName: string, execute: () => Promise<void>, totalSize: number = 0): Promise<void> {
-        const id = uuidv4();
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         return new Promise((resolve, reject) => {
             const task: DownloadTask = {
                 id,
@@ -713,7 +712,7 @@ async function downloadAndSaveFile(
     onProgress?: (downloaded: number, total: number) => void
 ): Promise<{ filePath: string; actualSize: number; storedName: string } | null> {
     const ext = path.extname(fileName) || '';
-    const storedName = `${uuidv4()}${ext}`;
+    const storedName = fileName;
     let saveDir = targetDir || UPLOAD_DIR;
 
     if (!fs.existsSync(saveDir)) {
@@ -748,7 +747,7 @@ async function downloadAndSaveFile(
         writeStream.end();
 
         await new Promise<void>((resolve, reject) => {
-            writeStream.on('finish', resolve);
+            writeStream.on('finish', resolve); S
             writeStream.on('error', reject);
         });
 

@@ -2283,7 +2283,13 @@ var floodWaitUntil = 0;
 async function safeEditMessage(client2, chatId, params) {
   if (Date.now() < floodWaitUntil) return null;
   try {
-    return await client2.editMessage(chatId, params);
+    const result = await client2.editMessage(chatId, params);
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const chatIdStr = chatId.toString();
+      const isSilent = silentSessionMap.has(chatIdStr);
+      console.log(`[TG][status] edit chat=${chatIdStr} msg=${params?.message} silent=${isSilent}`);
+    }
+    return result;
   } catch (e) {
     if (e.errorMessage === "FLOOD" || e.errorMessage?.includes("FLOOD_WAIT")) {
       const seconds = e.seconds || 30;
@@ -2293,28 +2299,69 @@ async function safeEditMessage(client2, chatId, params) {
     return null;
   }
 }
-async function ensureSilentNotice(client2, message, fileCount) {
-  const chatId = message.chatId;
-  if (!chatId) return;
+var silentNoticePromiseMap = /* @__PURE__ */ new Map();
+async function ensureSilentNotice(client2, chatId, fileCount, replyToMsg) {
   const chatIdStr = chatId.toString();
-  const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
+  const silentSessionActive = silentSessionMap.has(chatIdStr);
+  if (!silentSessionActive) return;
+  if (silentNoticePromiseMap.has(chatIdStr)) {
+    try {
+      await silentNoticePromiseMap.get(chatIdStr);
+    } catch (e) {
+    }
+  }
+  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
   const now = Date.now();
   const lastTime = lastSilentNotificationTimeMap.get(chatIdStr) || 0;
-  if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !lastMsgId) {
-    await deleteLastStatusMessage(client2, chatId);
-    const sMsg = await safeReply(message, {
-      message: buildSilentModeNotice(fileCount)
-    });
-    if (sMsg) {
-      updateLastStatusMessageId(chatId, sMsg.id, true);
-    }
+  if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !silentMsgId) {
     lastSilentNotificationTimeMap.set(chatIdStr, now);
+    const text = buildSilentModeNotice(fileCount);
+    const sendPromise = (async () => {
+      let sMsg;
+      if (replyToMsg) {
+        sMsg = await safeReply(replyToMsg, { message: text });
+      }
+      if (!sMsg) {
+        try {
+          sMsg = await client2.sendMessage(chatId, { message: text });
+        } catch (e) {
+          console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
+        }
+      }
+      if (sMsg) {
+        silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+        console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
+      }
+      return sMsg;
+    })();
+    silentNoticePromiseMap.set(chatIdStr, sendPromise);
+    try {
+      await sendPromise;
+    } finally {
+      if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
+        silentNoticePromiseMap.delete(chatIdStr);
+      }
+    }
+    return;
+  }
+  if (silentMsgId) {
+    await safeEditMessage(client2, chatId, {
+      message: silentMsgId,
+      text: buildSilentModeNotice(fileCount)
+    });
   }
 }
 async function safeReply(message, params) {
   if (Date.now() < floodWaitUntil) return null;
   try {
-    return await message.reply(params);
+    const result = await message.reply(params);
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const chatIdStr = message.chatId?.toString() || "unknown";
+      const isSilent = silentSessionMap.has(chatIdStr);
+      const msgId = result?.id;
+      console.log(`[TG][status] reply chat=${chatIdStr} msg=${msgId} silent=${isSilent}`);
+    }
+    return result;
   } catch (e) {
     if (e.errorMessage === "FLOOD" || e.errorMessage?.includes("FLOOD_WAIT")) {
       const seconds = e.seconds || 30;
@@ -2419,7 +2466,7 @@ async function runStatusAction(chatId, action) {
   return nextLock;
 }
 var lastStatusMessageIdMap = /* @__PURE__ */ new Map();
-var lastStatusMessageIsSilent = /* @__PURE__ */ new Map();
+var silentNoticeMessageIdMap = /* @__PURE__ */ new Map();
 var silentSessionMap = /* @__PURE__ */ new Map();
 function getSilentSession(chatIdStr) {
   let s = silentSessionMap.get(chatIdStr);
@@ -2429,40 +2476,91 @@ function getSilentSession(chatIdStr) {
   }
   return s;
 }
+function startSilentSession(chatIdStr, total) {
+  const s = { total, completed: 0, failed: 0 };
+  silentSessionMap.set(chatIdStr, s);
+  return s;
+}
 async function finalizeSilentSessionIfDone(client2, chatId) {
   const chatIdStr = chatId.toString();
-  const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
-  if (!isSilent) return;
+  if (!silentSessionMap.has(chatIdStr)) return;
+  const outstanding = getOutstandingTaskCount(chatIdStr);
+  if (outstanding > 0) return;
   const s = silentSessionMap.get(chatIdStr);
-  const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-  if (!s || !lastMsgId || s.total <= 0) return;
-  if (s.completed >= s.total) {
-    const text = buildSilentAllTasksComplete(s.failed);
-    const result = await safeEditMessage(client2, chatId, { message: lastMsgId, text });
-    if (result) {
-      lastStatusMessageIsSilent.set(chatIdStr, false);
-    }
-    silentSessionMap.delete(chatIdStr);
+  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
+  if (silentMsgId) {
+    const text = buildSilentAllTasksComplete(s?.failed || 0);
+    await safeEditMessage(client2, chatId, { message: silentMsgId, text });
   }
+  silentSessionMap.delete(chatIdStr);
+  silentNoticeMessageIdMap.delete(chatIdStr);
+  lastSilentNotificationTimeMap.delete(chatIdStr);
+  console.log(`[TG][silent] finalized chat=${chatIdStr} failed=${s?.failed || 0}`);
+}
+function getBackgroundFileCount(chatIdStr) {
+  const queueStats = downloadQueue.getStats();
+  const trackedFiles = getActiveUploadCount(chatIdStr);
+  const batches = getConsolidatedBatches(chatIdStr);
+  const batchFiles = batches.reduce((sum, b) => sum + b.totalFiles, 0);
+  const count = Math.max(queueStats.total, trackedFiles + batchFiles);
+  const logLine = `[TG][silent][${Date.now()}] fileCount: queue=${queueStats.total}(a=${queueStats.active},p=${queueStats.pending}) tracked=${trackedFiles}+${batchFiles} => ${count}
+`;
+  console.log(logLine.trim());
+  try {
+    fs5.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  return count;
+}
+async function trySilentMode(client2, chatId, message) {
+  const chatIdStr = chatId.toString();
+  const fileCount = getBackgroundFileCount(chatIdStr);
+  const isSilent = silentSessionMap.has(chatIdStr);
+  const logLine = `[TG][silent][${Date.now()}] tryCheck chat=${chatIdStr} fileCount=${fileCount} isSilent=${isSilent}
+`;
+  console.log(logLine.trim());
+  try {
+    fs5.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  if (fileCount > 3 || isSilent) {
+    if (!isSilent) {
+      await deleteLastStatusMessage(client2, chatId);
+      startSilentSession(chatIdStr, fileCount);
+      console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
+    } else {
+      const sess = getSilentSession(chatIdStr);
+      sess.total = Math.max(sess.total, fileCount);
+    }
+    await ensureSilentNotice(client2, chatId, fileCount, message);
+    return true;
+  }
+  return false;
 }
 async function deleteLastStatusMessage(client2, chatId) {
   if (!chatId) return;
   const chatIdStr = chatId.toString();
   const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
   if (lastMsgId) {
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const isSilent = silentSessionMap.has(chatIdStr);
+      console.log(`[TG][status] delete chat=${chatIdStr} msg=${lastMsgId} silentSession=${isSilent}`);
+    }
     try {
       await client2.deleteMessages(chatId, [lastMsgId], { revoke: true });
     } catch (e) {
     }
     lastStatusMessageIdMap.delete(chatIdStr);
-    lastStatusMessageIsSilent.delete(chatIdStr);
   }
 }
 function updateLastStatusMessageId(chatId, msgId, isSilent = false) {
   if (!chatId || !msgId) return;
   const chatIdStr = chatId.toString();
   lastStatusMessageIdMap.set(chatIdStr, msgId);
-  lastStatusMessageIsSilent.set(chatIdStr, isSilent);
+  if (process.env.TG_STATUS_DEBUG === "1") {
+    const sess = silentSessionMap.has(chatIdStr);
+    console.log(`[TG][status] last chat=${chatIdStr} msg=${msgId} sess=${sess}`);
+  }
 }
 var chatActiveUploads = /* @__PURE__ */ new Map();
 function registerUpload(chatId, uploadId, entry) {
@@ -2532,8 +2630,21 @@ function isAllConsolidatedTasksDone(chatId) {
   const batchesDone = batches.every((b) => b.completed === b.totalFiles);
   return filesDone && batchesDone;
 }
+function getOutstandingTaskCount(chatIdStr) {
+  const files = getConsolidatedFiles(chatIdStr);
+  const batches = getConsolidatedBatches(chatIdStr);
+  const outstandingFiles = files.filter((f) => f.phase !== "success" && f.phase !== "failed").length;
+  const outstandingBatches = batches.filter((b) => b.completed < b.totalFiles).length;
+  return outstandingFiles + outstandingBatches;
+}
 async function checkAndResetSession(client2, chatId) {
   const chatIdStr = chatId.toString();
+  if (silentSessionMap.has(chatIdStr)) {
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      console.log(`[TG][status] reset-skip chat=${chatIdStr} reason=silentSession`);
+    }
+    return;
+  }
   const hasAnyTask = getActiveBatchCount(chatIdStr) > 0 || getActiveUploadCount(chatIdStr) > 0;
   if (!hasAnyTask || isAllConsolidatedTasksDone(chatIdStr)) {
     await deleteLastStatusMessage(client2, chatId);
@@ -2542,7 +2653,16 @@ async function checkAndResetSession(client2, chatId) {
 }
 async function refreshConsolidatedMessage(client2, chatId, replyTo) {
   const chatIdStr = chatId.toString();
-  if (lastStatusMessageIsSilent.get(chatIdStr)) {
+  const alreadySilent = silentSessionMap.has(chatIdStr);
+  const fileCount = getBackgroundFileCount(chatIdStr);
+  const logLine = `[TG][consolidated][${Date.now()}] check chat=${chatIdStr} silent=${alreadySilent} fileCount=${fileCount} replyTo=${!!replyTo}
+`;
+  try {
+    fs5.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  if (alreadySilent || fileCount > 3) {
+    await trySilentMode(client2, chatId, replyTo);
     return;
   }
   const files = getConsolidatedFiles(chatIdStr);
@@ -2550,7 +2670,6 @@ async function refreshConsolidatedMessage(client2, chatId, replyTo) {
   if (files.length === 0 && batches.length === 0) return;
   const text = await buildConsolidatedStatus(files, batches);
   const existingMsgId = lastStatusMessageIdMap.get(chatIdStr);
-  const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
   if (replyTo) {
     await deleteLastStatusMessage(client2, chatId);
     const msg = await safeReply(replyTo, { message: text });
@@ -2559,7 +2678,7 @@ async function refreshConsolidatedMessage(client2, chatId, replyTo) {
     }
     return;
   }
-  if (existingMsgId && !isSilent) {
+  if (existingMsgId) {
     await safeEditMessage(client2, chatId, { message: existingMsgId, text });
   }
 }
@@ -2759,8 +2878,9 @@ async function processFileUpload(client2, file, queue) {
     }
     if (queue?.chatId) {
       const chatId = queue.chatId;
-      if (lastStatusMessageIsSilent.get(chatId.toString())) {
-        const sess = getSilentSession(chatId.toString());
+      const chatIdStr = chatId.toString();
+      if (silentSessionMap.has(chatIdStr)) {
+        const sess = getSilentSession(chatIdStr);
         sess.completed += 1;
         if (file.status === "failed") {
           sess.failed += 1;
@@ -2810,10 +2930,12 @@ async function processBatchUpload(client2, mediaGroupId) {
   for (const file of queue.files) {
     file.targetDir = targetDir;
   }
-  await runStatusAction(chatId, async () => {
-    const stats = downloadQueue.getStats();
-    await refreshConsolidatedMessage(client2, chatId, firstMessage);
-  });
+  if (!silentSessionMap.has(chatId.toString())) {
+    await runStatusAction(chatId, async () => {
+      const stats = downloadQueue.getStats();
+      await refreshConsolidatedMessage(client2, chatId, firstMessage);
+    });
+  }
   const onBatchProgress = async () => {
     const completed = queue.files.filter((f) => f.status === "success" || f.status === "failed").length;
     const successful = queue.files.filter((f) => f.status === "success").length;
@@ -2825,9 +2947,11 @@ async function processBatchUpload(client2, mediaGroupId) {
       failed,
       queuePending: stats.pending
     });
-    await runStatusAction(chatId, async () => {
-      await refreshConsolidatedMessage(client2, chatId);
-    });
+    if (!silentSessionMap.has(chatId.toString())) {
+      await runStatusAction(chatId, async () => {
+        await refreshConsolidatedMessage(client2, chatId);
+      });
+    }
   };
   let lastTime = 0;
   const statusUpdater = setInterval(async () => {
@@ -2906,16 +3030,28 @@ async function handleFileUpload(client2, event) {
       status: "pending"
     });
     if (message.chatId) {
-      const chatId = message.chatId;
-      const stats = downloadQueue.getStats();
-      const totalTasks = stats.active + stats.pending + 1;
-      if (totalTasks >= 9) {
-        await runStatusAction(chatId, async () => {
-          await ensureSilentNotice(client2, message, totalTasks);
+      const chatIdStr = message.chatId.toString();
+      const batchId = mediaGroupId;
+      const batchMap = chatActiveBatches.get(chatIdStr);
+      if (!batchMap || !batchMap.has(batchId)) {
+        registerBatch(chatIdStr, batchId, {
+          id: batchId,
+          folderName: queue.folderName || "media-group",
+          totalFiles: queue.files.length,
+          completed: 0,
+          successful: 0,
+          failed: 0,
+          providerName: storageManager.getProvider().name,
+          queuePending: 0
         });
-        const sess = getSilentSession(chatId.toString());
-        sess.total += 1;
+      } else {
+        updateBatch(chatIdStr, batchId, {
+          totalFiles: queue.files.length
+        });
       }
+    }
+    if (message.chatId) {
+      await trySilentMode(client2, message.chatId, message);
     }
   } else {
     let finalFileName = fileName;
@@ -2945,28 +3081,25 @@ async function handleFileUpload(client2, event) {
     });
     let statusMsg;
     const useConsolidated = () => getActiveUploadCount(chatIdStr) >= 2 || getActiveBatchCount(chatIdStr) > 0;
-    await runStatusAction(chatId, async () => {
-      const stats2 = downloadQueue.getStats();
-      const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-      const totalTasks = stats2.active + stats2.pending + 1;
-      if (totalTasks >= 9) {
-        await ensureSilentNotice(client2, message, totalTasks);
-        const sess = getSilentSession(chatIdStr);
-        sess.total += 1;
-      } else if (useConsolidated()) {
-        await refreshConsolidatedMessage(client2, chatId, message);
-      } else {
-        await deleteLastStatusMessage(client2, chatId);
-        statusMsg = await safeReply(message, {
-          message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji)
-        });
-        if (statusMsg) {
-          updateLastStatusMessageId(chatId, statusMsg.id, false);
+    await trySilentMode(client2, chatId, message);
+    if (!silentSessionMap.has(chatIdStr) && getBackgroundFileCount(chatIdStr) <= 3) {
+      await runStatusAction(chatId, async () => {
+        if (useConsolidated()) {
+          await refreshConsolidatedMessage(client2, chatId, message);
+        } else {
+          await deleteLastStatusMessage(client2, chatId);
+          statusMsg = await safeReply(message, {
+            message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji)
+          });
+          if (statusMsg) {
+            updateLastStatusMessageId(chatId, statusMsg.id, false);
+          }
         }
-      }
-    });
+      });
+    }
     const stats = downloadQueue.getStats();
-    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0)) {
+    const isSilent = silentSessionMap.has(chatIdStr);
+    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0) && !isSilent) {
       await runStatusAction(chatId, async () => {
         await safeEditMessage(client2, chatId, {
           message: statusMsg.id,
@@ -2981,6 +3114,9 @@ async function handleFileUpload(client2, event) {
       if (now - lastUpdateTime < updateInterval) return;
       lastUpdateTime = now;
       updateUploadPhase(chatId.toString(), uploadId, { phase: "downloading", downloaded, total });
+      if (silentSessionMap.has(chatIdStr)) {
+        return;
+      }
       if (useConsolidated()) {
         await runStatusAction(chatId, async () => {
           await refreshConsolidatedMessage(client2, chatId);
@@ -3015,7 +3151,7 @@ async function handleFileUpload(client2, event) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await safeEditMessage(client2, chatId, {
               message: statusMsg.id,
@@ -3055,7 +3191,7 @@ async function handleFileUpload(client2, event) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3092,7 +3228,7 @@ async function handleFileUpload(client2, event) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3103,7 +3239,7 @@ async function handleFileUpload(client2, event) {
         success = await attemptSingleUpload();
       }
       if (!success) {
-        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+        if (silentSessionMap.has(chatIdStr)) {
           const sess = getSilentSession(chatIdStr);
           sess.completed += 1;
           sess.failed += 1;
@@ -3114,7 +3250,7 @@ async function handleFileUpload(client2, event) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3128,7 +3264,7 @@ async function handleFileUpload(client2, event) {
           });
         }
       } else {
-        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+        if (silentSessionMap.has(chatIdStr)) {
           const sess = getSilentSession(chatIdStr);
           sess.completed += 1;
           await finalizeSilentSessionIfDone(client2, chatId);
