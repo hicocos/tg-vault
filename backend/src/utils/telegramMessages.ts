@@ -410,7 +410,6 @@ export function buildSilentModeNotice(fileCount: number): string {
     return [
         `🤐 **已切换到静默模式**`,
         ``,
-        `当前下载文件数: ${fileCount} 个`,
         `Bot 将在后台继续处理所有文件，请耐心等待。`,
         ``,
         `💡 发送 /tasks 查看实时任务状态`,
