@@ -507,11 +507,11 @@ class FileAPI {
         return response.json();
     }
 
-    async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, clientSecret?: string): Promise<{ authUrl: string }> {
+    async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, clientSecret?: string, name?: string): Promise<{ authUrl: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/onedrive/auth-url`, {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ clientId, tenantId, redirectUri, clientSecret }),
+            body: JSON.stringify({ clientId, tenantId, redirectUri, clientSecret, name }),
         });
 
         if (!response.ok) {
@@ -522,11 +522,11 @@ class FileAPI {
         return response.json();
     }
 
-    async getGoogleDriveAuthUrl(clientId: string, clientSecret: string, redirectUri: string): Promise<{ authUrl: string }> {
+    async getGoogleDriveAuthUrl(clientId: string, clientSecret: string, redirectUri: string, name?: string): Promise<{ authUrl: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/google-drive/auth-url`, {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ clientId, clientSecret, redirectUri }),
+            body: JSON.stringify({ clientId, clientSecret, redirectUri, name }),
         });
 
         if (!response.ok) {

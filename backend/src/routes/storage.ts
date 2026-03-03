@@ -147,7 +147,7 @@ router.get('/config', requireAuth, async (req: Request, res: Response) => {
 // 获取 OneDrive 授权 URL
 router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: Response) => {
     try {
-        const { clientId, tenantId, redirectUri, clientSecret } = req.body;
+        const { clientId, tenantId, redirectUri, clientSecret, name } = req.body;
         if (!clientId || !redirectUri) {
             return res.status(400).json({ error: '缺少 Client ID 或 Redirect URI' });
         }
@@ -164,6 +164,9 @@ router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: 
         }
         await StorageManager.updateSetting('onedrive_client_id', clientId);
         await StorageManager.updateSetting('onedrive_tenant_id', tenantId || 'common');
+        if (name) {
+            await StorageManager.updateSetting('onedrive_pending_name', name);
+        }
 
         res.json({ authUrl });
     } catch (error) {
@@ -271,7 +274,7 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
 // 获取 Google Drive 授权 URL
 router.post('/config/google-drive/auth-url', requireAuth, async (req: Request, res: Response) => {
     try {
-        const { clientId, clientSecret, redirectUri } = req.body;
+        const { clientId, clientSecret, redirectUri, name } = req.body;
         if (!clientId || !clientSecret || !redirectUri) {
             return res.status(400).json({ error: '缺少必要参数 (Client ID, Client Secret 或 Redirect URI)' });
         }
@@ -283,6 +286,9 @@ router.post('/config/google-drive/auth-url', requireAuth, async (req: Request, r
         await StorageManager.updateSetting('google_drive_client_id', clientId);
         await StorageManager.updateSetting('google_drive_client_secret', clientSecret);
         await StorageManager.updateSetting('google_drive_redirect_uri', redirectUri);
+        if (name) {
+            await StorageManager.updateSetting('google_drive_pending_name', name);
+        }
 
         res.json({ authUrl });
     } catch (error) {
@@ -319,8 +325,12 @@ router.get('/google-drive/callback', async (req: Request, res: Response) => {
             return res.send('授权失败：未获得 Refresh Token。请确保是首次授权，或在 Google 控制台中撤销权限后重试。');
         }
 
+        // 获取待处理的账户名称并清理
+        const pendingName = await storageManager.getSetting('google_drive_pending_name');
+        await storageManager.updateSetting('google_drive_pending_name', '');
+
         // 保存账户
-        await storageManager.addGoogleDriveAccount('Google Drive Account', clientId, clientSecret, tokens.refresh_token, redirectUri);
+        await storageManager.addGoogleDriveAccount(pendingName || 'Google Drive Account', clientId, clientSecret, tokens.refresh_token, redirectUri);
 
         // 自动切到新账户
         const accounts = await storageManager.getAccounts();

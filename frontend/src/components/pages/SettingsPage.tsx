@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
 import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen } from "lucide-react";
@@ -108,6 +108,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
     const [showWebDAVForm, setShowWebDAVForm] = useState(false);
 
     // Google Drive Form State
+    const [gdAccountName, setGdAccountName] = useState("");
     const [gdClientId, setGdClientId] = useState("");
     const [gdClientSecret, setGdClientSecret] = useState("");
     const [showGDForm, setShowGDForm] = useState(false);
@@ -213,8 +214,8 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         }
         setIsSaving(true);
         try {
-            const redirectUri = config?.googleDriveRedirectUri || config?.redirectUri?.replace('onedrive', 'google-drive') || `${window.location.origin}/api/storage/google-drive/callback`;
-            const { authUrl } = await fileApi.getGoogleDriveAuthUrl(gdClientId, gdClientSecret, redirectUri);
+            const redirectUri = (config as any)?.googleDriveRedirectUri || config?.redirectUri?.replace('onedrive', 'google-drive') || `${window.location.origin}/api/storage/google-drive/callback`;
+            const { authUrl } = await fileApi.getGoogleDriveAuthUrl(gdClientId, gdClientSecret, redirectUri, gdAccountName);
 
             const width = 600;
             const height = 700;
@@ -261,7 +262,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         try {
             await fileApi.updateOneDriveConfig(odClientId, odClientSecret, 'pending', odTenantId || 'common', odAccountName);
             const redirectUri = config?.redirectUri || `${(window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`;
-            const { authUrl } = await fileApi.getOneDriveAuthUrl(odClientId, odTenantId || 'common', redirectUri, odClientSecret);
+            const { authUrl } = await fileApi.getOneDriveAuthUrl(odClientId, odTenantId || 'common', redirectUri, odClientSecret, odAccountName);
 
             const width = 600;
             const height = 700;
@@ -718,6 +719,16 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="space-y-2 md:col-span-2">
+                                        <label className="text-sm font-medium">账户名称 (显示名称)</label>
+                                        <input
+                                            type="text"
+                                            value={gdAccountName}
+                                            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGdAccountName(e.target.value)}
+                                            className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                                            placeholder="例如: 我的 Google Drive"
+                                        />
+                                    </div>
                                     <div className="space-y-2 md:col-span-2">
                                         <label className="text-sm font-medium">客户端 ID (Client ID)</label>
                                         <input
