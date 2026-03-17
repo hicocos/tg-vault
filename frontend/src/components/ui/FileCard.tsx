@@ -184,6 +184,10 @@ export const FileCard = ({
                                     e.stopPropagation();
                                     onPreview?.();
                                 }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onMouseUp={(e) => e.stopPropagation()}
+                                onTouchStart={(e) => e.stopPropagation()}
+                                onTouchEnd={(e) => e.stopPropagation()}
                                 title="预览"
                             >
                                 <Eye className="h-4 w-4" />
@@ -196,6 +200,10 @@ export const FileCard = ({
                                     e.stopPropagation();
                                     handleDownload();
                                 }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onMouseUp={(e) => e.stopPropagation()}
+                                onTouchStart={(e) => e.stopPropagation()}
+                                onTouchEnd={(e) => e.stopPropagation()}
                                 title="下载"
                             >
                                 <Download className="h-4 w-4" />
@@ -211,6 +219,10 @@ export const FileCard = ({
                                         e.stopPropagation();
                                         onToggleFavorite();
                                     }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onMouseUp={(e) => e.stopPropagation()}
+                                    onTouchStart={(e) => e.stopPropagation()}
+                                    onTouchEnd={(e) => e.stopPropagation()}
                                     title={file.is_favorite ? '取消收藏' : '收藏'}
                                 >
                                     <Star className={`h-4 w-4 ${file.is_favorite ? 'fill-current' : ''}`} />
@@ -225,6 +237,10 @@ export const FileCard = ({
                                         e.stopPropagation();
                                         onDelete();
                                     }}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onMouseUp={(e) => e.stopPropagation()}
+                                    onTouchStart={(e) => e.stopPropagation()}
+                                    onTouchEnd={(e) => e.stopPropagation()}
                                     title="删除"
                                 >
                                     <Trash2 className="h-4 w-4" />
@@ -252,6 +268,10 @@ export const FileCard = ({
                                 const rect = e.currentTarget.getBoundingClientRect();
                                 setContextMenu({ x: rect.left, y: rect.bottom + 5 });
                             }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onMouseUp={(e) => e.stopPropagation()}
+                            onTouchStart={(e) => e.stopPropagation()}
+                            onTouchEnd={(e) => e.stopPropagation()}
                         >
                             <MoreVertical className="h-4 w-4" />
                         </Button>

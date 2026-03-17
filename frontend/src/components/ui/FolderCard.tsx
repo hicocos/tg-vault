@@ -193,6 +193,10 @@ export const FolderCard = ({
                                 const rect = e.currentTarget.getBoundingClientRect();
                                 setContextMenu({ x: rect.left, y: rect.bottom + 5 });
                             }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onMouseUp={(e) => e.stopPropagation()}
+                            onTouchStart={(e) => e.stopPropagation()}
+                            onTouchEnd={(e) => e.stopPropagation()}
                         >
                             <MoreVertical className="h-4 w-4" />
                         </Button>

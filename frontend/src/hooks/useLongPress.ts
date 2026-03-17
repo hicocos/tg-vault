@@ -13,14 +13,18 @@ export const useLongPress = ({
 }: LongPressOptions = {}) => {
   const [longPressTriggered, setLongPressTriggered] = useState(false);
   const timeoutRef = useRef<any>(null);
-  const targetRef = useRef<any>(null);
+  const touchStartPos = useRef<{ x: number, y: number } | null>(null);
 
   const start = useCallback(
     (event: any) => {
-      if (event.target) {
-        targetRef.current = event.target;
+      // Record touch start position
+      if (event.touches?.[0]) {
+        touchStartPos.current = {
+          x: event.touches[0].clientX,
+          y: event.touches[0].clientY
+        };
       }
-      
+
       setLongPressTriggered(false);
       timeoutRef.current = setTimeout(() => {
         onLongPress?.(event);
@@ -30,10 +34,29 @@ export const useLongPress = ({
     [onLongPress, threshold]
   );
 
+  const move = useCallback(
+    (event: any) => {
+      if (!touchStartPos.current || !event.touches?.[0]) return;
+
+      const deltaX = Math.abs(event.touches[0].clientX - touchStartPos.current.x);
+      const deltaY = Math.abs(event.touches[0].clientY - touchStartPos.current.y);
+
+      // If user moves more than 10px, cancel long press
+      if (deltaX > 10 || deltaY > 10) {
+        if (timeoutRef.current) {
+          clearTimeout(timeoutRef.current);
+          timeoutRef.current = null;
+        }
+      }
+    },
+    []
+  );
+
   const clear = useCallback(
     (event: any, shouldTriggerClick = true) => {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
       }
       
       if (shouldTriggerClick && !longPressTriggered) {
@@ -41,6 +64,7 @@ export const useLongPress = ({
       }
       
       setLongPressTriggered(false);
+      touchStartPos.current = null;
     },
     [onClick, longPressTriggered]
   );
@@ -50,6 +74,7 @@ export const useLongPress = ({
     onMouseUp: (e: any) => clear(e),
     onMouseLeave: (e: any) => clear(e, false),
     onTouchStart: (e: any) => start(e),
+    onTouchMove: (e: any) => move(e),
     onTouchEnd: (e: any) => clear(e),
   };
 };
