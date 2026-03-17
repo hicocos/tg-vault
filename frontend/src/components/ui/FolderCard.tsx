@@ -1,9 +1,11 @@
 import { motion } from "framer-motion";
-import { Folder, Image as ImageIcon, Video, Music, FileText, Star } from "lucide-react";
+import { Folder, Image as ImageIcon, Video, Music, FileText, Star, MoreVertical } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "./Button";
 import { type FileData } from "../../services/api";
 import { ContextMenu, createFolderMenuItems } from "./ContextMenu";
+import { useLongPress } from "../../hooks/useLongPress";
 
 export interface FolderData {
     name: string;
@@ -71,12 +73,25 @@ export const FolderCard = ({
         }
     };
 
-    const handleContextMenu = (e: React.MouseEvent) => {
+    const handleContextMenu = (e: any) => {
         if (isSelectionMode) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setContextMenu({ x: e.clientX, y: e.clientY });
+        
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+        e.stopPropagation?.();
+        
+        const clientX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+        const clientY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+        
+        setContextMenu({ x: clientX, y: clientY });
     };
+
+    const longPressHandlers = useLongPress({
+        onLongPress: (e) => handleContextMenu(e),
+        onClick: () => handleCardClick(),
+        threshold: 500
+    });
 
     return (
         <>
@@ -84,7 +99,7 @@ export const FolderCard = ({
                 layout
                 whileHover={{ y: isSelectionMode ? 0 : -4, transition: { duration: 0.2 } }}
                 className={`group relative flex flex-col rounded-2xl border ${isSelected ? 'border-primary ring-2 ring-primary/20 bg-primary/5' : 'border-border/50 bg-card'} overflow-hidden shadow-sm transition-all ${!isSelectionMode ? 'hover:shadow-lg hover:border-primary/30 cursor-pointer' : 'cursor-default'}`}
-                onClick={handleCardClick}
+                {...(!isSelectionMode ? longPressHandlers : { onClick: handleCardClick })}
                 onContextMenu={handleContextMenu}
             >
                 {/* 封面区域 - 使用 4:3 比例 */}
@@ -159,13 +174,29 @@ export const FolderCard = ({
                 </div>
 
                 {/* 文件夹信息 */}
-                <div className={`p-3.5 ${isSelected ? 'bg-primary/5' : ''}`}>
-                    <h3 className="truncate text-sm font-semibold leading-tight text-foreground mb-1" title={folder.name}>
-                        {folder.name}
-                    </h3>
-                    <p className="text-xs text-muted-foreground">
-                        {folder.fileCount} 个文件
-                    </p>
+                <div className={`p-3.5 flex items-start justify-between gap-2 ${isSelected ? 'bg-primary/5' : ''}`}>
+                    <div className="flex-1 min-w-0">
+                        <h3 className="truncate text-sm font-semibold leading-tight text-foreground mb-1" title={folder.name}>
+                            {folder.name}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">
+                            {folder.fileCount} 个文件
+                        </p>
+                    </div>
+                    {!isSelectionMode && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 rounded-full md:opacity-0 group-hover:opacity-100 transition-opacity -mr-1.5"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setContextMenu({ x: rect.left, y: rect.bottom + 5 });
+                            }}
+                        >
+                            <MoreVertical className="h-4 w-4" />
+                        </Button>
+                    )}
                 </div>
             </motion.div>
 

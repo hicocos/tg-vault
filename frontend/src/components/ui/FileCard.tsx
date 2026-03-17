@@ -1,10 +1,11 @@
 import { motion } from "framer-motion";
-import { Download, Eye, FileText, Image as ImageIcon, Music, Video, Trash2, Cloud, HardDrive, Database, Package, Network, Star } from "lucide-react";
+import { Download, Eye, FileText, Image as ImageIcon, Music, Video, Trash2, Cloud, HardDrive, Database, Package, Network, Star, MoreVertical } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 import { fileApi, type FileData } from "../../services/api";
 import { ContextMenu, createFileMenuItems } from "./ContextMenu";
+import { useLongPress } from "../../hooks/useLongPress";
 
 // Re-export FileData type for convenience
 export type { FileData } from "../../services/api";
@@ -54,12 +55,26 @@ export const FileCard = ({
         }
     };
 
-    const handleContextMenu = (e: React.MouseEvent) => {
+    const handleContextMenu = (e: any) => {
         if (isSelectionMode) return;
-        e.preventDefault();
-        e.stopPropagation();
-        setContextMenu({ x: e.clientX, y: e.clientY });
+        
+        // 如果是触摸事件，防止触发默认上下文菜单并处理系统震动反馈（可选）
+        if (e.preventDefault) {
+            e.preventDefault();
+        }
+        e.stopPropagation?.();
+        
+        const clientX = e.clientX || (e.touches && e.touches[0].clientX) || 0;
+        const clientY = e.clientY || (e.touches && e.touches[0].clientY) || 0;
+        
+        setContextMenu({ x: clientX, y: clientY });
     };
+
+    const longPressHandlers = useLongPress({
+        onLongPress: (e) => handleContextMenu(e),
+        onClick: () => handleCardClick(),
+        threshold: 500
+    });
 
     // 使用真实的缩略图或预览 URL（已包含签名）
     // 对于 GIF 动图，强制使用预览 URL 以便能够自动播放
@@ -100,7 +115,7 @@ export const FileCard = ({
                 layout
                 whileHover={{ y: isSelectionMode ? 0 : -4, transition: { duration: 0.2 } }}
                 className={`group relative flex flex-col rounded-2xl border ${isSelected ? 'border-primary ring-2 ring-primary/20 bg-primary/5' : 'border-border/50 bg-card'} overflow-hidden shadow-sm transition-all ${!isSelectionMode ? 'hover:shadow-lg hover:border-border cursor-pointer' : 'cursor-default'}`}
-                onClick={handleCardClick}
+                {...(!isSelectionMode ? longPressHandlers : { onClick: handleCardClick })}
                 onContextMenu={handleContextMenu}
             >
                 {/* 图片区域 - 使用 4:3 比例 */}
@@ -220,11 +235,27 @@ export const FileCard = ({
                 </div>
 
                 {/* 文件信息 */}
-                <div className={`p-3.5 ${isSelected ? 'bg-primary/5' : ''}`}>
-                    <h3 className="truncate text-sm font-medium leading-tight text-foreground mb-1" title={file.name}>
-                        {file.name}
-                    </h3>
-                    <p className="text-xs text-muted-foreground">{file.size} • {file.date}</p>
+                <div className={`p-3.5 flex items-start justify-between gap-2 ${isSelected ? 'bg-primary/5' : ''}`}>
+                    <div className="flex-1 min-w-0">
+                        <h3 className="truncate text-sm font-medium leading-tight text-foreground mb-1" title={file.name}>
+                            {file.name}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">{file.size} • {file.date}</p>
+                    </div>
+                    {!isSelectionMode && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 rounded-full md:opacity-0 group-hover:opacity-100 transition-opacity -mr-1.5"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setContextMenu({ x: rect.left, y: rect.bottom + 5 });
+                            }}
+                        >
+                            <MoreVertical className="h-4 w-4" />
+                        </Button>
+                    )}
                 </div>
             </motion.div>
 
