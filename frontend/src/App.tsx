@@ -17,6 +17,10 @@ import { FileMenu } from "./components/ui/FileMenu";
 import { DeleteAlert } from "./components/ui/DeleteAlert";
 import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { RenameModal } from "./components/ui/RenameModal";
+<<<<<<< HEAD
+=======
+import { MoveModal } from "./components/ui/MoveModal";
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
 import { UploadQueueModal, type QueueItem } from "./components/ui/UploadQueueModal";
 import { Notification, type NotificationType } from "./components/ui/Notification";
 import { fileApi, type FileData, type StorageStats as StorageStatsType } from "./services/api";
@@ -61,6 +65,13 @@ function App() {
   const [renamingFile, setRenamingFile] = useState<FileData | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
 
+<<<<<<< HEAD
+=======
+  // 移动状态
+  const [movingFile, setMovingFile] = useState<FileData | null>(null);
+  const [movingFolder, setMovingFolder] = useState<string | null>(null);
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
   const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // 文件夹区域折叠状态，默认折叠
 
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
@@ -602,6 +613,62 @@ function App() {
     return looseFiles;
   }, [currentFolder, filteredFiles, looseFiles]);
 
+<<<<<<< HEAD
+=======
+  const allFolderNames = useMemo(() => Array.from(new Set(files.filter(f => f.folder).map(f => f.folder!))), [files]);
+
+  const handleMoveFile = async (destinationFolder: string | null) => {
+    if (!movingFile) return;
+    try {
+      const result = await fileApi.moveFile(movingFile.id, destinationFolder);
+      if (result.success) {
+        setFiles(prev => prev.map(f => f.id === movingFile.id ? { ...f, folder: destinationFolder || undefined } : f));
+        setNotification({
+          show: true,
+          message: t("app.moveSuccess") || "移动成功",
+          type: "success"
+        });
+      }
+    } catch (error: any) {
+      console.error("Move file failed:", error);
+      setNotification({
+        show: true,
+        message: error.message || t("app.moveFailed") || "移动失败",
+        type: "error"
+      });
+    } finally {
+      setMovingFile(null);
+    }
+  };
+
+  const handleMoveFolder = async (destinationFolder: string | null) => {
+    if (!movingFolder) return;
+    try {
+      const result = await fileApi.moveFolder(movingFolder, destinationFolder);
+      if (result.success) {
+        setFiles(prev => prev.map(f => f.folder === movingFolder ? { ...f, folder: destinationFolder || undefined } : f));
+        if (currentFolder === movingFolder) {
+            setCurrentFolder(destinationFolder || null);
+        }
+        setNotification({
+          show: true,
+          message: t("app.moveSuccess") || "移动成功",
+          type: "success"
+        });
+      }
+    } catch (error: any) {
+      console.error("Move folder failed:", error);
+      setNotification({
+        show: true,
+        message: error.message || t("app.moveFailed") || "移动文件夹失败",
+        type: "error"
+      });
+    } finally {
+      setMovingFolder(null);
+    }
+  };
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
   // 正在检查认证状态
   if (authChecking) {
     return (
@@ -777,6 +844,10 @@ function App() {
                               onDelete={() => verifyDelete(file)}
                               onRename={() => setRenamingFile(file)}
                               onToggleFavorite={() => handleToggleFavorite(file.id)}
+<<<<<<< HEAD
+=======
+                              onMove={() => setMovingFile(file)}
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
                               isSelectionMode={isSelectionMode}
                               isSelected={selectedFileIds.includes(file.id)}
                               onSelect={toggleFileSelection}
@@ -858,6 +929,10 @@ function App() {
                                   onClick={() => setCurrentFolder(folder.name)}
                                   onRename={() => setRenamingFolder(folder.name)}
                                   onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
+<<<<<<< HEAD
+=======
+                                  onMove={() => setMovingFolder(folder.name)}
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
                                   onDelete={() => {
                                     setSelectedFolderNames([folder.name]);
                                     setSelectedFileIds([]);
@@ -899,6 +974,10 @@ function App() {
                                     onDelete={() => verifyDelete(file)}
                                     onRename={() => setRenamingFile(file)}
                                     onToggleFavorite={() => handleToggleFavorite(file.id)}
+<<<<<<< HEAD
+=======
+                                    onMove={() => setMovingFile(file)}
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
                                     isSelectionMode={isSelectionMode}
                                     isSelected={selectedFileIds.includes(file.id)}
                                     onSelect={toggleFileSelection}
@@ -990,6 +1069,24 @@ function App() {
           onCancel={() => startUpload(pendingFiles)}
         />
 
+<<<<<<< HEAD
+=======
+        <MoveModal
+          isOpen={!!movingFile || !!movingFolder}
+          onClose={() => {
+            setMovingFile(null);
+            setMovingFolder(null);
+          }}
+          onConfirm={(dest) => {
+            if (movingFile) handleMoveFile(dest);
+            if (movingFolder) handleMoveFolder(dest);
+          }}
+          currentFolder={movingFolder || movingFile?.folder || null}
+          folders={allFolderNames}
+          title={movingFile ? t("file.move") : t("folder.move")}
+        />
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
       </AppLayout>
 
       <Notification

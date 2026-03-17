@@ -1,5 +1,9 @@
 import { motion, AnimatePresence } from "framer-motion";
+<<<<<<< HEAD
 import { Pencil, Download, Trash2, Star } from "lucide-react";
+=======
+import { Pencil, Download, Trash2, Star, FolderInput } from "lucide-react";
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
@@ -106,7 +110,12 @@ export const createFileMenuItems = (
     onDownload?: () => void,
     onToggleFavorite?: () => void,
     isFavorite: boolean = false,
+<<<<<<< HEAD
     onDelete?: () => void
+=======
+    onDelete?: () => void,
+    onMove?: () => void
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
 ): ContextMenuItem[] => {
     const items: ContextMenuItem[] = [];
 
@@ -118,6 +127,17 @@ export const createFileMenuItems = (
         });
     }
 
+<<<<<<< HEAD
+=======
+    if (onMove) {
+        items.push({
+            label: t("file.move") || "移动",
+            icon: <FolderInput className="h-4 w-4" />,
+            onClick: onMove,
+        });
+    }
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     if (onDownload) {
         items.push({
             label: t("file.download") || "下载",
@@ -152,7 +172,12 @@ export const createFolderMenuItems = (
     onRename?: () => void,
     onToggleFavorite?: () => void,
     isFavorite: boolean = false,
+<<<<<<< HEAD
     onDelete?: () => void
+=======
+    onDelete?: () => void,
+    onMove?: () => void
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
 ): ContextMenuItem[] => {
     const items: ContextMenuItem[] = [];
 
@@ -164,6 +189,17 @@ export const createFolderMenuItems = (
         });
     }
 
+<<<<<<< HEAD
+=======
+    if (onMove) {
+        items.push({
+            label: t("file.move") || "移动",
+            icon: <FolderInput className="h-4 w-4" />,
+            onClick: onMove,
+        });
+    }
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     if (onDelete) {
         items.push({
             label: t("file.delete") || "删除",

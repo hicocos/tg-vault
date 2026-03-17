@@ -11,7 +11,17 @@
         "dropActive": "Drop files now",
         "dropSubtitle": "SVG, PNG, JPG or GIF (max. 800x400px)",
         "release": "Release to upload",
+<<<<<<< HEAD
         "syncing": "Server is uploading to {{source}}..."
+=======
+        "syncing": "Server is uploading to {{source}}...",
+        "moveTo": "Move to",
+        "moveSuccess": "Move successful",
+        "moveFailed": "Move failed",
+        "rootDirectory": "Root Directory",
+        "cancel": "Cancel",
+        "confirm": "Confirm"
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     },
     "sidebar": {
         "files": "My Files",
@@ -43,7 +53,15 @@
         "renamePlaceholder": "Enter new name",
         "renameConfirm": "Confirm",
         "renameCancel": "Cancel",
+<<<<<<< HEAD
         "renameExtHint": "File extension cannot be changed"
+=======
+        "renameExtHint": "File extension cannot be changed",
+        "move": "Move File"
+    },
+    "folder": {
+        "move": "Move Folder"
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     },
     "delete": {
         "title": "Are you sure?",

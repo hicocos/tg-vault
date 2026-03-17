@@ -571,6 +571,73 @@ router.patch('/rename-folder', async (req: Request, res: Response) => {
     }
 });
 
+<<<<<<< HEAD
+=======
+// 移动文件
+router.patch('/:id([0-9a-fA-F-]{36})/move', async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const { folder } = req.body;
+
+        if (folder !== null && typeof folder !== 'string') {
+            return res.status(400).json({ error: '文件夹名称格式错误' });
+        }
+
+        const trimmedFolder = folder ? folder.trim() : null;
+
+        if (trimmedFolder && /[\/\\:*?"<>|]/.test(trimmedFolder)) {
+            return res.status(400).json({ error: '文件夹名包含非法字符' });
+        }
+
+        const result = await query('SELECT * FROM files WHERE id = $1', [id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: '文件不存在' });
+        }
+
+        await query('UPDATE files SET folder = $1, updated_at = NOW() WHERE id = $2', [trimmedFolder, id]);
+
+        res.json({ success: true, folder: trimmedFolder });
+    } catch (error) {
+        console.error('移动文件失败:', error);
+        res.status(500).json({ error: '移动文件失败' });
+    }
+});
+
+// 移动文件夹
+router.patch('/move-folder', async (req: Request, res: Response) => {
+    try {
+        const { oldName, newName } = req.body;
+
+        if (!oldName || typeof oldName !== 'string') {
+            return res.status(400).json({ error: '原文件夹名称不能为空' });
+        }
+
+        if (newName !== null && typeof newName !== 'string') {
+            return res.status(400).json({ error: '目标文件夹名称格式错误' });
+        }
+
+        const trimmedOld = oldName.trim();
+        const trimmedNew = newName ? newName.trim() : null;
+
+        if (trimmedNew && /[\/\\:*?"<>|]/.test(trimmedNew)) {
+            return res.status(400).json({ error: '目标文件夹名包含非法字符' });
+        }
+
+        const checkResult = await query('SELECT COUNT(*) as cnt FROM files WHERE folder = $1', [trimmedOld]);
+        if (parseInt(checkResult.rows[0].cnt) === 0) {
+            return res.status(404).json({ error: '原文件夹不存在' });
+        }
+
+        await query('UPDATE files SET folder = $1, updated_at = NOW() WHERE folder = $2', [trimmedNew, trimmedOld]);
+
+        res.json({ success: true, folder: trimmedNew });
+    } catch (error) {
+        console.error('移动文件夹失败:', error);
+        res.status(500).json({ error: '移动文件夹失败' });
+    }
+});
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
 // 创建分享链接
 router.post('/:id([0-9a-fA-F-]{36})/share', async (req: Request, res: Response) => {
     try {

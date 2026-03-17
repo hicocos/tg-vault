@@ -25,6 +25,10 @@ export const FileCard = ({
     onDelete,
     onRename,
     onToggleFavorite,
+<<<<<<< HEAD
+=======
+    onMove,
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     isSelectionMode = false,
     isSelected = false,
     onSelect
@@ -34,6 +38,10 @@ export const FileCard = ({
     onDelete?: () => void;
     onRename?: () => void;
     onToggleFavorite?: () => void;
+<<<<<<< HEAD
+=======
+    onMove?: () => void;
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     isSelectionMode?: boolean;
     isSelected?: boolean;
     onSelect?: (id: string) => void;
@@ -238,7 +246,12 @@ export const FileCard = ({
                     () => handleDownload(),
                     onToggleFavorite,
                     !!file.is_favorite,
+<<<<<<< HEAD
                     onDelete
+=======
+                    onDelete,
+                    onMove
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
                 )}
             />
         </>

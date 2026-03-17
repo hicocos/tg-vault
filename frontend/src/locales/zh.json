@@ -11,7 +11,17 @@
         "dropActive": "释放文件以上传",
         "dropSubtitle": "SVG, PNG, JPG 或 GIF (最大 800x400px)",
         "release": "释放以上传",
+<<<<<<< HEAD
         "syncing": "服务器正在上传到 {{source}}..."
+=======
+        "syncing": "服务器正在上传到 {{source}}...",
+        "moveTo": "移动到",
+        "moveSuccess": "移动成功",
+        "moveFailed": "移动失败",
+        "rootDirectory": "根目录",
+        "cancel": "取消",
+        "confirm": "确定"
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     },
     "sidebar": {
         "files": "我的文件",
@@ -43,7 +53,15 @@
         "renamePlaceholder": "输入新名称",
         "renameConfirm": "确认",
         "renameCancel": "取消",
+<<<<<<< HEAD
         "renameExtHint": "文件后缀不可修改"
+=======
+        "renameExtHint": "文件后缀不可修改",
+        "move": "移动文件"
+    },
+    "folder": {
+        "move": "移动文件夹"
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     },
     "delete": {
         "title": "确认删除？",

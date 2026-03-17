@@ -467,6 +467,39 @@ class FileAPI {
         return response.json();
     }
 
+<<<<<<< HEAD
+=======
+    // 移动文件
+    async moveFile(id: string, folder: string | null): Promise<{ success: boolean; folder: string | null }> {
+        const response = await fetch(`${API_BASE}/api/files/${id}/move`, {
+            method: 'PATCH',
+            headers: getHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ folder }),
+        });
+        if (response.status === 401) throw new Error('UNAUTHORIZED');
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || '移动失败');
+        }
+        return response.json();
+    }
+
+    // 移动文件夹
+    async moveFolder(oldName: string, newName: string | null): Promise<{ success: boolean; folder: string | null }> {
+        const response = await fetch(`${API_BASE}/api/files/move-folder`, {
+            method: 'PATCH',
+            headers: getHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ oldName, newName }),
+        });
+        if (response.status === 401) throw new Error('UNAUTHORIZED');
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error || '移动文件夹失败');
+        }
+        return response.json();
+    }
+
+>>>>>>> 17bc88a (feat: add move file and folder functionality)
     // 获取收藏的文件
     async getFavoriteFiles(): Promise<FileData[]> {
         const response = await fetch(`${API_BASE}/api/files/favorites`, {
