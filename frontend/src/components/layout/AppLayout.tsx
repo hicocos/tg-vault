@@ -238,7 +238,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
                         </Button>
                     </div>
                 </header>
-                <div className="flex-1 overflow-auto p-4 sm:p-8 scroll-smooth will-change-transform relative">
+                <div className="flex-1 overflow-auto p-4 sm:p-8 scroll-smooth will-change-transform">
                     {children}
                 </div>
             </main>
