@@ -29,10 +29,7 @@ export const FolderCard = ({
     onRename,
     onToggleFavorite,
     onDelete,
-<<<<<<< HEAD
-=======
     onMove,
->>>>>>> 17bc88a (feat: add move file and folder functionality)
     isSelectionMode = false,
     isSelected = false,
     onSelect
@@ -42,10 +39,7 @@ export const FolderCard = ({
     onRename?: () => void;
     onToggleFavorite?: () => void;
     onDelete?: () => void;
-<<<<<<< HEAD
-=======
     onMove?: () => void;
->>>>>>> 17bc88a (feat: add move file and folder functionality)
     isSelectionMode?: boolean;
     isSelected?: boolean;
     onSelect?: (name: string) => void;
@@ -182,12 +176,8 @@ export const FolderCard = ({
                     onRename,
                     onToggleFavorite,
                     isFavorite,
-<<<<<<< HEAD
-                    onDelete
-=======
                     onDelete,
                     onMove
->>>>>>> 17bc88a (feat: add move file and folder functionality)
                 )}
             />
         </>

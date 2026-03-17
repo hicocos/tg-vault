@@ -467,8 +467,6 @@ class FileAPI {
         return response.json();
     }
 
-<<<<<<< HEAD
-=======
     // 移动文件
     async moveFile(id: string, folder: string | null): Promise<{ success: boolean; folder: string | null }> {
         const response = await fetch(`${API_BASE}/api/files/${id}/move`, {
@@ -498,8 +496,6 @@ class FileAPI {
         }
         return response.json();
     }
-
->>>>>>> 17bc88a (feat: add move file and folder functionality)
     // 获取收藏的文件
     async getFavoriteFiles(): Promise<FileData[]> {
         const response = await fetch(`${API_BASE}/api/files/favorites`, {

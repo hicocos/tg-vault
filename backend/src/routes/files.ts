@@ -571,8 +571,6 @@ router.patch('/rename-folder', async (req: Request, res: Response) => {
     }
 });
 
-<<<<<<< HEAD
-=======
 // 移动文件
 router.patch('/:id([0-9a-fA-F-]{36})/move', async (req: Request, res: Response) => {
     try {
@@ -636,8 +634,6 @@ router.patch('/move-folder', async (req: Request, res: Response) => {
         res.status(500).json({ error: '移动文件夹失败' });
     }
 });
-
->>>>>>> 17bc88a (feat: add move file and folder functionality)
 // 创建分享链接
 router.post('/:id([0-9a-fA-F-]{36})/share', async (req: Request, res: Response) => {
     try {

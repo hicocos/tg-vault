@@ -17,10 +17,7 @@ import { FileMenu } from "./components/ui/FileMenu";
 import { DeleteAlert } from "./components/ui/DeleteAlert";
 import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { RenameModal } from "./components/ui/RenameModal";
-<<<<<<< HEAD
-=======
 import { MoveModal } from "./components/ui/MoveModal";
->>>>>>> 17bc88a (feat: add move file and folder functionality)
 import { UploadQueueModal, type QueueItem } from "./components/ui/UploadQueueModal";
 import { Notification, type NotificationType } from "./components/ui/Notification";
 import { fileApi, type FileData, type StorageStats as StorageStatsType } from "./services/api";
@@ -65,13 +62,9 @@ function App() {
   const [renamingFile, setRenamingFile] = useState<FileData | null>(null);
   const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
 
-<<<<<<< HEAD
-=======
   // 移动状态
   const [movingFile, setMovingFile] = useState<FileData | null>(null);
   const [movingFolder, setMovingFolder] = useState<string | null>(null);
-
->>>>>>> 17bc88a (feat: add move file and folder functionality)
   const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // 文件夹区域折叠状态，默认折叠
 
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
@@ -613,8 +606,6 @@ function App() {
     return looseFiles;
   }, [currentFolder, filteredFiles, looseFiles]);
 
-<<<<<<< HEAD
-=======
   const allFolderNames = useMemo(() => Array.from(new Set(files.filter(f => f.folder).map(f => f.folder!))), [files]);
 
   const handleMoveFile = async (destinationFolder: string | null) => {
@@ -667,8 +658,6 @@ function App() {
       setMovingFolder(null);
     }
   };
-
->>>>>>> 17bc88a (feat: add move file and folder functionality)
   // 正在检查认证状态
   if (authChecking) {
     return (
@@ -844,10 +833,7 @@ function App() {
                               onDelete={() => verifyDelete(file)}
                               onRename={() => setRenamingFile(file)}
                               onToggleFavorite={() => handleToggleFavorite(file.id)}
-<<<<<<< HEAD
-=======
-                              onMove={() => setMovingFile(file)}
->>>>>>> 17bc88a (feat: add move file and folder functionality)
+                               onMove={() => setMovingFile(file)}
                               isSelectionMode={isSelectionMode}
                               isSelected={selectedFileIds.includes(file.id)}
                               onSelect={toggleFileSelection}
@@ -929,10 +915,7 @@ function App() {
                                   onClick={() => setCurrentFolder(folder.name)}
                                   onRename={() => setRenamingFolder(folder.name)}
                                   onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
-<<<<<<< HEAD
-=======
                                   onMove={() => setMovingFolder(folder.name)}
->>>>>>> 17bc88a (feat: add move file and folder functionality)
                                   onDelete={() => {
                                     setSelectedFolderNames([folder.name]);
                                     setSelectedFileIds([]);
@@ -974,10 +957,7 @@ function App() {
                                     onDelete={() => verifyDelete(file)}
                                     onRename={() => setRenamingFile(file)}
                                     onToggleFavorite={() => handleToggleFavorite(file.id)}
-<<<<<<< HEAD
-=======
                                     onMove={() => setMovingFile(file)}
->>>>>>> 17bc88a (feat: add move file and folder functionality)
                                     isSelectionMode={isSelectionMode}
                                     isSelected={selectedFileIds.includes(file.id)}
                                     onSelect={toggleFileSelection}
@@ -1069,8 +1049,6 @@ function App() {
           onCancel={() => startUpload(pendingFiles)}
         />
 
-<<<<<<< HEAD
-=======
         <MoveModal
           isOpen={!!movingFile || !!movingFolder}
           onClose={() => {
@@ -1085,8 +1063,6 @@ function App() {
           folders={allFolderNames}
           title={movingFile ? t("file.move") : t("folder.move")}
         />
-
->>>>>>> 17bc88a (feat: add move file and folder functionality)
       </AppLayout>
 
       <Notification
