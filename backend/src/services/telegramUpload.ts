@@ -756,25 +756,6 @@ const mediaGroupQueues = new Map<string, MediaGroupQueue>();
 // 多文件上传处理延迟（毫秒），等待所有文件消息到达
 const MEDIA_GROUP_DELAY = 1500;
 
-// 获取文件预估大小
-function getEstimatedFileSize(message: Api.Message): number {
-    if (message.document) {
-        return Number((message.document as Api.Document).size) || 0;
-    }
-    if (message.video) {
-        return Number((message.video as Api.Document).size) || 0;
-    }
-    if (message.audio) {
-        return Number((message.audio as Api.Document).size) || 0;
-    }
-    if (message.photo) {
-        return 1024 * 1024; // 1MB estimate for photos
-    }
-    return 0;
-}
-
-// 进度条函数已移至 telegramMessages.ts (generateProgressBar)
-
 function getDownloadableMedia(message: Api.Message): any | null {
     if (!message.media) return null;
     const media: any = message.media;
@@ -789,6 +770,26 @@ function getDownloadableMedia(message: Api.Message): any | null {
     }
     return null;
 }
+
+function isTelegramPhotoMedia(media: any): boolean {
+    const inner = media?.photo || media;
+    return media?.className === 'MessageMediaPhoto' || inner?.className === 'Photo' || Boolean(inner?.sizes);
+}
+
+// 获取文件预估大小
+function getEstimatedFileSize(message: Api.Message): number {
+    const media = getDownloadableMedia(message);
+    if (isTelegramPhotoMedia(media)) {
+        return 0;
+    }
+    const document = (media as any)?.document || media;
+    if (document?.size) {
+        return Number(document.size) || 0;
+    }
+    return 0;
+}
+
+// 进度条函数已移至 telegramMessages.ts (generateProgressBar)
 
 function getDocumentFilename(document: any, fallback: string): string {
     const fileNameAttr = document.attributes?.find((a: any) => a.className === 'DocumentAttributeFilename') as any;
@@ -904,12 +905,21 @@ async function downloadAndSaveFile(
         if (!media) {
             throw new Error('该图文消息未包含可下载媒体');
         }
-        const workers = totalSize > TELEGRAM_DOWNLOAD_PART_SIZE
+        const isPhotoMedia = isTelegramPhotoMedia(media);
+        const workers = !isPhotoMedia && totalSize > TELEGRAM_DOWNLOAD_PART_SIZE
             ? Math.min(configuredWorkers, Math.ceil(totalSize / TELEGRAM_DOWNLOAD_PART_SIZE))
             : 1;
-        console.log(`🤖 Telegram 下载参数: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || 'unknown'}`);
+        console.log(`🤖 Telegram 下载参数: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || 'unknown'}, photo=${isPhotoMedia}`);
 
-        if (workers > 1 && totalSize > 0) {
+        if (isPhotoMedia) {
+            const downloaded = await client.downloadMedia(message, {
+                outputFile: filePath,
+                progressCallback: onProgress,
+            });
+            if (!downloaded || !fs.existsSync(filePath)) {
+                throw new Error('Telegram 图片下载未生成文件');
+            }
+        } else if (workers > 1 && totalSize > 0) {
             const fileHandle = await fs.promises.open(filePath, 'w');
             try {
                 await fileHandle.truncate(totalSize);

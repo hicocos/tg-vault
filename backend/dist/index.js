@@ -3067,21 +3067,6 @@ function forceStopDownloadTasks(reason) {
 }
 var mediaGroupQueues = /* @__PURE__ */ new Map();
 var MEDIA_GROUP_DELAY = 1500;
-function getEstimatedFileSize(message) {
-  if (message.document) {
-    return Number(message.document.size) || 0;
-  }
-  if (message.video) {
-    return Number(message.video.size) || 0;
-  }
-  if (message.audio) {
-    return Number(message.audio.size) || 0;
-  }
-  if (message.photo) {
-    return 1024 * 1024;
-  }
-  return 0;
-}
 function getDownloadableMedia(message) {
   if (!message.media) return null;
   const media = message.media;
@@ -3095,6 +3080,21 @@ function getDownloadableMedia(message) {
     return media.webpage.document || media.webpage.photo;
   }
   return null;
+}
+function isTelegramPhotoMedia(media) {
+  const inner = media?.photo || media;
+  return media?.className === "MessageMediaPhoto" || inner?.className === "Photo" || Boolean(inner?.sizes);
+}
+function getEstimatedFileSize(message) {
+  const media = getDownloadableMedia(message);
+  if (isTelegramPhotoMedia(media)) {
+    return 0;
+  }
+  const document = media?.document || media;
+  if (document?.size) {
+    return Number(document.size) || 0;
+  }
+  return 0;
 }
 function getDocumentFilename(document, fallback) {
   const fileNameAttr = document.attributes?.find((a) => a.className === "DocumentAttributeFilename");
@@ -3190,9 +3190,18 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
     if (!media) {
       throw new Error("\u8BE5\u56FE\u6587\u6D88\u606F\u672A\u5305\u542B\u53EF\u4E0B\u8F7D\u5A92\u4F53");
     }
-    const workers = totalSize > TELEGRAM_DOWNLOAD_PART_SIZE ? Math.min(configuredWorkers, Math.ceil(totalSize / TELEGRAM_DOWNLOAD_PART_SIZE)) : 1;
-    console.log(`\u{1F916} Telegram \u4E0B\u8F7D\u53C2\u6570: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || "unknown"}`);
-    if (workers > 1 && totalSize > 0) {
+    const isPhotoMedia = isTelegramPhotoMedia(media);
+    const workers = !isPhotoMedia && totalSize > TELEGRAM_DOWNLOAD_PART_SIZE ? Math.min(configuredWorkers, Math.ceil(totalSize / TELEGRAM_DOWNLOAD_PART_SIZE)) : 1;
+    console.log(`\u{1F916} Telegram \u4E0B\u8F7D\u53C2\u6570: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || "unknown"}, photo=${isPhotoMedia}`);
+    if (isPhotoMedia) {
+      const downloaded = await client2.downloadMedia(message, {
+        outputFile: filePath,
+        progressCallback: onProgress
+      });
+      if (!downloaded || !fs6.existsSync(filePath)) {
+        throw new Error("Telegram \u56FE\u7247\u4E0B\u8F7D\u672A\u751F\u6210\u6587\u4EF6");
+      }
+    } else if (workers > 1 && totalSize > 0) {
       const fileHandle = await fs6.promises.open(filePath, "w");
       try {
         await fileHandle.truncate(totalSize);
