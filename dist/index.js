@@ -42,15 +42,21 @@ async function initializeDatabase() {
         i++;
       } else if (char === ";" && !inDollarQuote) {
         const stmt = current.trim();
-        if (stmt.length > 1 && !stmt.startsWith("--")) {
-          statements.push(stmt.slice(0, -1));
+        if (stmt.length > 1) {
+          const withoutLeadingLineComments = stmt.replace(/^\s*(--[^\n]*\n\s*)+/g, "").trim();
+          if (withoutLeadingLineComments.length > 0) {
+            statements.push(withoutLeadingLineComments.slice(0, -1));
+          }
         }
         current = "";
       }
     }
     const lastStmt = current.trim();
-    if (lastStmt.length > 0 && !lastStmt.startsWith("--")) {
-      statements.push(lastStmt);
+    if (lastStmt.length > 0) {
+      const withoutLeadingLineComments = lastStmt.replace(/^\s*(--[^\n]*\n\s*)+/g, "").trim();
+      if (withoutLeadingLineComments.length > 0) {
+        statements.push(withoutLeadingLineComments);
+      }
     }
     for (const statement of statements) {
       try {
@@ -78,7 +84,7 @@ var init_db = __esm({
     dotenv.config();
     ({ Pool } = pg);
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL || "postgresql://foomclous:password@localhost:5432/foomclous"
+      connectionString: process.env.DATABASE_URL || "postgresql://flclouds:password@localhost:5432/flclouds"
     });
     initializationPromise = null;
     pool.on("connect", async () => {
@@ -391,7 +397,7 @@ var init_storage = __esm({
       name = "onedrive";
       accessToken = null;
       tokenExpiresAt = 0;
-      ONEDRIVE_FOLDER = "FoomClous";
+      ONEDRIVE_FOLDER = "FlClouds";
       /**
        * 生成 OAuth 授权 URL
        */
@@ -474,30 +480,40 @@ var init_storage = __esm({
        */
       async ensureFolderExists(token) {
         try {
-          await axios.get(
-            `https://graph.microsoft.com/v1.0/me/drive/root:/${this.ONEDRIVE_FOLDER}`,
-            { headers: { "Authorization": `Bearer ${token}` } }
-          );
+          const endpoint = `https://graph.microsoft.com/v1.0/me/drive/root:/${encodeURIComponent(this.ONEDRIVE_FOLDER)}:`;
+          await axios.get(endpoint, {
+            headers: { "Authorization": `Bearer ${token}` },
+            timeout: 3e4
+          });
         } catch (error) {
           if (error.response?.status === 404) {
             console.log("[OneDrive] Creating storage folder:", this.ONEDRIVE_FOLDER);
-            await axios.post(
-              `https://graph.microsoft.com/v1.0/me/drive/root/children`,
-              {
-                name: this.ONEDRIVE_FOLDER,
-                folder: {},
-                "@microsoft.graph.conflictBehavior": "fail"
-              },
-              {
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Content-Type": "application/json"
+            try {
+              await axios.post(
+                `https://graph.microsoft.com/v1.0/me/drive/root/children`,
+                {
+                  name: this.ONEDRIVE_FOLDER,
+                  folder: {},
+                  "@microsoft.graph.conflictBehavior": "fail"
+                },
+                {
+                  headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "Content-Type": "application/json"
+                  },
+                  timeout: 3e4
                 }
-              }
-            );
-            console.log("[OneDrive] Storage folder created successfully");
+              );
+              console.log("[OneDrive] Storage folder created successfully");
+            } catch (postError) {
+              const errorDetails = postError.response?.data?.error || postError.message;
+              console.error("[OneDrive] Create folder failed:", errorDetails);
+              throw new Error(`OneDrive failed to create folder: ${JSON.stringify(errorDetails)}`);
+            }
           } else {
-            throw error;
+            const errorDetails = error.response?.data?.error || error.message;
+            console.error("[OneDrive] Check folder failed:", errorDetails);
+            throw new Error(`OneDrive folder check failed (Status ${error.response?.status}): ${JSON.stringify(errorDetails)}`);
           }
         }
       }
@@ -793,7 +809,7 @@ var init_storage = __esm({
       oauth2Client;
       drive;
       tokenExpiresAt = 0;
-      GOOGLE_DRIVE_FOLDER = "FoomClous";
+      GOOGLE_DRIVE_FOLDER = "FlClouds";
       static generateAuthUrl(clientId, clientSecret, redirectUri) {
         const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
         return oauth2Client.generateAuthUrl({
@@ -1077,7 +1093,10 @@ var init_storage = __esm({
             console.log("[StorageManager] Legacy config migrated successfully.");
           } else {
             accountId = existing.rows[0].id;
+            console.log("[StorageManager] Legacy config already migrated, account ID:", accountId);
           }
+          console.log("[StorageManager] Cleaning up legacy settings...");
+          await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id')");
           const updateRes = await query(
             "UPDATE files SET storage_account_id = $1 WHERE source = $2 AND storage_account_id IS NULL",
             [accountId, "onedrive"]
@@ -1228,7 +1247,8 @@ var init_storage = __esm({
           const pendingName = await this.getSetting("onedrive_pending_name");
           const finalName = name || pendingName || "OneDrive Account";
           await this.addOneDriveAccount(finalName, clientId, clientSecret, refreshToken, tenantId);
-          await query("DELETE FROM system_settings WHERE key = 'onedrive_pending_name'");
+          console.log("[StorageManager] Cleaning up temporary settings after successful account add/update...");
+          await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id', 'onedrive_pending_name')");
           const res = await query("SELECT id FROM storage_accounts WHERE type = $1 ORDER BY created_at DESC LIMIT 1", ["onedrive"]);
           if (res.rows[0]) {
             await this.switchAccount(res.rows[0].id);
@@ -1248,29 +1268,37 @@ var init_storage = __esm({
 import express from "express";
 import cors from "cors";
 import dotenv3 from "dotenv";
-import path13 from "path";
-import fs12 from "fs";
+import path15 from "path";
+import fs14 from "fs";
 
 // src/routes/files.ts
 init_db();
 import { Router as Router2 } from "express";
-import fs9 from "fs";
-import path9 from "path";
+import fs10 from "fs";
+import path11 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto4 from "crypto";
+import crypto6 from "crypto";
 
 // src/utils/config.ts
 import crypto from "crypto";
 import dotenv2 from "dotenv";
 dotenv2.config();
 var ACCESS_PASSWORD_HASH = process.env.ACCESS_PASSWORD_HASH || "";
-var SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
+var SESSION_SECRET = process.env.SESSION_SECRET || ACCESS_PASSWORD_HASH || crypto.randomBytes(32).toString("hex");
+if (!process.env.SESSION_SECRET) {
+  console.warn("\u26A0\uFE0F  SESSION_SECRET \u672A\u8BBE\u7F6E\uFF0C\u91CD\u542F\u540E\u4F1A\u8BDD\u548C\u7B7E\u540D URL \u53EF\u80FD\u5931\u6548\u3002\u8BF7\u5728\u751F\u4EA7\u73AF\u5883\u914D\u7F6E\u56FA\u5B9A SESSION_SECRET\u3002");
+}
 var TOKEN_EXPIRY = 7 * 24 * 60 * 60 * 1e3;
+var TELEGRAM_USER_API_ID = process.env.TELEGRAM_USER_API_ID || "";
+var TELEGRAM_USER_API_HASH = process.env.TELEGRAM_USER_API_HASH || "";
+var TELEGRAM_USER_SESSION_FILE = process.env.TELEGRAM_USER_SESSION_FILE || "./data/telegram_user_session.txt";
+var TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID = process.env.TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID || "";
+var TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || "4", 10) || 4));
 
 // src/routes/auth.ts
 import { Router } from "express";
-import crypto3 from "crypto";
+import crypto5 from "crypto";
 import { rateLimit } from "express-rate-limit";
 
 // src/utils/security.ts
@@ -1348,7 +1376,7 @@ async function generateOTPAuthUrl(user = "Admin") {
   }
   const otpauth = authenticator.toURI({
     label: user,
-    issuer: "FoomClous",
+    issuer: "FlClouds",
     secret
   });
   return await QRCode.toDataURL(otpauth);
@@ -1370,12 +1398,12 @@ import axios2 from "axios";
 
 // src/services/telegramBot.ts
 init_storage();
-import { TelegramClient as TelegramClient2, Api as Api2 } from "telegram";
-import { StringSession } from "telegram/sessions/index.js";
+import { TelegramClient as TelegramClient4, Api as Api3 } from "telegram";
+import { StringSession as StringSession2 } from "telegram/sessions/index.js";
 import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/index.js";
-import fs8 from "fs";
-import path8 from "path";
+import fs9 from "fs";
+import path10 from "path";
 
 // src/services/telegramState.ts
 init_db();
@@ -1412,9 +1440,10 @@ function isAuthenticated(userId) {
 
 // src/services/telegramCommands.ts
 init_db();
+import { Api as Api2 } from "telegram";
 import checkDiskSpaceModule from "check-disk-space";
 import os from "os";
-import fs6 from "fs";
+import fs7 from "fs";
 
 // src/utils/telegramUtils.ts
 import crypto2 from "crypto";
@@ -1748,13 +1777,13 @@ function buildAuthSuccess() {
   ].join("\n");
 }
 function buildStartPrompt() {
-  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 FoomClous Bot\uFF01**
+  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 FlClouds Bot\uFF01**
 
 \u{1F510} \u8BF7\u4F7F\u7528\u4E0B\u65B9\u952E\u76D8\u8F93\u5165\u5BC6\u7801\uFF1A`;
 }
 function buildHelp() {
   return [
-    `\u{1F4D6} **FoomClous Bot \u5E2E\u52A9**`,
+    `\u{1F4D6} **FlClouds Bot \u5E2E\u52A9**`,
     LINE,
     ``,
     `**\u{1F4E4} \u6587\u4EF6\u4E0A\u4F20**`,
@@ -1797,7 +1826,7 @@ function buildStorageReport(data) {
     `  \u53EF\u3000\u7528\u3000${formatBytes(data.diskFree)}`,
     `  ${usageBar}`,
     ``,
-    `**\u{1F4C1} FoomClous \u6587\u4EF6**`,
+    `**\u{1F4C1} FlClouds \u6587\u4EF6**`,
     `  \u6587\u4EF6\u6570\u3000${data.fileCount} \u4E2A`,
     `  \u5360\u3000\u7528\u3000${formatBytes(data.totalFileSize)}`,
     ``,
@@ -1866,9 +1895,9 @@ function buildTasksReport(active, pending, history) {
     lines.push("");
     lines.push(`**\u{1F552} \u6700\u8FD1\u5B8C\u6210** (\u524D 5 \u4E2A)`);
     history.slice(0, 5).forEach((task) => {
-      const icon = task.status === "success" ? "\u2705" : "\u274C";
+      const icon = task.status === "success" ? "\u2705" : task.status === "cancelled" ? "\u{1F6D1}" : "\u274C";
       lines.push(`  ${icon} ${task.fileName}`);
-      if (task.status === "failed" && task.error) {
+      if ((task.status === "failed" || task.status === "cancelled") && task.error) {
         lines.push(`      \u539F\u56E0: ${task.error}`);
       }
     });
@@ -1942,11 +1971,10 @@ function buildDeleteSuccess(fileName, fileId) {
     `\u{1F5D1}\uFE0F ID: ${fileId}`
   ].join("\n");
 }
-function buildSilentModeNotice(taskCount) {
+function buildSilentModeNotice(fileCount) {
   return [
     `\u{1F910} **\u5DF2\u5207\u6362\u5230\u9759\u9ED8\u6A21\u5F0F**`,
     ``,
-    `\u5F53\u524D\u4EFB\u52A1\u6570: ${taskCount} \u4E2A`,
     `Bot \u5C06\u5728\u540E\u53F0\u7EE7\u7EED\u5904\u7406\u6240\u6709\u6587\u4EF6\uFF0C\u8BF7\u8010\u5FC3\u7B49\u5F85\u3002`,
     ``,
     `\u{1F4A1} \u53D1\u9001 /tasks \u67E5\u770B\u5B9E\u65F6\u4EFB\u52A1\u72B6\u6001`
@@ -2163,22 +2191,24 @@ function buildCleanupNotice(deletedCount, freedSpace) {
 // src/services/telegramUpload.ts
 init_db();
 import { Api } from "telegram";
-import fs5 from "fs";
-import path6 from "path";
-import { v4 as uuidv4 } from "uuid";
+import fs6 from "fs";
+import path8 from "path";
+import crypto4 from "crypto";
+import bigInt from "big-integer";
 
 // src/utils/thumbnail.ts
 import path5 from "path";
 import sharp from "sharp";
 import ffmpeg from "fluent-ffmpeg";
 import fs4 from "fs";
+import crypto3 from "crypto";
 var THUMBNAIL_DIR2 = path5.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 if (!fs4.existsSync(THUMBNAIL_DIR2)) {
   fs4.mkdirSync(THUMBNAIL_DIR2, { recursive: true });
 }
 async function generateThumbnail(filePath, storedName, mimeType) {
   const absFilePath = path5.resolve(filePath);
-  const thumbName = `thumb_${path5.parse(storedName).name}.webp`;
+  const thumbName = `thumb_${crypto3.randomUUID()}.webp`;
   const thumbPath = path5.join(THUMBNAIL_DIR2, thumbName);
   console.log(`[Thumbnail] \u{1F680} Starting generation for: ${storedName}`);
   console.log(`[Thumbnail] Source: ${absFilePath}`);
@@ -2272,12 +2302,189 @@ async function getImageDimensions(filePath, mimeType) {
 
 // src/services/telegramUpload.ts
 init_storage();
+
+// src/services/telegramUserClient.ts
+import fs5 from "fs";
+import path6 from "path";
+import { TelegramClient } from "telegram";
+import { StringSession } from "telegram/sessions/index.js";
+var userClient = null;
+var userSessionFilePath = "";
+function getUserApiId() {
+  return parseInt(process.env.TELEGRAM_USER_API_ID || "0");
+}
+function getUserApiHash() {
+  return process.env.TELEGRAM_USER_API_HASH || "";
+}
+function getSessionFilePath() {
+  return process.env.TELEGRAM_USER_SESSION_FILE || "./data/telegram_user_session.txt";
+}
+async function initTelegramUserClient() {
+  const apiId = getUserApiId();
+  const apiHash = getUserApiHash();
+  if (!apiId || !apiHash) {
+    console.log("\u26A0\uFE0F \u672A\u914D\u7F6E Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\uFF0C\u8DF3\u8FC7 user client \u521D\u59CB\u5316");
+    return;
+  }
+  userSessionFilePath = getSessionFilePath();
+  const sessionDir = path6.dirname(userSessionFilePath);
+  if (!fs5.existsSync(sessionDir)) {
+    fs5.mkdirSync(sessionDir, { recursive: true, mode: 448 });
+  }
+  const sessionString = fs5.existsSync(userSessionFilePath) ? fs5.readFileSync(userSessionFilePath, "utf-8").trim() : "";
+  if (!sessionString) {
+    console.log("\u26A0\uFE0F Telegram \u7528\u6237 session \u4E3A\u7A7A\uFF0C\u5148\u8FD0\u884C\u767B\u5F55\u811A\u672C\u751F\u6210 session \u540E\u518D\u542F\u7528 user client");
+    return;
+  }
+  userClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
+    connectionRetries: 15,
+    retryDelay: 2e3,
+    useWSS: false,
+    deviceModel: "FlClouds User Downloader",
+    systemVersion: "1.0.0",
+    appVersion: "1.0.0",
+    floodSleepThreshold: 120
+  });
+  await userClient.connect();
+  if (!await userClient.checkAuthorization()) {
+    console.log("\u26A0\uFE0F Telegram \u7528\u6237 session \u65E0\u6548\u6216\u5DF2\u8FC7\u671F\uFF0Cuser client \u672A\u542F\u7528");
+    userClient = null;
+    return;
+  }
+  fs5.writeFileSync(userSessionFilePath, userClient.session.save(), { mode: 384 });
+  fs5.chmodSync(userSessionFilePath, 384);
+  console.log("\u{1F916} Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\u5DF2\u8FDE\u63A5");
+}
+function getTelegramUserClient() {
+  return userClient;
+}
+function isTelegramUserClientReady() {
+  return Boolean(userClient?.connected);
+}
+function getTelegramUserSessionFilePath() {
+  return userSessionFilePath || getSessionFilePath();
+}
+
+// src/utils/fileUtils.ts
+init_db();
+import path7 from "path";
+async function getUniqueStoredName(originalName, folder = null, storageAccountId = null) {
+  const sanitizedName = sanitizeFilename(originalName);
+  const ext = path7.extname(sanitizedName);
+  const baseName = ext ? sanitizedName.slice(0, -ext.length) : sanitizedName;
+  let currentName = sanitizedName;
+  let counter = 1;
+  let exists = true;
+  while (exists) {
+    let checkQuery = "";
+    let params = [];
+    if (storageAccountId) {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND storage_account_id = $2";
+      params = [currentName, storageAccountId];
+    } else {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND source = 'local'";
+      params = [currentName];
+    }
+    const result = await query(checkQuery, params);
+    const count = result.rows[0]?.cnt || 0;
+    if (count === 0) {
+      exists = false;
+    } else {
+      currentName = `${baseName} (${counter})${ext}`;
+      counter++;
+    }
+  }
+  return currentName;
+}
+
+// src/services/telegramUpload.ts
 var UPLOAD_DIR2 = process.env.UPLOAD_DIR || "./data/uploads";
+var DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || "4", 10) || 4));
+var TELEGRAM_DOWNLOAD_PART_SIZE = 512 * 1024;
+function clampDownloadWorkers(value) {
+  const parsed = parseInt(String(value ?? DEFAULT_TELEGRAM_DOWNLOAD_WORKERS), 10);
+  const normalized = [4, 8, 12, 16].includes(parsed) ? parsed : DEFAULT_TELEGRAM_DOWNLOAD_WORKERS;
+  return Math.max(1, Math.min(16, normalized));
+}
+async function getTelegramDownloadWorkers() {
+  const storedValue = await getSetting("telegram_download_workers", String(DEFAULT_TELEGRAM_DOWNLOAD_WORKERS));
+  return clampDownloadWorkers(storedValue);
+}
 var floodWaitUntil = 0;
+var bridgedMessageCache = /* @__PURE__ */ new Map();
+async function getFirstUserVisibleMediaMessage(userClient2, sourceEntity, sourceMessageId) {
+  try {
+    const [userVisibleMessage] = await userClient2.getMessages(sourceEntity, { ids: sourceMessageId });
+    return userVisibleMessage?.media ? userVisibleMessage : void 0;
+  } catch (error) {
+    console.warn("\u{1F916} \u7528\u6237\u8D26\u53F7\u8BFB\u53D6 Telegram \u5A92\u4F53\u6D88\u606F\u5931\u8D25:", error);
+    return void 0;
+  }
+}
+async function resolveDownloadSource(botClient, message) {
+  const userDownloadEnabled = await getSetting("telegram_user_download_enabled", "false") === "true";
+  if (!userDownloadEnabled) {
+    return { client: botClient, message };
+  }
+  const userClient2 = getTelegramUserClient();
+  if (!userClient2 || !isTelegramUserClientReady()) {
+    throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5DF2\u5F00\u542F\uFF0C\u4F46 user session \u672A\u5C31\u7EEA");
+  }
+  const bridgeChatId = process.env.TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID;
+  if (bridgeChatId) {
+    let sourceMessageId = message.id;
+    const originalChatId = message.chatId?.toString();
+    if (originalChatId !== bridgeChatId) {
+      const cacheKey = `${originalChatId || "unknown"}:${message.id}`;
+      let bridgedMessage = bridgedMessageCache.get(cacheKey);
+      if (!bridgedMessage) {
+        const forwardedMessages = await botClient.forwardMessages(bridgeChatId, { messages: message, fromPeer: message.inputChat });
+        bridgedMessage = forwardedMessages?.[0];
+        if (!bridgedMessage?.id) {
+          throw new Error("\u5DF2\u914D\u7F6E\u6865\u63A5\u804A\u5929\uFF0C\u4F46 bot \u672A\u80FD\u628A\u6587\u4EF6\u8F6C\u53D1\u5230\u6865\u63A5\u804A\u5929\uFF1B\u8BF7\u786E\u8BA4 bot \u5728\u6865\u63A5\u7FA4/\u9891\u9053\u5185\u4E14\u6709\u53D1\u6D88\u606F\u6743\u9650");
+        }
+        bridgedMessageCache.set(cacheKey, bridgedMessage);
+      }
+      sourceMessageId = bridgedMessage.id;
+    }
+    const bridgeMessage = await getFirstUserVisibleMediaMessage(userClient2, bridgeChatId, sourceMessageId);
+    if (bridgeMessage) {
+      return { client: userClient2, message: bridgeMessage };
+    }
+    throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u65E0\u6CD5\u8BFB\u53D6\u6865\u63A5\u804A\u5929\u91CC\u7684\u5A92\u4F53\u6D88\u606F\uFF0C\u8BF7\u786E\u8BA4 bot \u548C\u7528\u6237\u8D26\u53F7\u90FD\u5728\u6865\u63A5\u7FA4/\u9891\u9053\u4E2D\uFF0Cbot \u6709\u53D1\u6D88\u606F\u6743\u9650\uFF0C\u7528\u6237\u8D26\u53F7\u80FD\u770B\u5230\u6865\u63A5\u804A\u5929");
+  }
+  const fwdFrom = message.fwdFrom;
+  const forwardedSourcePeer = fwdFrom?.savedFromPeer || fwdFrom?.fromId;
+  const forwardedSourceMessageId = fwdFrom?.savedFromMsgId || fwdFrom?.channelPost;
+  if (forwardedSourcePeer && forwardedSourceMessageId) {
+    const forwardedSourceMessage = await getFirstUserVisibleMediaMessage(userClient2, forwardedSourcePeer, forwardedSourceMessageId);
+    if (forwardedSourceMessage) {
+      console.log(`\u{1F916} \u4F7F\u7528\u7528\u6237\u8D26\u53F7\u4ECE\u8F6C\u53D1\u6765\u6E90\u8BFB\u53D6\u5A92\u4F53: msg=${forwardedSourceMessageId}`);
+      return { client: userClient2, message: forwardedSourceMessage };
+    }
+  }
+  const botMe = await botClient.getMe();
+  const botUsername = botMe?.username;
+  const botEntity = botUsername ? `@${botUsername}` : botMe?.id;
+  if (botEntity) {
+    const botDialogMessage = await getFirstUserVisibleMediaMessage(userClient2, botEntity, message.id);
+    if (botDialogMessage) {
+      return { client: userClient2, message: botDialogMessage };
+    }
+  }
+  console.warn("\u{1F916} \u7528\u6237\u8D26\u53F7\u65E0\u6CD5\u8BFB\u53D6\u8BE5\u5A92\u4F53\u6D88\u606F\uFF0C\u56DE\u9000\u5230 bot \u4F1A\u8BDD\u4E0B\u8F7D\uFF1B\u5927\u4E8E bot \u9650\u5236\u7684\u6587\u4EF6\u53EF\u80FD\u4ECD\u4F1A\u5931\u8D25\u3002");
+  return { client: botClient, message };
+}
 async function safeEditMessage(client2, chatId, params) {
   if (Date.now() < floodWaitUntil) return null;
   try {
-    return await client2.editMessage(chatId, params);
+    const result = await client2.editMessage(chatId, params);
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const chatIdStr = chatId.toString();
+      const isSilent = silentSessionMap.has(chatIdStr);
+      console.log(`[TG][status] edit chat=${chatIdStr} msg=${params?.message} silent=${isSilent}`);
+    }
+    return result;
   } catch (e) {
     if (e.errorMessage === "FLOOD" || e.errorMessage?.includes("FLOOD_WAIT")) {
       const seconds = e.seconds || 30;
@@ -2287,28 +2494,66 @@ async function safeEditMessage(client2, chatId, params) {
     return null;
   }
 }
-async function ensureSilentNotice(client2, message, taskCount) {
-  const chatId = message.chatId;
-  if (!chatId) return;
+var silentNoticePromiseMap = /* @__PURE__ */ new Map();
+async function ensureSilentNotice(client2, chatId, fileCount, replyToMsg) {
   const chatIdStr = chatId.toString();
-  const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-  const now = Date.now();
-  const lastTime = lastSilentNotificationTimeMap.get(chatIdStr) || 0;
-  if (now - lastTime > SILENT_NOTIFICATION_COOLDOWN || !lastMsgId) {
-    await deleteLastStatusMessage(client2, chatId);
-    const sMsg = await safeReply(message, {
-      message: buildSilentModeNotice(taskCount)
-    });
-    if (sMsg) {
-      updateLastStatusMessageId(chatId, sMsg.id, true);
+  const silentSessionActive = silentSessionMap.has(chatIdStr);
+  if (!silentSessionActive) return;
+  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
+  if (silentMsgId) {
+    if (!replyToMsg) return;
+    try {
+      await client2.deleteMessages(chatId, [silentMsgId], { revoke: true });
+    } catch (e) {
     }
-    lastSilentNotificationTimeMap.set(chatIdStr, now);
+    silentNoticeMessageIdMap.delete(chatIdStr);
+  }
+  if (silentNoticePromiseMap.has(chatIdStr)) {
+    try {
+      await silentNoticePromiseMap.get(chatIdStr);
+    } catch (e) {
+    }
+    if (silentNoticeMessageIdMap.get(chatIdStr)) return;
+  }
+  const text = buildSilentModeNotice(fileCount);
+  const sendPromise = (async () => {
+    let sMsg;
+    if (replyToMsg) {
+      sMsg = await safeReply(replyToMsg, { message: text });
+    }
+    if (!sMsg) {
+      try {
+        sMsg = await client2.sendMessage(chatId, { message: text });
+      } catch (e) {
+        console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
+      }
+    }
+    if (sMsg) {
+      silentNoticeMessageIdMap.set(chatIdStr, sMsg.id);
+      console.log(`[TG][silent] notice-sent chat=${chatIdStr} msg=${sMsg.id}`);
+    }
+    return sMsg;
+  })();
+  silentNoticePromiseMap.set(chatIdStr, sendPromise);
+  try {
+    await sendPromise;
+  } finally {
+    if (silentNoticePromiseMap.get(chatIdStr) === sendPromise) {
+      silentNoticePromiseMap.delete(chatIdStr);
+    }
   }
 }
 async function safeReply(message, params) {
   if (Date.now() < floodWaitUntil) return null;
   try {
-    return await message.reply(params);
+    const result = await message.reply(params);
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const chatIdStr = message.chatId?.toString() || "unknown";
+      const isSilent = silentSessionMap.has(chatIdStr);
+      const msgId = result?.id;
+      console.log(`[TG][status] reply chat=${chatIdStr} msg=${msgId} silent=${isSilent}`);
+    }
+    return result;
   } catch (e) {
     if (e.errorMessage === "FLOOD" || e.errorMessage?.includes("FLOOD_WAIT")) {
       const seconds = e.seconds || 30;
@@ -2326,12 +2571,14 @@ var BetterDownloadQueue = class {
   maxConcurrent = 2;
   // 用户要求并发限制为 2
   async add(fileName, execute, totalSize = 0) {
-    const id = uuidv4();
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     return new Promise((resolve, reject) => {
+      const abortController = new AbortController();
       const task = {
         id,
         fileName,
         status: "pending",
+        abortController,
         totalSize,
         downloadedSize: 0,
         // The actual execution logic
@@ -2340,13 +2587,17 @@ var BetterDownloadQueue = class {
           task.startTime = Date.now();
           this.active.push(task);
           try {
-            await execute();
-            task.status = "success";
+            await execute(abortController.signal);
+            task.status = abortController.signal.aborted ? "cancelled" : "success";
             resolve();
           } catch (error) {
-            task.status = "failed";
+            task.status = abortController.signal.aborted ? "cancelled" : "failed";
             task.error = error instanceof Error ? error.message : String(error);
-            reject(error);
+            if (abortController.signal.aborted) {
+              resolve();
+            } else {
+              reject(error);
+            }
           } finally {
             task.endTime = Date.now();
             const idx = this.active.findIndex((t) => t.id === id);
@@ -2393,11 +2644,27 @@ var BetterDownloadQueue = class {
       task.downloadedSize = downloaded;
     }
   }
+  forceStopAll(reason = "\u7528\u6237\u5F3A\u5236\u505C\u6B62") {
+    const pending = this.queue.splice(0);
+    for (const task of pending) {
+      task.status = "cancelled";
+      task.error = reason;
+      task.endTime = Date.now();
+      this.history.unshift(task);
+    }
+    for (const task of this.active) {
+      task.error = reason;
+      task.abortController.abort(reason);
+    }
+    if (this.history.length > this.maxHistory) {
+      this.history.splice(this.maxHistory);
+    }
+    return { active: this.active.length, pending: pending.length, total: this.active.length + pending.length };
+  }
 };
 var downloadQueue = new BetterDownloadQueue();
 var statusActionLocks = /* @__PURE__ */ new Map();
 var lastSilentNotificationTimeMap = /* @__PURE__ */ new Map();
-var SILENT_NOTIFICATION_COOLDOWN = 3e4;
 async function runStatusAction(chatId, action) {
   if (!chatId) return;
   const chatIdStr = chatId.toString();
@@ -2413,7 +2680,7 @@ async function runStatusAction(chatId, action) {
   return nextLock;
 }
 var lastStatusMessageIdMap = /* @__PURE__ */ new Map();
-var lastStatusMessageIsSilent = /* @__PURE__ */ new Map();
+var silentNoticeMessageIdMap = /* @__PURE__ */ new Map();
 var silentSessionMap = /* @__PURE__ */ new Map();
 function getSilentSession(chatIdStr) {
   let s = silentSessionMap.get(chatIdStr);
@@ -2423,40 +2690,91 @@ function getSilentSession(chatIdStr) {
   }
   return s;
 }
+function startSilentSession(chatIdStr, total) {
+  const s = { total, completed: 0, failed: 0 };
+  silentSessionMap.set(chatIdStr, s);
+  return s;
+}
 async function finalizeSilentSessionIfDone(client2, chatId) {
   const chatIdStr = chatId.toString();
-  const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
-  if (!isSilent) return;
+  if (!silentSessionMap.has(chatIdStr)) return;
+  const outstanding = getOutstandingTaskCount(chatIdStr);
+  if (outstanding > 0) return;
   const s = silentSessionMap.get(chatIdStr);
-  const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-  if (!s || !lastMsgId || s.total <= 0) return;
-  if (s.completed >= s.total) {
-    const text = buildSilentAllTasksComplete(s.failed);
-    const result = await safeEditMessage(client2, chatId, { message: lastMsgId, text });
-    if (result) {
-      lastStatusMessageIsSilent.set(chatIdStr, false);
-    }
-    silentSessionMap.delete(chatIdStr);
+  const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr);
+  if (silentMsgId) {
+    const text = buildSilentAllTasksComplete(s?.failed || 0);
+    await safeEditMessage(client2, chatId, { message: silentMsgId, text });
   }
+  silentSessionMap.delete(chatIdStr);
+  silentNoticeMessageIdMap.delete(chatIdStr);
+  lastSilentNotificationTimeMap.delete(chatIdStr);
+  console.log(`[TG][silent] finalized chat=${chatIdStr} failed=${s?.failed || 0}`);
+}
+function getBackgroundFileCount(chatIdStr) {
+  const files = getConsolidatedFiles(chatIdStr);
+  const activeFilesCount = files.filter((f) => f.phase !== "success" && f.phase !== "failed").length;
+  const batches = getConsolidatedBatches(chatIdStr);
+  const activeBatchFiles = batches.filter((b) => b.completed < b.totalFiles).reduce((sum, b) => sum + (b.totalFiles - b.completed), 0);
+  const count = activeFilesCount + activeBatchFiles;
+  const logLine = `[TG][silent][${Date.now()}] fileCount chat=${chatIdStr}: activeFiles=${activeFilesCount} activeBatchFiles=${activeBatchFiles} => total=${count}
+`;
+  console.log(logLine.trim());
+  try {
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  return count;
+}
+async function trySilentMode(client2, chatId, message) {
+  const chatIdStr = chatId.toString();
+  const fileCount = getBackgroundFileCount(chatIdStr);
+  const isSilent = silentSessionMap.has(chatIdStr);
+  const logLine = `[TG][silent][${Date.now()}] tryCheck chat=${chatIdStr} fileCount=${fileCount} isSilent=${isSilent}
+`;
+  console.log(logLine.trim());
+  try {
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  if (fileCount > 3 || isSilent) {
+    if (!isSilent) {
+      await deleteLastStatusMessage(client2, chatId);
+      startSilentSession(chatIdStr, fileCount);
+      console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
+    } else {
+      const sess = getSilentSession(chatIdStr);
+      sess.total = Math.max(sess.total, fileCount);
+    }
+    await ensureSilentNotice(client2, chatId, fileCount, message);
+    return true;
+  }
+  return false;
 }
 async function deleteLastStatusMessage(client2, chatId) {
   if (!chatId) return;
   const chatIdStr = chatId.toString();
   const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
   if (lastMsgId) {
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      const isSilent = silentSessionMap.has(chatIdStr);
+      console.log(`[TG][status] delete chat=${chatIdStr} msg=${lastMsgId} silentSession=${isSilent}`);
+    }
     try {
       await client2.deleteMessages(chatId, [lastMsgId], { revoke: true });
     } catch (e) {
     }
     lastStatusMessageIdMap.delete(chatIdStr);
-    lastStatusMessageIsSilent.delete(chatIdStr);
   }
 }
 function updateLastStatusMessageId(chatId, msgId, isSilent = false) {
   if (!chatId || !msgId) return;
   const chatIdStr = chatId.toString();
   lastStatusMessageIdMap.set(chatIdStr, msgId);
-  lastStatusMessageIsSilent.set(chatIdStr, isSilent);
+  if (process.env.TG_STATUS_DEBUG === "1") {
+    const sess = silentSessionMap.has(chatIdStr);
+    console.log(`[TG][status] last chat=${chatIdStr} msg=${msgId} sess=${sess}`);
+  }
 }
 var chatActiveUploads = /* @__PURE__ */ new Map();
 function registerUpload(chatId, uploadId, entry) {
@@ -2526,8 +2844,29 @@ function isAllConsolidatedTasksDone(chatId) {
   const batchesDone = batches.every((b) => b.completed === b.totalFiles);
   return filesDone && batchesDone;
 }
+function getOutstandingTaskCount(chatIdStr) {
+  const files = getConsolidatedFiles(chatIdStr);
+  const batches = getConsolidatedBatches(chatIdStr);
+  const outstandingFiles = files.filter((f) => f.phase !== "success" && f.phase !== "failed").length;
+  const outstandingBatches = batches.filter((b) => b.completed < b.totalFiles).length;
+  return outstandingFiles + outstandingBatches;
+}
 async function checkAndResetSession(client2, chatId) {
   const chatIdStr = chatId.toString();
+  const outstanding = getOutstandingTaskCount(chatIdStr);
+  if (outstanding === 0 && silentSessionMap.has(chatIdStr)) {
+    silentSessionMap.delete(chatIdStr);
+    silentNoticeMessageIdMap.delete(chatIdStr);
+    lastSilentNotificationTimeMap.delete(chatIdStr);
+    console.log(`[TG][silent] Auto-cleared zombie session for ${chatIdStr}`);
+    return;
+  }
+  if (silentSessionMap.has(chatIdStr)) {
+    if (process.env.TG_STATUS_DEBUG === "1") {
+      console.log(`[TG][status] reset-skip chat=${chatIdStr} reason=silentSession`);
+    }
+    return;
+  }
   const hasAnyTask = getActiveBatchCount(chatIdStr) > 0 || getActiveUploadCount(chatIdStr) > 0;
   if (!hasAnyTask || isAllConsolidatedTasksDone(chatIdStr)) {
     await deleteLastStatusMessage(client2, chatId);
@@ -2536,12 +2875,23 @@ async function checkAndResetSession(client2, chatId) {
 }
 async function refreshConsolidatedMessage(client2, chatId, replyTo) {
   const chatIdStr = chatId.toString();
+  const alreadySilent = silentSessionMap.has(chatIdStr);
+  const fileCount = getBackgroundFileCount(chatIdStr);
+  const logLine = `[TG][consolidated][${Date.now()}] check chat=${chatIdStr} silent=${alreadySilent} fileCount=${fileCount} replyTo=${!!replyTo}
+`;
+  try {
+    fs6.appendFileSync("tg_silent_debug.log", logLine);
+  } catch (e) {
+  }
+  if (alreadySilent || fileCount > 3) {
+    await trySilentMode(client2, chatId, replyTo);
+    return;
+  }
   const files = getConsolidatedFiles(chatIdStr);
   const batches = getConsolidatedBatches(chatIdStr);
   if (files.length === 0 && batches.length === 0) return;
   const text = await buildConsolidatedStatus(files, batches);
   const existingMsgId = lastStatusMessageIdMap.get(chatIdStr);
-  const isSilent = lastStatusMessageIsSilent.get(chatIdStr);
   if (replyTo) {
     await deleteLastStatusMessage(client2, chatId);
     const msg = await safeReply(replyTo, { message: text });
@@ -2550,7 +2900,7 @@ async function refreshConsolidatedMessage(client2, chatId, replyTo) {
     }
     return;
   }
-  if (existingMsgId && !isSilent) {
+  if (existingMsgId) {
     await safeEditMessage(client2, chatId, { message: existingMsgId, text });
   }
 }
@@ -2559,6 +2909,9 @@ function getDownloadQueueStats() {
 }
 function getTaskStatus() {
   return downloadQueue.getDetailedStatus();
+}
+function forceStopDownloadTasks(reason) {
+  return downloadQueue.forceStopAll(reason);
 }
 var mediaGroupQueues = /* @__PURE__ */ new Map();
 var MEDIA_GROUP_DELAY = 1500;
@@ -2585,39 +2938,41 @@ function extractFileInfo(message) {
     if (message.document) {
       const doc = message.document;
       const fileNameAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
+      fileName = fileNameAttr?.fileName || `file_${message.id}`;
       mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
       if (fileName.startsWith("file_")) {
         const videoAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeVideo");
         const audioAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeAudio");
-        if (videoAttr) fileName = `video_${Date.now()}.mp4`;
-        else if (audioAttr) fileName = `audio_${Date.now()}.mp3`;
+        if (videoAttr) fileName = `video_${message.id}.mp4`;
+        else if (audioAttr) fileName = `audio_${message.id}.mp3`;
       }
     } else if (message.photo) {
-      fileName = `photo_${Date.now()}.jpg`;
+      const date = /* @__PURE__ */ new Date();
+      const timestamp = date.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      fileName = `Img_${timestamp}.jpg`;
       mimeType = "image/jpeg";
     } else if (message.video) {
       const video = message.video;
       const fileNameAttr = video.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `video_${Date.now()}.mp4`;
+      fileName = fileNameAttr?.fileName || `video_${message.id}.mp4`;
       mimeType = video.mimeType || "video/mp4";
     } else if (message.audio) {
       const audio = message.audio;
       const fileNameAttr = audio.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-      fileName = fileNameAttr?.fileName || `audio_${Date.now()}.mp3`;
+      fileName = fileNameAttr?.fileName || `audio_${message.id}.mp3`;
       mimeType = audio.mimeType || "audio/mpeg";
     } else if (message.voice) {
-      fileName = `voice_${Date.now()}.ogg`;
+      fileName = `voice_${message.id}.ogg`;
       mimeType = "audio/ogg";
     } else if (message.sticker) {
-      fileName = `sticker_${Date.now()}.webp`;
+      fileName = `sticker_${message.id}.webp`;
       mimeType = "image/webp";
     } else {
       const media = message.media;
       if (media.document && media.document instanceof Api.Document) {
         const doc = media.document;
         const fileNameAttr = doc.attributes?.find((a) => a.className === "DocumentAttributeFilename");
-        fileName = fileNameAttr?.fileName || `file_${Date.now()}`;
+        fileName = fileNameAttr?.fileName || `file_${message.id}`;
         mimeType = doc.mimeType || getMimeTypeFromFilename(fileName);
       } else {
         return null;
@@ -2629,63 +2984,105 @@ function extractFileInfo(message) {
   }
   return { fileName: sanitizeFilename(fileName), mimeType };
 }
-async function downloadAndSaveFile(client2, message, fileName, targetDir, onProgress) {
-  const ext = path6.extname(fileName) || "";
-  const storedName = `${uuidv4()}${ext}`;
+async function downloadAndSaveFile(client2, message, originalFileName, targetDir, onProgress, signal) {
+  const ext = path8.extname(originalFileName) || "";
+  const tempStoredName = `${crypto4.randomUUID()}${ext}`;
   let saveDir = targetDir || UPLOAD_DIR2;
-  if (!fs5.existsSync(saveDir)) {
+  if (!fs6.existsSync(saveDir)) {
     try {
-      fs5.mkdirSync(saveDir, { recursive: true });
+      fs6.mkdirSync(saveDir, { recursive: true });
     } catch (err) {
       console.error(`\u{1F916} \u521B\u5EFA\u4E0B\u8F7D\u76EE\u5F55\u5931\u8D25: ${saveDir}`, err);
       if (saveDir === UPLOAD_DIR2) throw err;
       saveDir = UPLOAD_DIR2;
     }
   }
-  const filePath = path6.join(saveDir, storedName);
+  const filePath = path8.join(saveDir, tempStoredName);
   const totalSize = getEstimatedFileSize(message);
   let downloadedSize = 0;
   try {
-    const writeStream = fs5.createWriteStream(filePath);
-    for await (const chunk of client2.iterDownload({
-      file: message.media,
-      requestSize: 512 * 1024
-    })) {
-      writeStream.write(chunk);
-      downloadedSize += chunk.length;
-      if (onProgress && totalSize > 0) {
-        onProgress(downloadedSize, totalSize);
+    if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
+    const configuredWorkers = await getTelegramDownloadWorkers();
+    const workers = totalSize > TELEGRAM_DOWNLOAD_PART_SIZE ? Math.min(configuredWorkers, Math.ceil(totalSize / TELEGRAM_DOWNLOAD_PART_SIZE)) : 1;
+    console.log(`\u{1F916} Telegram \u4E0B\u8F7D\u53C2\u6570: workers=${workers}, part=${TELEGRAM_DOWNLOAD_PART_SIZE} bytes, size=${totalSize || "unknown"}`);
+    if (workers > 1 && totalSize > 0) {
+      const fileHandle = await fs6.promises.open(filePath, "w");
+      try {
+        await fileHandle.truncate(totalSize);
+        await Promise.all(Array.from({ length: workers }, async (_, workerIndex) => {
+          let writeOffset = workerIndex * TELEGRAM_DOWNLOAD_PART_SIZE;
+          for await (const chunk of client2.iterDownload({
+            file: message.media,
+            offset: bigInt(writeOffset),
+            stride: TELEGRAM_DOWNLOAD_PART_SIZE * workers,
+            chunkSize: TELEGRAM_DOWNLOAD_PART_SIZE,
+            requestSize: TELEGRAM_DOWNLOAD_PART_SIZE,
+            fileSize: bigInt(totalSize)
+          })) {
+            if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
+            if (writeOffset >= totalSize) break;
+            const bytesToWrite = Math.min(chunk.length, totalSize - writeOffset);
+            if (bytesToWrite > 0) {
+              await fileHandle.write(chunk.subarray(0, bytesToWrite), 0, bytesToWrite, writeOffset);
+              downloadedSize += bytesToWrite;
+              if (onProgress) {
+                onProgress(Math.min(downloadedSize, totalSize), totalSize);
+              }
+            }
+            writeOffset += TELEGRAM_DOWNLOAD_PART_SIZE * workers;
+          }
+        }));
+      } finally {
+        await fileHandle.close();
       }
+    } else {
+      const writeStream = fs6.createWriteStream(filePath);
+      for await (const chunk of client2.iterDownload({
+        file: message.media,
+        requestSize: TELEGRAM_DOWNLOAD_PART_SIZE
+      })) {
+        if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
+        writeStream.write(chunk);
+        downloadedSize += chunk.length;
+        if (onProgress && totalSize > 0) {
+          onProgress(downloadedSize, totalSize);
+        }
+      }
+      writeStream.end();
+      await new Promise((resolve, reject) => {
+        writeStream.on("finish", resolve);
+        writeStream.on("error", reject);
+      });
     }
-    writeStream.end();
-    await new Promise((resolve, reject) => {
-      writeStream.on("finish", resolve);
-      writeStream.on("error", reject);
-    });
-    const stats = fs5.statSync(filePath);
-    return { filePath, actualSize: stats.size, storedName };
+    const stats = fs6.statSync(filePath);
+    if (totalSize > 0 && stats.size !== totalSize) {
+      throw new Error(`\u4E0B\u8F7D\u6587\u4EF6\u5927\u5C0F\u4E0D\u4E00\u81F4: expected=${totalSize}, actual=${stats.size}`);
+    }
+    return { filePath, actualSize: stats.size, tempStoredName };
   } catch (error) {
     console.error("\u{1F916} \u4E0B\u8F7D\u6587\u4EF6\u5931\u8D25:", error);
-    if (fs5.existsSync(filePath)) {
-      fs5.unlinkSync(filePath);
+    if (fs6.existsSync(filePath)) {
+      fs6.unlinkSync(filePath);
     }
     return null;
   }
 }
 async function processFileUpload(client2, file, queue) {
   file.status = "queued";
-  const attemptUpload = async () => {
+  const attemptUpload = async (signal) => {
     let localFilePath;
     let storedName;
     try {
       const targetDir = file.targetDir || UPLOAD_DIR2;
-      const result = await downloadAndSaveFile(client2, file.message, file.fileName, targetDir);
+      const activeAccountId = storageManager.getActiveAccountId();
+      storedName = await getUniqueStoredName(file.fileName, queue?.folderName || null, activeAccountId);
+      const downloadSource = await resolveDownloadSource(client2, file.message);
+      const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, file.fileName, file.targetDir, void 0, signal);
       if (!result) {
         file.error = "\u4E0B\u8F7D\u5931\u8D25";
         return false;
       }
       localFilePath = result.filePath;
-      storedName = result.storedName;
       const actualSize = result.actualSize;
       const fileType = getFileType(file.mimeType);
       let thumbnailPath = null;
@@ -2702,8 +3099,8 @@ async function processFileUpload(client2, file, queue) {
       if (provider.name !== "local") {
         try {
           finalPath = await provider.saveFile(localFilePath, storedName, file.mimeType);
-          if (fs5.existsSync(localFilePath)) {
-            fs5.unlinkSync(localFilePath);
+          if (fs6.existsSync(localFilePath)) {
+            fs6.unlinkSync(localFilePath);
           }
         } catch (err) {
           console.error("\u4FDD\u5B58\u6587\u4EF6\u5230\u5B58\u50A8\u63D0\u4F9B\u5546\u5931\u8D25:", err);
@@ -2711,7 +3108,6 @@ async function processFileUpload(client2, file, queue) {
         }
       }
       const folderName = queue?.folderName || null;
-      const activeAccountId = storageManager.getActiveAccountId();
       await query(`
                 INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
@@ -2723,9 +3119,9 @@ async function processFileUpload(client2, file, queue) {
     } catch (error) {
       console.error("\u{1F916} \u6587\u4EF6\u4E0A\u4F20\u5931\u8D25:", error);
       file.error = error.message;
-      if (localFilePath && fs5.existsSync(localFilePath)) {
+      if (localFilePath && fs6.existsSync(localFilePath)) {
         try {
-          fs5.unlinkSync(localFilePath);
+          fs6.unlinkSync(localFilePath);
           console.log(`\u{1F916} \u4E0A\u4F20\u5C1D\u8BD5\u5931\u8D25\uFF0C\u5DF2\u81EA\u52A8\u6E05\u7406\u672C\u5730\u5783\u573E\u7F13\u5B58: ${localFilePath}`);
         } catch (e) {
           console.error("\u{1F916} \u81EA\u52A8\u6E05\u7406\u5783\u573E\u7F13\u5B58\u5931\u8D25:", e);
@@ -2734,14 +3130,14 @@ async function processFileUpload(client2, file, queue) {
       return false;
     }
   };
-  const queueTask = async () => {
+  const queueTask = async (signal) => {
     file.status = "uploading";
-    const firstAttemptSuccess = await attemptUpload();
-    if (!firstAttemptSuccess && !file.retried) {
+    const firstAttemptSuccess = await attemptUpload(signal);
+    if (!firstAttemptSuccess && !signal.aborted && !file.retried) {
       file.retried = true;
       file.status = "uploading";
       file.error = void 0;
-      const secondAttemptSuccess = await attemptUpload();
+      const secondAttemptSuccess = await attemptUpload(signal);
       if (!secondAttemptSuccess) {
         file.status = "failed";
       }
@@ -2750,8 +3146,9 @@ async function processFileUpload(client2, file, queue) {
     }
     if (queue?.chatId) {
       const chatId = queue.chatId;
-      if (lastStatusMessageIsSilent.get(chatId.toString())) {
-        const sess = getSilentSession(chatId.toString());
+      const chatIdStr = chatId.toString();
+      if (silentSessionMap.has(chatIdStr)) {
+        const sess = getSilentSession(chatIdStr);
         sess.completed += 1;
         if (file.status === "failed") {
           sess.failed += 1;
@@ -2780,7 +3177,7 @@ async function processBatchUpload(client2, mediaGroupId) {
   const chatId = queue.chatId;
   const batchId = mediaGroupId;
   if (!folderName) {
-    folderName = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+    folderName = mediaGroupId;
   }
   await checkAndResetSession(client2, chatId);
   registerBatch(chatId.toString(), batchId, {
@@ -2793,18 +3190,21 @@ async function processBatchUpload(client2, mediaGroupId) {
     providerName: storageManager.getProvider().name,
     queuePending: 0
   });
-  const targetDir = path6.join(UPLOAD_DIR2, folderName);
-  if (!fs5.existsSync(targetDir)) {
-    fs5.mkdirSync(targetDir, { recursive: true });
+  const sanitizedFolderName = sanitizeFilename(folderName);
+  const targetDir = path8.join(UPLOAD_DIR2, sanitizedFolderName);
+  if (!fs6.existsSync(targetDir)) {
+    fs6.mkdirSync(targetDir, { recursive: true });
   }
-  queue.folderName = folderName;
+  queue.folderName = sanitizedFolderName;
   for (const file of queue.files) {
     file.targetDir = targetDir;
   }
-  await runStatusAction(chatId, async () => {
-    const stats = downloadQueue.getStats();
-    await refreshConsolidatedMessage(client2, chatId, firstMessage);
-  });
+  if (!silentSessionMap.has(chatId.toString())) {
+    await runStatusAction(chatId, async () => {
+      const stats = downloadQueue.getStats();
+      await refreshConsolidatedMessage(client2, chatId, firstMessage);
+    });
+  }
   const onBatchProgress = async () => {
     const completed = queue.files.filter((f) => f.status === "success" || f.status === "failed").length;
     const successful = queue.files.filter((f) => f.status === "success").length;
@@ -2816,9 +3216,11 @@ async function processBatchUpload(client2, mediaGroupId) {
       failed,
       queuePending: stats.pending
     });
-    await runStatusAction(chatId, async () => {
-      await refreshConsolidatedMessage(client2, chatId);
-    });
+    if (!silentSessionMap.has(chatId.toString())) {
+      await runStatusAction(chatId, async () => {
+        await refreshConsolidatedMessage(client2, chatId);
+      });
+    }
   };
   let lastTime = 0;
   const statusUpdater = setInterval(async () => {
@@ -2828,7 +3230,15 @@ async function processBatchUpload(client2, mediaGroupId) {
     await onBatchProgress();
   }, 3e3);
   try {
-    await Promise.all(queue.files.map((file) => processFileUpload(client2, file, queue)));
+    await Promise.all(queue.files.map((file, index) => {
+      const ext = path8.extname(file.fileName);
+      const baseName = queue.folderName || "file";
+      const isDefaultFolder = /^[0-9-]+$/.test(baseName);
+      if (!isDefaultFolder) {
+        file.fileName = `${baseName}_${index + 1}${ext}`;
+      }
+      return processFileUpload(client2, file, queue);
+    }));
     await onBatchProgress();
   } finally {
     clearInterval(statusUpdater);
@@ -2845,8 +3255,8 @@ async function handleCleanupCallback(cleanupId) {
     return { success: false, message: "\u8BE5\u6E05\u7406\u4EFB\u52A1\u5DF2\u8FC7\u671F\u6216\u4E0D\u5B58\u5728" };
   }
   try {
-    if (cleanupInfo.localPath && fs5.existsSync(cleanupInfo.localPath)) {
-      fs5.unlinkSync(cleanupInfo.localPath);
+    if (cleanupInfo.localPath && fs6.existsSync(cleanupInfo.localPath)) {
+      fs6.unlinkSync(cleanupInfo.localPath);
     }
     pendingCleanups.delete(cleanupId);
     return {
@@ -2897,24 +3307,37 @@ async function handleFileUpload(client2, event) {
       status: "pending"
     });
     if (message.chatId) {
-      const chatId = message.chatId;
-      const stats = downloadQueue.getStats();
-      const totalTasks = stats.active + stats.pending + 1;
-      if (totalTasks > 6) {
-        await runStatusAction(chatId, async () => {
-          await ensureSilentNotice(client2, message, totalTasks);
+      const chatIdStr = message.chatId.toString();
+      const batchId = mediaGroupId;
+      const batchMap = chatActiveBatches.get(chatIdStr);
+      if (!batchMap || !batchMap.has(batchId)) {
+        registerBatch(chatIdStr, batchId, {
+          id: batchId,
+          folderName: queue.folderName || "media-group",
+          totalFiles: queue.files.length,
+          completed: 0,
+          successful: 0,
+          failed: 0,
+          providerName: storageManager.getProvider().name,
+          queuePending: 0
         });
-        const sess = getSilentSession(chatId.toString());
-        sess.total += 1;
+      } else {
+        updateBatch(chatIdStr, batchId, {
+          totalFiles: queue.files.length
+        });
       }
+    }
+    if (message.chatId) {
+      await trySilentMode(client2, message.chatId, message);
     }
   } else {
     let finalFileName = fileName;
     const caption = message.message || "";
     if (caption && caption.trim()) {
-      const ext = path6.extname(fileName);
-      const sanitizedCaption = sanitizeFilename(caption.trim());
-      if (!sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase()) && ext) {
+      const ext = path8.extname(fileName);
+      const firstLine = caption.split(/\r?\n/)[0].trim();
+      const sanitizedCaption = sanitizeFilename(firstLine);
+      if (ext && !sanitizedCaption.toLowerCase().endsWith(ext.toLowerCase())) {
         finalFileName = `${sanitizedCaption}${ext}`;
       } else {
         finalFileName = sanitizedCaption;
@@ -2936,28 +3359,24 @@ async function handleFileUpload(client2, event) {
     });
     let statusMsg;
     const useConsolidated = () => getActiveUploadCount(chatIdStr) >= 2 || getActiveBatchCount(chatIdStr) > 0;
-    await runStatusAction(chatId, async () => {
-      const stats2 = downloadQueue.getStats();
-      const lastMsgId = lastStatusMessageIdMap.get(chatIdStr);
-      const totalTasks = stats2.active + stats2.pending + 1;
-      if (totalTasks > 6) {
-        await ensureSilentNotice(client2, message, totalTasks);
-        const sess = getSilentSession(chatIdStr);
-        sess.total += 1;
-      } else if (useConsolidated()) {
-        await refreshConsolidatedMessage(client2, chatId, message);
-      } else {
-        await deleteLastStatusMessage(client2, chatId);
-        statusMsg = await safeReply(message, {
-          message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji)
-        });
-        if (statusMsg) {
-          updateLastStatusMessageId(chatId, statusMsg.id, false);
+    await trySilentMode(client2, chatId, message);
+    if (!silentSessionMap.has(chatIdStr) && getBackgroundFileCount(chatIdStr) <= 3) {
+      await runStatusAction(chatId, async () => {
+        if (useConsolidated()) {
+          await refreshConsolidatedMessage(client2, chatId, message);
+        } else {
+          await deleteLastStatusMessage(client2, chatId);
+          statusMsg = await safeReply(message, {
+            message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji)
+          });
+          if (statusMsg) {
+            updateLastStatusMessageId(chatId, statusMsg.id, false);
+          }
         }
-      }
-    });
+      });
+    }
     const stats = downloadQueue.getStats();
-    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0)) {
+    if (!useConsolidated() && statusMsg && (stats.active >= 2 || stats.pending > 0) && !silentSessionMap.has(chatIdStr)) {
       await runStatusAction(chatId, async () => {
         await safeEditMessage(client2, chatId, {
           message: statusMsg.id,
@@ -2966,12 +3385,12 @@ async function handleFileUpload(client2, event) {
       });
     }
     let lastUpdateTime = 0;
-    const updateInterval = 3e3;
     const onProgress = async (downloaded, total) => {
       const now = Date.now();
-      if (now - lastUpdateTime < updateInterval) return;
+      if (now - lastUpdateTime < 3e3) return;
       lastUpdateTime = now;
-      updateUploadPhase(chatId.toString(), uploadId, { phase: "downloading", downloaded, total });
+      updateUploadPhase(chatIdStr, uploadId, { phase: "downloading", downloaded, total });
+      if (silentSessionMap.has(chatIdStr)) return;
       if (useConsolidated()) {
         await runStatusAction(chatId, async () => {
           await refreshConsolidatedMessage(client2, chatId);
@@ -2989,24 +3408,28 @@ async function handleFileUpload(client2, event) {
     const maxRetries = 1;
     let lastLocalPath;
     let lastError;
-    const attemptSingleUpload = async () => {
+    const attemptSingleUpload = async (signal) => {
       let localFilePath;
       try {
-        const result = await downloadAndSaveFile(client2, message, fileName, void 0, onProgress);
+        if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
+        const activeAccountId = storageManager.getActiveAccountId();
+        const storedName = await getUniqueStoredName(finalFileName, null, activeAccountId);
+        const downloadSource = await resolveDownloadSource(client2, message);
+        const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, fileName, void 0, onProgress, signal);
         if (!result) {
           lastError = "\u4E0B\u8F7D\u5931\u8D25";
           return false;
         }
         localFilePath = result.filePath;
         lastLocalPath = localFilePath;
-        const { actualSize, storedName } = result;
+        const { actualSize } = result;
         const fileType = getFileType(mimeType);
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "saving" });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "saving" });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await safeEditMessage(client2, chatId, {
               message: statusMsg.id,
@@ -3027,8 +3450,8 @@ async function handleFileUpload(client2, event) {
         if (provider.name !== "local") {
           try {
             finalPath = await provider.saveFile(localFilePath, storedName, mimeType);
-            if (fs5.existsSync(localFilePath)) {
-              fs5.unlinkSync(localFilePath);
+            if (fs6.existsSync(localFilePath)) {
+              fs6.unlinkSync(localFilePath);
             }
             lastLocalPath = void 0;
           } catch (err) {
@@ -3036,17 +3459,16 @@ async function handleFileUpload(client2, event) {
             throw err;
           }
         }
-        const activeAccountId = storageManager.getActiveAccountId();
         await query(`
                     INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, null, activeAccountId]);
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3057,9 +3479,9 @@ async function handleFileUpload(client2, event) {
         return true;
       } catch (error) {
         lastError = error instanceof Error ? error.message : "\u672A\u77E5\u9519\u8BEF";
-        if (localFilePath && fs5.existsSync(localFilePath)) {
+        if (localFilePath && fs6.existsSync(localFilePath)) {
           try {
-            fs5.unlinkSync(localFilePath);
+            fs6.unlinkSync(localFilePath);
           } catch (e) {
           }
         }
@@ -3067,23 +3489,23 @@ async function handleFileUpload(client2, event) {
         return false;
       }
     };
-    const singleUploadTask = async () => {
-      let success = await attemptSingleUpload();
-      if (!success && retryCount < maxRetries) {
+    const singleUploadTask = async (signal) => {
+      let success = await attemptSingleUpload(signal);
+      if (!success && !signal.aborted && retryCount < maxRetries) {
         retryCount++;
-        if (lastLocalPath && fs5.existsSync(lastLocalPath)) {
+        if (lastLocalPath && fs6.existsSync(lastLocalPath)) {
           try {
-            fs5.unlinkSync(lastLocalPath);
+            fs6.unlinkSync(lastLocalPath);
           } catch (e) {
           }
         }
         lastLocalPath = void 0;
-        updateUploadPhase(chatId.toString(), uploadId, { phase: "retrying" });
+        updateUploadPhase(chatIdStr, uploadId, { phase: "retrying" });
         if (useConsolidated()) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3091,10 +3513,22 @@ async function handleFileUpload(client2, event) {
             });
           });
         }
-        success = await attemptSingleUpload();
+        success = await attemptSingleUpload(signal);
       }
-      if (!success) {
-        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+      if (signal.aborted) {
+        lastError = "\u7528\u6237\u5F3A\u5236\u505C\u6B62\u4E0B\u8F7D\u4EFB\u52A1";
+        updateUploadPhase(chatIdStr, uploadId, { phase: "failed", error: lastError });
+        if (statusMsg && !silentSessionMap.has(chatIdStr)) {
+          await runStatusAction(chatId, async () => {
+            await client2.editMessage(chatId, {
+              message: statusMsg.id,
+              text: buildUploadFail(finalFileName, lastError)
+            }).catch(() => {
+            });
+          });
+        }
+      } else if (!success) {
+        if (silentSessionMap.has(chatIdStr)) {
           const sess = getSilentSession(chatIdStr);
           sess.completed += 1;
           sess.failed += 1;
@@ -3105,7 +3539,7 @@ async function handleFileUpload(client2, event) {
           await runStatusAction(chatId, async () => {
             await refreshConsolidatedMessage(client2, chatId);
           });
-        } else if (statusMsg) {
+        } else if (statusMsg && !silentSessionMap.has(chatIdStr)) {
           await runStatusAction(chatId, async () => {
             await client2.editMessage(chatId, {
               message: statusMsg.id,
@@ -3119,7 +3553,7 @@ async function handleFileUpload(client2, event) {
           });
         }
       } else {
-        if (lastStatusMessageIsSilent.get(chatIdStr)) {
+        if (silentSessionMap.has(chatIdStr)) {
           const sess = getSilentSession(chatIdStr);
           sess.completed += 1;
           await finalizeSilentSessionIfDone(client2, chatId);
@@ -3139,6 +3573,59 @@ async function handleFileUpload(client2, event) {
 // src/services/telegramCommands.ts
 init_storage();
 var checkDiskSpace = checkDiskSpaceModule.default || checkDiskSpaceModule;
+var DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
+function normalizeDownloadWorkers(value) {
+  const parsed = parseInt(String(value ?? "4"), 10);
+  return DOWNLOAD_WORKER_OPTIONS.includes(parsed) ? parsed : 4;
+}
+async function getCurrentDownloadWorkers() {
+  const value = await getSetting("telegram_download_workers", process.env.TELEGRAM_DOWNLOAD_WORKERS || "4");
+  return normalizeDownloadWorkers(value);
+}
+function buildDownloadWorkersKeyboard(current, confirmValue) {
+  if (confirmValue) {
+    return new Api2.ReplyInlineMarkup({
+      rows: [
+        new Api2.KeyboardButtonRow({
+          buttons: [
+            new Api2.KeyboardButtonCallback({ text: `\u26A0\uFE0F \u786E\u8BA4\u4F7F\u7528 ${confirmValue}`, data: Buffer.from(`dw_confirm_${confirmValue}`) }),
+            new Api2.KeyboardButtonCallback({ text: "\u53D6\u6D88", data: Buffer.from("dw_cancel") })
+          ]
+        })
+      ]
+    });
+  }
+  return new Api2.ReplyInlineMarkup({
+    rows: [
+      new Api2.KeyboardButtonRow({
+        buttons: [
+          new Api2.KeyboardButtonCallback({ text: `${current === 4 ? "\u2705 " : ""}4`, data: Buffer.from("dw_set_4") }),
+          new Api2.KeyboardButtonCallback({ text: `${current === 8 ? "\u2705 " : ""}8`, data: Buffer.from("dw_set_8") })
+        ]
+      }),
+      new Api2.KeyboardButtonRow({
+        buttons: [
+          new Api2.KeyboardButtonCallback({ text: `${current === 12 ? "\u2705 " : ""}12 \u26A0\uFE0F`, data: Buffer.from("dw_set_12") }),
+          new Api2.KeyboardButtonCallback({ text: `${current === 16 ? "\u2705 " : ""}16 \u26A0\uFE0F`, data: Buffer.from("dw_set_16") })
+        ]
+      })
+    ]
+  });
+}
+function buildDownloadWorkersText(current) {
+  return [
+    "\u2699\uFE0F **Telegram \u5E76\u53D1\u4E0B\u8F7D\u8BBE\u7F6E**",
+    "",
+    `\u5F53\u524D worker \u6570\uFF1A**${current}**`,
+    "",
+    "\u8BF4\u660E\uFF1ATelegram \u5355\u6B21\u8BF7\u6C42\u4E0A\u9650\u4ECD\u662F 512KB\uFF0C\u8FD9\u91CC\u8C03\u6574\u7684\u662F\u5E76\u53D1\u5206\u7247\u6570\u91CF\u3002",
+    "",
+    "\u5EFA\u8BAE\uFF1A",
+    "- `4`\uFF1A\u7A33\u5B9A\u4F18\u5148",
+    "- `8`\uFF1A\u901F\u5EA6/\u7A33\u5B9A\u5E73\u8861",
+    "- `12` / `16`\uFF1A\u6FC0\u8FDB\u6A21\u5F0F\uFF0C\u53EF\u80FD\u89E6\u53D1\u98CE\u63A7\u3001\u65AD\u6D41\u3001\u9650\u901F\uFF0C\u751A\u81F3\u8D26\u53F7\u98CE\u9669\uFF0C\u9700\u8981\u4E8C\u6B21\u786E\u8BA4"
+  ].join("\n");
+}
 async function handleStart(message, senderId) {
   if (isAuthenticated(senderId)) {
     await message.reply({ message: buildWelcomeBack() });
@@ -3159,9 +3646,9 @@ async function handleStorage(message) {
             FROM files 
             WHERE storage_account_id IS NOT DISTINCT FROM $1
         `, [activeAccountId]);
-    const foomclousStats = result.rows[0];
-    const totalSize = parseInt(foomclousStats.total_size);
-    const fileCount = parseInt(foomclousStats.file_count);
+    const flcloudsStats = result.rows[0];
+    const totalSize = parseInt(flcloudsStats.total_size);
+    const fileCount = parseInt(flcloudsStats.file_count);
     const usedPercent = Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100);
     const queueStats = getDownloadQueueStats();
     const reply = buildStorageReport({
@@ -3240,11 +3727,11 @@ async function handleDelete(message, args) {
       } catch (err) {
         console.warn(`\u{1F916} ${file.source} \u6587\u4EF6\u7269\u7406\u5220\u9664\u5931\u8D25\u6216\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728:`, err);
       }
-    } else if (file.path && fs6.existsSync(file.path)) {
-      fs6.unlinkSync(file.path);
+    } else if (file.path && fs7.existsSync(file.path)) {
+      fs7.unlinkSync(file.path);
     }
-    if (file.thumbnail_path && fs6.existsSync(file.thumbnail_path)) {
-      fs6.unlinkSync(file.thumbnail_path);
+    if (file.thumbnail_path && fs7.existsSync(file.thumbnail_path)) {
+      fs7.unlinkSync(file.thumbnail_path);
     }
     await query(`DELETE FROM files WHERE id = $1`, [file.id]);
     await message.reply({ message: buildDeleteSuccess(file.name, file.id) });
@@ -3270,14 +3757,120 @@ async function handleTasks(message) {
     await message.reply({ message: MSG.ERR_TASKS });
   }
 }
+async function handleStopTasks(message) {
+  try {
+    const result = forceStopDownloadTasks("\u7528\u6237\u901A\u8FC7 /stop_tasks \u5F3A\u5236\u505C\u6B62");
+    if (result.total === 0) {
+      await message.reply({ message: "\u{1F4EE} \u5F53\u524D\u6CA1\u6709\u53EF\u505C\u6B62\u7684\u4E0B\u8F7D\u4EFB\u52A1" });
+      return;
+    }
+    await message.reply({
+      message: `\u{1F6D1} \u5DF2\u53D1\u9001\u505C\u6B62\u6307\u4EE4
+
+\u5904\u7406\u4E2D: ${result.active}
+\u7B49\u5F85\u4E2D: ${result.pending}
+
+\u6B63\u5728\u4E0B\u8F7D\u7684\u4EFB\u52A1\u4F1A\u5728\u5F53\u524D\u5206\u7247\u7ED3\u675F\u540E\u505C\u6B62\uFF0C\u5E76\u81EA\u52A8\u6E05\u7406\u4E34\u65F6\u6587\u4EF6\u3002`
+    });
+  } catch (error) {
+    console.error("\u{1F916} \u5F3A\u5236\u505C\u6B62\u4EFB\u52A1\u5931\u8D25:", error);
+    await message.reply({ message: `\u274C \u5F3A\u5236\u505C\u6B62\u4EFB\u52A1\u5931\u8D25: ${error.message}` });
+  }
+}
+async function handleDownloadWorkers(message) {
+  try {
+    const current = await getCurrentDownloadWorkers();
+    await message.reply({
+      message: buildDownloadWorkersText(current),
+      buttons: buildDownloadWorkersKeyboard(current)
+    });
+  } catch (error) {
+    console.error("\u{1F916} \u83B7\u53D6\u5E76\u53D1\u4E0B\u8F7D\u8BBE\u7F6E\u5931\u8D25:", error);
+    await message.reply({ message: `\u274C \u83B7\u53D6\u5E76\u53D1\u4E0B\u8F7D\u8BBE\u7F6E\u5931\u8D25: ${error.message}` });
+  }
+}
+async function handleDownloadWorkersCallback(client2, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!isAuthenticated(userId)) {
+    await client2.invoke(new Api2.messages.SetBotCallbackAnswer({
+      queryId: update.queryId,
+      message: MSG.AUTH_REQUIRED,
+      alert: true
+    }));
+    return;
+  }
+  try {
+    if (data === "dw_cancel") {
+      const current = await getCurrentDownloadWorkers();
+      await client2.editMessage(update.peer, {
+        message: update.msgId,
+        text: buildDownloadWorkersText(current),
+        buttons: buildDownloadWorkersKeyboard(current)
+      });
+      await client2.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88" }));
+      return;
+    }
+    const setMatch = data.match(/^dw_set_(4|8|12|16)$/);
+    if (setMatch) {
+      const workers = Number(setMatch[1]);
+      if (workers >= 12) {
+        await client2.editMessage(update.peer, {
+          message: update.msgId,
+          text: [
+            `\u26A0\uFE0F **\u786E\u8BA4\u4F7F\u7528 ${workers} workers\uFF1F**`,
+            "",
+            "\u8FD9\u662F\u6FC0\u8FDB\u5E76\u53D1\u6A21\u5F0F\uFF0C\u53EF\u80FD\u51FA\u73B0\uFF1A",
+            "- Telegram \u98CE\u63A7\u6216\u9650\u6D41",
+            "- \u4E0B\u8F7D\u65AD\u6D41 / \u91CD\u8BD5\u589E\u591A",
+            "- user session \u8D26\u53F7\u98CE\u9669\uFF0C\u6781\u7AEF\u60C5\u51B5\u4E0B\u53EF\u80FD\u5F71\u54CD\u8D26\u53F7",
+            "",
+            "\u5982\u679C\u53EA\u662F\u65E5\u5E38\u4E0B\u8F7D\uFF0C\u5EFA\u8BAE\u4F7F\u7528 4 \u6216 8\u3002"
+          ].join("\n"),
+          buttons: buildDownloadWorkersKeyboard(workers, workers)
+        });
+        await client2.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u9700\u8981\u4E8C\u6B21\u786E\u8BA4" }));
+        return;
+      }
+      await setSetting("telegram_download_workers", String(workers));
+      await client2.editMessage(update.peer, {
+        message: update.msgId,
+        text: `${buildDownloadWorkersText(workers)}
+
+\u2705 \u5DF2\u5207\u6362\u4E3A ${workers} workers\uFF0C\u540E\u7EED\u65B0\u4E0B\u8F7D\u4EFB\u52A1\u7ACB\u5373\u751F\u6548\u3002`,
+        buttons: buildDownloadWorkersKeyboard(workers)
+      });
+      await client2.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u5DF2\u8BBE\u7F6E\u4E3A ${workers}` }));
+      return;
+    }
+    const confirmMatch = data.match(/^dw_confirm_(12|16)$/);
+    if (confirmMatch) {
+      const workers = Number(confirmMatch[1]);
+      await setSetting("telegram_download_workers", String(workers));
+      await client2.editMessage(update.peer, {
+        message: update.msgId,
+        text: `${buildDownloadWorkersText(workers)}
+
+\u26A0\uFE0F \u5DF2\u786E\u8BA4\u5E76\u5207\u6362\u4E3A ${workers} workers\u3002\u82E5\u51FA\u73B0\u65AD\u6D41\u3001\u9650\u901F\u3001\u98CE\u63A7\u63D0\u793A\uFF0C\u8BF7\u7ACB\u5373\u964D\u56DE 4 \u6216 8\u3002`,
+        buttons: buildDownloadWorkersKeyboard(workers)
+      });
+      await client2.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u5DF2\u786E\u8BA4 ${workers} workers`, alert: true }));
+    }
+  } catch (error) {
+    console.error("\u{1F916} \u8BBE\u7F6E\u5E76\u53D1\u4E0B\u8F7D worker \u5931\u8D25:", error);
+    await client2.invoke(new Api2.messages.SetBotCallbackAnswer({
+      queryId: update.queryId,
+      message: `\u8BBE\u7F6E\u5931\u8D25: ${error.message}`,
+      alert: true
+    }));
+  }
+}
 
 // src/services/ytDlpDownload.ts
 init_db();
 init_storage();
-import fs7 from "fs";
-import path7 from "path";
+import fs8 from "fs";
+import path9 from "path";
 import { spawn } from "child_process";
-import { v4 as uuidv42 } from "uuid";
 import os2 from "os";
 var YtDlpQueue = class {
   constructor(maxConcurrent) {
@@ -3304,203 +3897,42 @@ var YTDLP_BIN = process.env.YTDLP_BIN || "yt-dlp";
 var YTDLP_WORK_DIR = process.env.YTDLP_WORK_DIR || "./data/uploads/ytdlp";
 var YTDLP_MAX_CONCURRENT = Math.max(1, parseInt(process.env.YTDLP_MAX_CONCURRENT || "1", 10) || 1);
 var ytDlpQueue = new YtDlpQueue(YTDLP_MAX_CONCURRENT);
-var pendingYtDlpSelections = /* @__PURE__ */ new Map();
-function buildYtdlpQualityButtons(taskId) {
-  return new Api2.ReplyInlineMarkup({
-    rows: [
-      new Api2.KeyboardButtonRow({
-        buttons: [
-          new Api2.KeyboardButtonCallback({ text: "\uD83C\uDFC6 \u6700\u9AD8\u6E05", data: Buffer.from(`ytdlp_hq_${taskId}`) }),
-          new Api2.KeyboardButtonCallback({ text: "\uD83D\uDCC0 \u6807\u6E05", data: Buffer.from(`ytdlp_sd_${taskId}`) }),
-          new Api2.KeyboardButtonCallback({ text: "\uD83D\uDCE6 \u4F4E\u753B\u8D28", data: Buffer.from(`ytdlp_low_${taskId}`) })
-        ]
-      })
-    ]
-  });
-}
-function getYtdlpFormatForTier(tier) {
-  const base = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best";
-  if (tier === "sd") {
-    return "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[ext=mp4][height<=720]/best[height<=720]/bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[ext=mp4][height<=1080]/best[height<=1080]/bestvideo+bestaudio/best";
-  }
-  if (tier === "low") {
-    return "bestvideo[ext=mp4][height<=360]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[ext=mp4][height<=360]/best[height<=360]/bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[ext=mp4][height<=480]/best[height<=480]/worstvideo+worstaudio/worst";
-  }
-  return base;
-}
-function getYtdlpTierLabel(tier) {
-  if (tier === "hq") return "\uD83C\uDFC6 \u6700\u9AD8\u6E05";
-  if (tier === "sd") return "\uD83D\uDCC0 \u6807\u6E05";
-  if (tier === "low") return "\uD83D\uDCE6 \u4F4E\u753B\u8D28";
-  return tier;
-}
-async function probeYtDlpInfo(url) {
-  const args = ["--no-playlist", "-J", url];
-  const info = await new Promise((resolve, reject) => {
-    const binLower = YTDLP_BIN.toLowerCase();
-    const isWindows = os2.platform() === "win32";
-    const needsShell = isWindows && (binLower.endsWith(".cmd") || binLower.endsWith(".bat"));
-    const child = spawn(YTDLP_BIN, args, {
-      windowsHide: true,
-      shell: needsShell
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-      if (stdout.length > 2e6) stdout = stdout.slice(-2e6);
-    });
-    child.stderr.on("data", (d) => {
-      stderr += d.toString();
-      if (stderr.length > 4e3) stderr = stderr.slice(-4e3);
-    });
-    child.on("error", (err) => reject(err));
-    child.on("close", (code) => {
-      if (code === 0) {
-        try {
-          resolve(JSON.parse(stdout));
-        } catch (e) {
-          reject(new Error(`yt-dlp -J parse failed: ${e instanceof Error ? e.message : String(e)}`));
-        }
-        return;
-      }
-      reject(new Error(stderr.trim() || `yt-dlp -J exited with code ${code}`));
-    });
-  });
-  return info;
-}
-function pickYtdlpVideoFormat(info, tier) {
-  const formats = Array.isArray(info?.formats) ? info.formats : [];
-  const videos = formats.filter((f) => {
-    const height = typeof f?.height === "number" ? f.height : Number(f?.height);
-    const width = typeof f?.width === "number" ? f.width : Number(f?.width);
-    const resolution = (f?.resolution || "").toString();
-    const tbr = typeof f?.tbr === "number" ? f.tbr : Number(f?.tbr);
-    const vbr = typeof f?.vbr === "number" ? f.vbr : Number(f?.vbr);
-    const vcodec = (f?.vcodec || "").toString();
-    const formatId = (f?.format_id || "").toString();
-    const parsedH = (() => {
-      if (Number.isFinite(height) && height > 0) return height;
-      if (resolution) {
-        const m = resolution.match(/^(\d+)x(\d+)$/);
-        if (m) {
-          const h2 = Number(m[2]);
-          if (Number.isFinite(h2) && h2 > 0) return h2;
-        }
-      }
-      if (Number.isFinite(width) && width > 0 && resolution) {
-        const m = resolution.match(/^(\d+)x(\d+)$/);
-        if (m) {
-          const h2 = Number(m[2]);
-          if (Number.isFinite(h2) && h2 > 0) return h2;
-        }
-      }
-      return 0;
-    })();
-    const hasQuality = parsedH > 0 || Number.isFinite(tbr) && tbr > 0 || Number.isFinite(vbr) && vbr > 0;
-    return hasQuality && vcodec && vcodec !== "none" && formatId;
-  }).map((f) => ({
-    formatId: (f.format_id || "").toString(),
-    height: typeof f.height === "number" ? f.height : Number(f.height),
-    width: typeof f.width === "number" ? f.width : Number(f.width),
-    resolution: (f.resolution || "").toString(),
-    tbr: typeof f.tbr === "number" ? f.tbr : Number(f.tbr),
-    vbr: typeof f.vbr === "number" ? f.vbr : Number(f.vbr)
-  })).map((v) => {
-    let height = Number.isFinite(v.height) && v.height > 0 ? v.height : 0;
-    if (!height && v.resolution) {
-      const m = v.resolution.match(/^(\d+)x(\d+)$/);
-      if (m) {
-        const h2 = Number(m[2]);
-        if (Number.isFinite(h2) && h2 > 0) height = h2;
-      }
-    }
-    const br = Math.max(Number.isFinite(v.vbr) ? v.vbr : 0, Number.isFinite(v.tbr) ? v.tbr : 0);
-    return { ...v, height, br };
-  }).sort((a, b) => a.height - b.height || a.br - b.br);
-  if (videos.length === 0) return null;
-  const heights = videos.map((v) => v.height).filter((h) => Number.isFinite(h) && h > 0);
-  const minHeight = heights.length ? Math.min(...heights) : 0;
-  const maxHeight = heights.length ? Math.max(...heights) : 0;
-  const heightsList = Array.from(new Set(heights)).sort((a, b) => a - b);
-  const brs = videos.map((v) => v.br).filter((b) => Number.isFinite(b) && b > 0);
-  const minBr = brs.length ? Math.min(...brs) : 0;
-  const maxBr = brs.length ? Math.max(...brs) : 0;
-  const sameHeightOnly = minHeight > 0 && maxHeight > 0 && minHeight === maxHeight;
-  const pickByBitrate = sameHeightOnly || minHeight === 0 && maxHeight === 0;
-  if (tier === "hq") {
-    const v = pickByBitrate ? [...videos].sort((a, b) => a.br - b.br)[videos.length - 1] : videos[videos.length - 1];
-    return { ...v, minHeight, maxHeight, heightsList, minBr, maxBr };
-  }
-  if (tier === "sd") {
-    let v;
-    if (pickByBitrate) {
-      const sorted = [...videos].sort((a, b) => a.br - b.br);
-      v = sorted[Math.floor((sorted.length - 1) / 2)] || sorted[0];
-    } else {
-      const target = 720;
-      v = [...videos].reverse().find((x) => x.height > 0 && x.height <= target);
-      if (!v) {
-        const target2 = 1080;
-        v = [...videos].reverse().find((x) => x.height > 0 && x.height <= target2) || videos[videos.length - 1];
-      }
-    }
-    return { ...v, minHeight, maxHeight, heightsList, minBr, maxBr };
-  }
-  if (tier === "low") {
-    let v;
-    if (pickByBitrate) {
-      v = [...videos].sort((a, b) => a.br - b.br)[0];
-    } else {
-      const target = 360;
-      v = [...videos].reverse().find((x) => x.height > 0 && x.height <= target);
-      if (!v) {
-        const target2 = 480;
-        v = [...videos].reverse().find((x) => x.height > 0 && x.height <= target2) || videos[0];
-      }
-    }
-    return { ...v, minHeight, maxHeight, heightsList, minBr, maxBr };
-  }
-  const v = videos[videos.length - 1];
-  return { ...v, minHeight, maxHeight, heightsList, minBr, maxBr };
-}
 function ensureDir(p) {
-  if (!fs7.existsSync(p)) {
-    fs7.mkdirSync(p, { recursive: true });
+  if (!fs8.existsSync(p)) {
+    fs8.mkdirSync(p, { recursive: true });
   }
 }
 function safeRmDir(dir) {
   try {
-    if (fs7.existsSync(dir)) {
-      fs7.rmSync(dir, { recursive: true, force: true });
+    if (fs8.existsSync(dir)) {
+      fs8.rmSync(dir, { recursive: true, force: true });
     }
   } catch {
   }
 }
 function selectPrimaryOutputFile(taskDir) {
-  const entries = fs7.readdirSync(taskDir, { withFileTypes: true });
+  const entries = fs8.readdirSync(taskDir, { withFileTypes: true });
   const files = entries.filter((e) => e.isFile()).map((e) => ({
     name: e.name,
-    fullPath: path7.join(taskDir, e.name)
+    fullPath: path9.join(taskDir, e.name)
   })).filter((f) => !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") && !f.name.endsWith(".json") && !f.name.endsWith(".tmp")).map((f) => ({
     ...f,
-    size: fs7.existsSync(f.fullPath) ? fs7.statSync(f.fullPath).size : 0
+    size: fs8.existsSync(f.fullPath) ? fs8.statSync(f.fullPath).size : 0
   })).filter((f) => f.size > 0).sort((a, b) => b.size - a.size);
   if (files.length === 0) return null;
   return { filePath: files[0].fullPath, fileName: files[0].name, size: files[0].size };
 }
-async function runYtDlpDownload(url, taskDir, format) {
+async function runYtDlpDownload(url, taskDir) {
   ensureDir(taskDir);
-  const outputTemplate = path7.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
+  const outputTemplate = path9.join(taskDir, "%(title).200s-%(id)s.%(ext)s");
   const args = [
     "--no-playlist",
     "--newline",
-    "-f",
-    format || "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
     "--merge-output-format",
     "mp4",
     "-o",
     outputTemplate,
+    "--",
     url
   ];
   await new Promise((resolve, reject) => {
@@ -3529,36 +3961,15 @@ async function runYtDlpDownload(url, taskDir, format) {
     });
   });
 }
-async function runYtDlpDownloadWithFallback(url, taskDir, preferredFormat) {
-  const attempts = [
-    preferredFormat,
-    "bestvideo+bestaudio/best",
-    "best"
-  ].filter(Boolean);
-  let lastErr = null;
-  for (let i = 0; i < attempts.length; i++) {
-    const fmt = attempts[i];
-    try {
-      if (i > 0) {
-        safeRmDir(taskDir);
-      }
-      await runYtDlpDownload(url, taskDir, fmt);
-      return;
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error("yt-dlp download failed");
-}
 async function uploadDownloadedFile(localFilePath, originalFileName) {
   const provider = storageManager.getProvider();
   const activeAccountId = storageManager.getActiveAccountId();
   const safeName = sanitizeFilename(originalFileName);
-  const ext = path7.extname(safeName) || path7.extname(localFilePath) || "";
-  const storedName = `${uuidv42()}${ext}`;
+  const ext = path9.extname(safeName) || path9.extname(localFilePath) || "";
+  const storedName = await getUniqueStoredName(safeName, "ytdlp", activeAccountId);
   const mimeType = getMimeTypeFromFilename(safeName);
   const fileType = getFileType(mimeType);
-  const stats = await fs7.promises.stat(localFilePath);
+  const stats = await fs8.promises.stat(localFilePath);
   const size = stats.size;
   let thumbnailPath = null;
   let dimensions = {};
@@ -3571,7 +3982,7 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
   if (provider.name !== "local") {
     finalPath = await provider.saveFile(localFilePath, storedName, mimeType);
     try {
-      if (fs7.existsSync(localFilePath)) await fs7.promises.unlink(localFilePath);
+      if (fs8.existsSync(localFilePath)) await fs8.promises.unlink(localFilePath);
     } catch {
     }
   }
@@ -3584,52 +3995,53 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
 }
 async function handleYtDlpCommand(message, url) {
   const task = {
-    id: uuidv42(),
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     url,
     status: "pending",
     createdAt: Date.now()
   };
-  const workBaseDir = path7.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path7.join(process.cwd(), YTDLP_WORK_DIR);
+  const workBaseDir = path9.isAbsolute(YTDLP_WORK_DIR) ? YTDLP_WORK_DIR : path9.join(process.cwd(), YTDLP_WORK_DIR);
   ensureDir(workBaseDir);
-  const taskDir = path7.join(workBaseDir, task.id);
-  const chatId = message.chatId;
-  const displayUrl = url.length > 160 ? url.slice(0, 160) + "..." : url;
-  const statusMsg = await message.reply({
-    message: `\uD83C\uDFAC YT-DLP \u4EFB\u52A1\n\n\uD83D\uDD17 \u94FE\u63A5\n${displayUrl}\n\n\u{1F3AF} \u8BF7\u9009\u62E9\u6E05\u6670\u5EA6\n\uD83C\uDD94 Task: ${task.id}`,
-    buttons: buildYtdlpQualityButtons(task.id)
-  });
-  const statusMsgId = statusMsg?.id;
-  const updateStatus = async (text) => {
-    if (!client || !chatId || !statusMsgId) return;
-    await safeEditMessage(client, chatId, { message: statusMsgId, text });
-  };
-  if (chatId && statusMsgId) {
-    pendingYtDlpSelections.set(task.id, {
-      url: task.url,
-      chatId,
-      messageId: statusMsgId,
-      senderId: message.senderId?.toJSNumber(),
-      taskDir,
-      displayUrl,
-      createdAt: Date.now()
-    });
-    setTimeout(async () => {
-      const pending = pendingYtDlpSelections.get(task.id);
-      if (!pending) return;
-      pendingYtDlpSelections.delete(task.id);
+  const taskDir = path9.join(workBaseDir, task.id);
+  await message.reply({ message: `\u23EC \u5F00\u59CB\u89E3\u6790\u5E76\u4E0B\u8F7D...
+Task: ${task.id}` });
+  ytDlpQueue.add(async () => {
+    task.status = "active";
+    task.startedAt = Date.now();
+    try {
+      await runYtDlpDownload(task.url, taskDir);
+      const primary = selectPrimaryOutputFile(taskDir);
+      if (!primary) {
+        throw new Error("\u4E0B\u8F7D\u5B8C\u6210\u4F46\u672A\u627E\u5230\u8F93\u51FA\u6587\u4EF6");
+      }
+      const uploadResult = await uploadDownloadedFile(primary.filePath, primary.fileName);
+      task.status = "success";
+      task.finishedAt = Date.now();
+      const text = `\u2705 \u5DF2\u4E0A\u4F20
+
+\u6587\u4EF6: ${primary.fileName}
+\u5927\u5C0F: ${formatBytes(uploadResult.size)}
+\u5B58\u50A8\u6E90: ${uploadResult.providerName}`;
       try {
-        if (client) {
-          await safeEditMessage(client, pending.chatId, {
-            message: pending.messageId,
-            text: `\u23F1 \u8D85\u65F6\u672A\u9009\u62E9\u6E05\u6670\u5EA6\n\n\uD83D\uDD17 \u94FE\u63A5\n${pending.displayUrl}\n\n\uD83D\uDCA1 \u8BF7\u91CD\u65B0\u53D1\u9001 /ytdlp <url>`,
-            buttons: null
-          });
-        }
+        await message.reply({ message: text });
       } catch {
       }
-      safeRmDir(pending.taskDir);
-    }, 5 * 60 * 1000);
-  }
+    } catch (e) {
+      task.status = "failed";
+      task.finishedAt = Date.now();
+      task.error = e instanceof Error ? e.message : String(e);
+      const errText = (task.error || "\u672A\u77E5\u9519\u8BEF").toString().trim();
+      const trimmed = errText.length > 1500 ? errText.slice(0, 1500) + "..." : errText;
+      try {
+        await message.reply({ message: `\u274C \u4E0B\u8F7D/\u4E0A\u4F20\u5931\u8D25
+
+\u539F\u56E0: ${trimmed}` });
+      } catch {
+      }
+    } finally {
+      safeRmDir(taskDir);
+    }
+  });
 }
 
 // src/services/telegramBot.ts
@@ -3639,39 +4051,39 @@ var client = null;
 function generatePasswordKeyboard(currentLength) {
   const display = "\u25CF".repeat(currentLength) + "-".repeat(Math.max(0, 4 - currentLength));
   const displayWithSpaces = display.split("").join(" ");
-  return new Api2.ReplyInlineMarkup({
+  return new Api3.ReplyInlineMarkup({
     rows: [
-      new Api2.KeyboardButtonRow({
+      new Api3.KeyboardButtonRow({
         buttons: [
-          new Api2.KeyboardButtonCallback({ text: `\u{1F512}  ${displayWithSpaces}`, data: Buffer.from("pwd_display") })
+          new Api3.KeyboardButtonCallback({ text: `\u{1F512}  ${displayWithSpaces}`, data: Buffer.from("pwd_display") })
         ]
       }),
-      new Api2.KeyboardButtonRow({
+      new Api3.KeyboardButtonRow({
         buttons: [
-          new Api2.KeyboardButtonCallback({ text: "1", data: Buffer.from("pwd_1") }),
-          new Api2.KeyboardButtonCallback({ text: "2", data: Buffer.from("pwd_2") }),
-          new Api2.KeyboardButtonCallback({ text: "3", data: Buffer.from("pwd_3") })
+          new Api3.KeyboardButtonCallback({ text: "1", data: Buffer.from("pwd_1") }),
+          new Api3.KeyboardButtonCallback({ text: "2", data: Buffer.from("pwd_2") }),
+          new Api3.KeyboardButtonCallback({ text: "3", data: Buffer.from("pwd_3") })
         ]
       }),
-      new Api2.KeyboardButtonRow({
+      new Api3.KeyboardButtonRow({
         buttons: [
-          new Api2.KeyboardButtonCallback({ text: "4", data: Buffer.from("pwd_4") }),
-          new Api2.KeyboardButtonCallback({ text: "5", data: Buffer.from("pwd_5") }),
-          new Api2.KeyboardButtonCallback({ text: "6", data: Buffer.from("pwd_6") })
+          new Api3.KeyboardButtonCallback({ text: "4", data: Buffer.from("pwd_4") }),
+          new Api3.KeyboardButtonCallback({ text: "5", data: Buffer.from("pwd_5") }),
+          new Api3.KeyboardButtonCallback({ text: "6", data: Buffer.from("pwd_6") })
         ]
       }),
-      new Api2.KeyboardButtonRow({
+      new Api3.KeyboardButtonRow({
         buttons: [
-          new Api2.KeyboardButtonCallback({ text: "7", data: Buffer.from("pwd_7") }),
-          new Api2.KeyboardButtonCallback({ text: "8", data: Buffer.from("pwd_8") }),
-          new Api2.KeyboardButtonCallback({ text: "9", data: Buffer.from("pwd_9") })
+          new Api3.KeyboardButtonCallback({ text: "7", data: Buffer.from("pwd_7") }),
+          new Api3.KeyboardButtonCallback({ text: "8", data: Buffer.from("pwd_8") }),
+          new Api3.KeyboardButtonCallback({ text: "9", data: Buffer.from("pwd_9") })
         ]
       }),
-      new Api2.KeyboardButtonRow({
+      new Api3.KeyboardButtonRow({
         buttons: [
-          new Api2.KeyboardButtonCallback({ text: "\u53D6\u6D88", data: Buffer.from("pwd_clear") }),
-          new Api2.KeyboardButtonCallback({ text: "0", data: Buffer.from("pwd_0") }),
-          new Api2.KeyboardButtonCallback({ text: "\u232B", data: Buffer.from("pwd_backspace") })
+          new Api3.KeyboardButtonCallback({ text: "\u53D6\u6D88", data: Buffer.from("pwd_clear") }),
+          new Api3.KeyboardButtonCallback({ text: "0", data: Buffer.from("pwd_0") }),
+          new Api3.KeyboardButtonCallback({ text: "\u232B", data: Buffer.from("pwd_backspace") })
         ]
       })
     ]
@@ -3689,7 +4101,7 @@ async function handlePasswordCallback(update) {
   }
   try {
     if (data === "pwd_display") {
-      await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+      await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
       return;
     }
     if (data === "pwd_backspace") {
@@ -3701,7 +4113,7 @@ async function handlePasswordCallback(update) {
         message: update.msgId,
         text: MSG.AUTH_CANCELLED
       });
-      await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+      await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
       return;
     } else {
       const digit = data.replace("pwd_", "");
@@ -3719,7 +4131,7 @@ async function handlePasswordCallback(update) {
                 message: update.msgId,
                 text: MSG.AUTH_2FA_PROMPT
               });
-              await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_2FA_TOAST }));
+              await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_2FA_TOAST }));
               return;
             }
             await persistAuthenticatedUser(userId);
@@ -3727,7 +4139,7 @@ async function handlePasswordCallback(update) {
               message: update.msgId,
               text: buildAuthSuccess()
             });
-            await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_SUCCESS }));
+            await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_SUCCESS }));
             return;
           }
         }
@@ -3738,7 +4150,7 @@ async function handlePasswordCallback(update) {
             text: MSG.AUTH_WRONG,
             buttons: generatePasswordKeyboard(0)
           });
-          await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_WRONG }));
+          await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_WRONG }));
           return;
         }
       }
@@ -3748,11 +4160,11 @@ async function handlePasswordCallback(update) {
       text: MSG.AUTH_INPUT_PROMPT,
       buttons: generatePasswordKeyboard(state.password.length)
     });
-    await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+    await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
   } catch (error) {
     console.error("\u{1F916} \u5904\u7406\u5BC6\u7801\u56DE\u8C03\u5931\u8D25:", error);
     try {
-      await client.invoke(new Api2.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
+      await client.invoke(new Api3.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
     } catch (e) {
     }
   }
@@ -3769,14 +4181,14 @@ async function handleCleanupButtonCallback(update, cleanupId) {
     } catch (e) {
       console.error("\u{1F916} \u66F4\u65B0\u6E05\u7406\u7ED3\u679C\u6D88\u606F\u5931\u8D25:", e);
     }
-    await client.invoke(new Api2.messages.SetBotCallbackAnswer({
+    await client.invoke(new Api3.messages.SetBotCallbackAnswer({
       queryId: update.queryId,
       message: result.success ? "\u2705 \u6E05\u7406\u6210\u529F" : "\u274C \u6E05\u7406\u5931\u8D25"
     }));
   } catch (error) {
     console.error("\u{1F916} \u5904\u7406\u6E05\u7406\u56DE\u8C03\u5931\u8D25:", error);
     try {
-      await client.invoke(new Api2.messages.SetBotCallbackAnswer({
+      await client.invoke(new Api3.messages.SetBotCallbackAnswer({
         queryId: update.queryId,
         message: "\u274C \u6E05\u7406\u5931\u8D25"
       }));
@@ -3802,20 +4214,20 @@ async function initTelegramBot() {
     console.error("\u{1F916} Telegram Bot \u540C\u6B65\u5B58\u50A8\u914D\u7F6E\u5931\u8D25:", e);
   }
   try {
-    const sessionDir = path8.dirname(SESSION_FILE);
-    if (!fs8.existsSync(sessionDir)) {
-      fs8.mkdirSync(sessionDir, { recursive: true });
+    const sessionDir = path10.dirname(SESSION_FILE);
+    if (!fs9.existsSync(sessionDir)) {
+      fs9.mkdirSync(sessionDir, { recursive: true });
     }
     let sessionString = "";
-    if (fs8.existsSync(SESSION_FILE)) {
-      sessionString = fs8.readFileSync(SESSION_FILE, "utf-8").trim();
+    if (fs9.existsSync(SESSION_FILE)) {
+      sessionString = fs9.readFileSync(SESSION_FILE, "utf-8").trim();
     }
-    const session = new StringSession(sessionString);
-    client = new TelegramClient2(session, apiId, apiHash, {
+    const session = new StringSession2(sessionString);
+    client = new TelegramClient4(session, apiId, apiHash, {
       connectionRetries: 15,
       retryDelay: 2e3,
       useWSS: false,
-      deviceModel: "FoomClous Bot",
+      deviceModel: "FlClouds Bot",
       systemVersion: "1.0.0",
       appVersion: "1.0.0",
       floodSleepThreshold: 120
@@ -3825,7 +4237,7 @@ async function initTelegramBot() {
       botAuthToken: botToken
     });
     const newSession = client.session.save();
-    fs8.writeFileSync(SESSION_FILE, newSession);
+    fs9.writeFileSync(SESSION_FILE, newSession);
     console.log("\u{1F916} Telegram Bot \u5DF2\u8FDE\u63A5!");
     try {
       await query(`
@@ -3839,17 +4251,19 @@ async function initTelegramBot() {
       console.error("\u{1F916} \u521D\u59CB\u5316 Telegram \u8BA4\u8BC1\u8868\u5931\u8D25:", e);
     }
     try {
-      await client.invoke(new Api2.bots.SetBotCommands({
-        scope: new Api2.BotCommandScopeDefault(),
+      await client.invoke(new Api3.bots.SetBotCommands({
+        scope: new Api3.BotCommandScopeDefault(),
         langCode: "zh",
         commands: [
-          new Api2.BotCommand({ command: "start", description: "\u5F00\u59CB\u4F7F\u7528 / \u9A8C\u8BC1\u8EAB\u4EFD" }),
-          new Api2.BotCommand({ command: "setup_2fa", description: "\u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (2FA)" }),
-          new Api2.BotCommand({ command: "ytdlp", description: "\u89E3\u6790\u5E76\u4E0B\u8F7D\u94FE\u63A5\u5230\u5B58\u50A8\u6E90" }),
-          new Api2.BotCommand({ command: "storage", description: "\u67E5\u770B\u5B58\u50A8\u7EDF\u8BA1" }),
-          new Api2.BotCommand({ command: "list", description: "\u67E5\u770B\u4E0A\u4F20\u8BB0\u5F55" }),
-          new Api2.BotCommand({ command: "tasks", description: "\u67E5\u770B\u4EFB\u52A1\u72B6\u6001" }),
-          new Api2.BotCommand({ command: "help", description: "\u663E\u793A\u9884\u89C8\u5E2E\u52A9" })
+          new Api3.BotCommand({ command: "start", description: "\u5F00\u59CB\u4F7F\u7528 / \u9A8C\u8BC1\u8EAB\u4EFD" }),
+          new Api3.BotCommand({ command: "setup_2fa", description: "\u914D\u7F6E\u53CC\u91CD\u9A8C\u8BC1 (2FA)" }),
+          new Api3.BotCommand({ command: "ytdlp", description: "\u89E3\u6790\u5E76\u4E0B\u8F7D\u94FE\u63A5\u5230\u5B58\u50A8\u6E90" }),
+          new Api3.BotCommand({ command: "storage", description: "\u67E5\u770B\u5B58\u50A8\u7EDF\u8BA1" }),
+          new Api3.BotCommand({ command: "list", description: "\u67E5\u770B\u4E0A\u4F20\u8BB0\u5F55" }),
+          new Api3.BotCommand({ command: "tasks", description: "\u67E5\u770B\u4EFB\u52A1\u72B6\u6001" }),
+          new Api3.BotCommand({ command: "stop_tasks", description: "\u5F3A\u5236\u505C\u6B62\u4E0B\u8F7D\u4EFB\u52A1" }),
+          new Api3.BotCommand({ command: "download_workers", description: "\u8BBE\u7F6E Telegram \u5E76\u53D1\u4E0B\u8F7D" }),
+          new Api3.BotCommand({ command: "help", description: "\u663E\u793A\u9884\u89C8\u5E2E\u52A9" })
         ]
       }));
       console.log("\u{1F916} Bot \u547D\u4EE4\u83DC\u5355\u5DF2\u66F4\u65B0");
@@ -3881,6 +4295,11 @@ async function initTelegramBot() {
         if (!message.text && !message.media) return;
         const senderId = message.senderId?.toJSNumber();
         if (!senderId) return;
+        const messageAge = Date.now() / 1e3 - message.date;
+        if (messageAge > 300) {
+          console.log(`\u{1F916} \u8DF3\u8FC7\u8FC7\u65E7\u6D88\u606F (${Math.round(messageAge)}s ago, id=${message.id})`);
+          return;
+        }
         const text = message.text || "";
         const chatId = message.chatId;
         if (!chatId) return;
@@ -3900,8 +4319,8 @@ async function initTelegramBot() {
             const qrDataUrl = await generateOTPAuthUrl();
             const base64Data = qrDataUrl.replace(/^data:image\/png;base64,/, "");
             const buffer = Buffer.from(base64Data, "base64");
-            const tempPath = path8.join(process.cwd(), `temp_qr_${chatId}.png`);
-            fs8.writeFileSync(tempPath, buffer);
+            const tempPath = path10.join(process.cwd(), `temp_qr_${chatId}.png`);
+            fs9.writeFileSync(tempPath, buffer);
             const qrMessage = await client.sendFile(chatId, {
               file: tempPath,
               caption: build2FASetupCaption()
@@ -3910,7 +4329,7 @@ async function initTelegramBot() {
               state: "WAITING_2FA_SETUP" /* WAITING_2FA_SETUP */,
               qrMessageId: qrMessage.id
             });
-            fs8.unlinkSync(tempPath);
+            fs9.unlinkSync(tempPath);
           } catch (e) {
             console.error("\u751F\u6210 2FA \u4E8C\u7EF4\u7801\u5931\u8D25:", e);
             await client.sendMessage(chatId, { message: MSG.AUTH_2FA_QR_FAIL });
@@ -3982,6 +4401,22 @@ async function initTelegramBot() {
           await handleTasks(message);
           return;
         }
+        if (text === "/stop_tasks" || text === "/stop" || text === "/cancel_tasks") {
+          if (!isAuthenticated(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          await handleStopTasks(message);
+          return;
+        }
+        if (text === "/download_workers" || text === "/workers") {
+          if (!isAuthenticated(senderId)) {
+            await message.reply({ message: MSG.AUTH_REQUIRED });
+            return;
+          }
+          await handleDownloadWorkers(message);
+          return;
+        }
         const userState = userStates.get(senderId);
         if (userState && (userState.state === "WAITING_2FA_SETUP" /* WAITING_2FA_SETUP */ || userState.state === "WAITING_2FA_LOGIN" /* WAITING_2FA_LOGIN */)) {
           const cleanText = text.replace(/[\s-]/g, "");
@@ -4017,7 +4452,6 @@ async function initTelegramBot() {
         }
         if (message.media) {
           await handleFileUpload(client, event);
-          return;
         }
         if (!isAuthenticated(senderId) && text && !text.startsWith("/")) {
           await message.reply({ message: MSG.UNKNOWN_TEXT });
@@ -4038,71 +4472,8 @@ async function initTelegramBot() {
           await handleCleanupButtonCallback(callbackUpdate, data);
           return;
         }
-        if (data.startsWith("ytdlp_")) {
-          try {
-            const m = data.match(/^ytdlp_(hq|sd|low)_([0-9a-fA-F-]{8,})$/);
-            if (!m) {
-              await client.invoke(new Api2.messages.SetBotCallbackAnswer({
-                queryId: callbackUpdate.queryId,
-                message: "\u274C \u6309\u94AE\u65E0\u6548"
-              }));
-              return;
-            }
-            const tier = m[1];
-            const taskId = m[2];
-            const pending = pendingYtDlpSelections.get(taskId);
-            if (!pending) {
-              await client.invoke(new Api2.messages.SetBotCallbackAnswer({
-                queryId: callbackUpdate.queryId,
-                message: "\u23F1 \u4EFB\u52A1\u5DF2\u8D85\u65F6\u6216\u5DF2\u5904\u7406"
-              }));
-              return;
-            }
-            pendingYtDlpSelections.delete(taskId);
-            const tierLabel = getYtdlpTierLabel(tier);
-            const format = getYtdlpFormatForTier(tier);
-            await client.invoke(new Api2.messages.SetBotCallbackAnswer({
-              queryId: callbackUpdate.queryId,
-              message: `\u2705 \u5DF2\u9009\u62E9: ${tierLabel}`
-            }));
-            const updateText = async (text) => {
-              await safeEditMessage(client, pending.chatId, {
-                message: pending.messageId,
-                text,
-                buttons: null
-              });
-            };
-            await updateText(`\uD83C\uDFAC YT-DLP \u4EFB\u52A1\n\n\uD83D\uDD17 \u94FE\u63A5\n${pending.displayUrl}\n\n\u{1F3AF} \u6E05\u6670\u5EA6: ${tierLabel}\n\n\u2B07\uFE0F \u72B6\u6001: \u6B63\u5728\u4E0B\u8F7D...\n\uD83C\uDD94 Task: ${taskId}`);
-            ytDlpQueue.add(async () => {
-              try {
-                await runYtDlpDownloadWithFallback(pending.url, pending.taskDir, format);
-                const primary = selectPrimaryOutputFile(pending.taskDir);
-                if (!primary) {
-                  throw new Error("\u4E0B\u8F7D\u5B8C\u6210\u4F46\u672A\u627E\u5230\u8F93\u51FA\u6587\u4EF6");
-                }
-                await updateText(`\uD83C\uDFAC YT-DLP \u4EFB\u52A1\n\n\uD83D\uDD17 \u94FE\u63A5\n${pending.displayUrl}\n\n\u{1F3AF} \u6E05\u6670\u5EA6: ${tierLabel}\n\n\u2601\uFE0F \u72B6\u6001: \u6B63\u5728\u4E0A\u4F20\u5230\u5B58\u50A8\u6E90...\n\uD83D\uDCC4 \u6587\u4EF6: ${primary.fileName}\n\uD83C\uDD94 Task: ${taskId}`);
-                const uploadResult = await uploadDownloadedFile(primary.filePath, primary.fileName);
-                await updateText(`\u2705 \u4EFB\u52A1\u5B8C\u6210\n\n\uD83D\uDCC4 \u6587\u4EF6\n${primary.fileName}\n\n\uD83D\uDCE6 \u5927\u5C0F: ${formatBytes(uploadResult.size)}\n\uD83D\uDCBE \u5B58\u50A8\u6E90: ${uploadResult.providerName}\n\uD83C\uDD94 Task: ${taskId}`);
-              } catch (e) {
-                const errText = (e instanceof Error ? e.message : String(e) || "\u672A\u77E5\u9519\u8BEF").toString().trim();
-                const trimmed = errText.length > 1500 ? errText.slice(0, 1500) + "..." : errText;
-                try {
-                  await updateText(`\u274C \u4EFB\u52A1\u5931\u8D25\n\n\uD83D\uDD17 \u94FE\u63A5\n${pending.displayUrl}\n\n\uD83E\uDDE8 \u539F\u56E0\n${trimmed}\n\n\uD83C\uDD94 Task: ${taskId}`);
-                } catch {
-                }
-              } finally {
-                safeRmDir(pending.taskDir);
-              }
-            });
-          } catch (e) {
-            try {
-              await client.invoke(new Api2.messages.SetBotCallbackAnswer({
-                queryId: callbackUpdate.queryId,
-                message: "\u274C \u5904\u7406\u5931\u8D25"
-              }));
-            } catch {
-            }
-          }
+        if (data.startsWith("dw_")) {
+          await handleDownloadWorkersCallback(client, callbackUpdate, data);
           return;
         }
       }
@@ -4144,8 +4515,10 @@ async function sendLoginNotification(req) {
   const ip = getClientIP(req);
   const ua = new UAParser(req.headers["user-agent"]).getResult();
   const location = await getIPLocation(ip);
-  const now = /* @__PURE__ */ new Date();
-  const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1e3).toISOString().replace(/T/, " ").replace(/\..+/, "") + " (CST)";
+  const beijingTime = (/* @__PURE__ */ new Date()).toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    hour12: false
+  }).replace(/\//g, "-") + " (\u4E2D\u56FD/\u4E0A\u6D77)";
   const message = `\u{1F514} **\u5B89\u5168\u767B\u5F55\u63D0\u793A**
 
 \u{1F464} **\u8D26\u53F7**: \u7BA1\u7406\u5458
@@ -4168,10 +4541,10 @@ setInterval(() => {
   });
 }, 60 * 60 * 1e3);
 function hashPassword(password) {
-  return crypto3.createHash("sha256").update(password).digest("hex");
+  return crypto5.createHash("sha256").update(password).digest("hex");
 }
 function generateToken() {
-  return crypto3.randomBytes(32).toString("hex");
+  return crypto5.randomBytes(32).toString("hex");
 }
 function verifyPassword2(password) {
   if (!ACCESS_PASSWORD_HASH) {
@@ -4332,7 +4705,7 @@ var auth_default = router;
 // src/middleware/signedUrl.ts
 function generateSignature(fileId, expires) {
   const data = `${fileId}:${expires}:${SESSION_SECRET}`;
-  return crypto4.createHash("sha256").update(data).digest("hex");
+  return crypto6.createHash("sha256").update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -4382,8 +4755,8 @@ function requireAuthOrSignedUrl(req, res, next) {
 
 // src/routes/files.ts
 var router2 = Router2();
-var UPLOAD_DIR3 = path9.resolve(process.env.UPLOAD_DIR || "./data/uploads");
-var THUMBNAIL_DIR3 = path9.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
+var UPLOAD_DIR3 = path11.resolve(process.env.UPLOAD_DIR || "./data/uploads");
+var THUMBNAIL_DIR3 = path11.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 router2.get("/", async (_req, res) => {
   try {
     const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
@@ -4409,6 +4782,67 @@ router2.get("/", async (_req, res) => {
   } catch (error) {
     console.error("\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25" });
+  }
+});
+router2.post("/folders", async (req, res) => {
+  try {
+    const { folderName } = req.body;
+    if (!folderName || typeof folderName !== "string" || folderName.trim().length === 0) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A" });
+    }
+    const trimmedName = folderName.trim();
+    if (/[\/\\:*?"<>|]/.test(trimmedName)) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const activeAccountId = storageManager2.getActiveAccountId();
+    const provider = storageManager2.getProvider();
+    let checkQuery = "";
+    let checkParams = [];
+    if (provider.name === "local") {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE source = 'local' AND folder = $1";
+      checkParams = [trimmedName];
+    } else {
+      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE storage_account_id = $1 AND folder = $2";
+      checkParams = [activeAccountId, trimmedName];
+    }
+    const checkResult = await query(checkQuery, checkParams);
+    if (checkResult.rows[0].cnt > 0) {
+      return res.status(400).json({ error: "\u8BE5\u6587\u4EF6\u5939\u5DF2\u5B58\u5728" });
+    }
+    const insertQuery = `
+            INSERT INTO files (
+                name, stored_name, type, mime_type, size,
+                path, source, folder, storage_account_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+        `;
+    const source = provider.name === "local" ? "local" : provider.name;
+    const accountId = provider.name === "local" ? null : activeAccountId;
+    await query(insertQuery, [
+      ".folder",
+      // name
+      ".folder",
+      // stored_name
+      "other",
+      // type
+      "application/x-directory",
+      // mime_type
+      0,
+      // size
+      ".folder",
+      // path
+      source,
+      // source
+      trimmedName,
+      // folder
+      accountId
+      // storage_account_id
+    ]);
+    res.json({ success: true, folder: trimmedName });
+  } catch (error) {
+    console.error("\u521B\u5EFA\u7A7A\u6587\u4EF6\u5939\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u521B\u5EFA\u7A7A\u6587\u4EF6\u5939\u5931\u8D25" });
   }
 });
 router2.post("/folders/favorite", async (req, res) => {
@@ -4500,8 +4934,8 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
         return res.status(500).json({ error: "\u83B7\u53D6\u9884\u89C8\u5931\u8D25" });
       }
     }
-    const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
-    if (!fs9.existsSync(filePath)) {
+    const filePath = file.path || path11.join(UPLOAD_DIR3, file.stored_name);
+    if (!fs10.existsSync(filePath)) {
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728\u4E8E\u670D\u52A1\u5668" });
     }
     res.set({
@@ -4509,7 +4943,7 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
       "Cache-Control": "public, max-age=86400",
       "ETag": `"${file.id}-${file.updated_at}"`
     });
-    const stat = fs9.statSync(filePath);
+    const stat = fs10.statSync(filePath);
     const range = req.headers.range;
     if (range) {
       const parts = range.replace(/bytes=/, "").split("-");
@@ -4522,11 +4956,11 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
         "Accept-Ranges": "bytes",
         "Content-Length": String(chunksize)
       });
-      const stream = fs9.createReadStream(filePath, { start, end });
+      const stream = fs10.createReadStream(filePath, { start, end });
       stream.pipe(res);
     } else {
       res.set("Content-Length", String(stat.size));
-      const stream = fs9.createReadStream(filePath);
+      const stream = fs10.createReadStream(filePath);
       stream.pipe(res);
     }
   } catch (error) {
@@ -4594,9 +5028,9 @@ router2.get("/:id([0-9a-fA-F-]{36})/download", async (req, res) => {
         return res.status(500).json({ error: "\u65E0\u6CD5\u4E0B\u8F7D\u6587\u4EF6" });
       }
     }
-    const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
+    const filePath = file.path || path11.join(UPLOAD_DIR3, file.stored_name);
     console.log(`[Download] Serving local file: ${filePath}`);
-    if (!fs9.existsSync(filePath)) {
+    if (!fs10.existsSync(filePath)) {
       console.log(`[Download] File system path not found: ${filePath}`);
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728\u4E8E\u670D\u52A1\u5668" });
     }
@@ -4621,15 +5055,15 @@ router2.get("/:id([0-9a-fA-F-]{36})/thumbnail", async (req, res) => {
     if (!file.thumbnail_path) {
       return res.status(404).json({ error: "\u65E0\u7F29\u7565\u56FE" });
     }
-    const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
-    if (!fs9.existsSync(thumbPath)) {
+    const thumbPath = path11.join(THUMBNAIL_DIR3, path11.basename(file.thumbnail_path));
+    if (!fs10.existsSync(thumbPath)) {
       return res.status(404).json({ error: "\u7F29\u7565\u56FE\u6587\u4EF6\u4E0D\u5B58\u5728" });
     }
     res.set({
       "Content-Type": "image/webp",
       "Cache-Control": "public, max-age=604800"
     });
-    const stream = fs9.createReadStream(thumbPath);
+    const stream = fs10.createReadStream(thumbPath);
     stream.pipe(res);
   } catch (error) {
     console.error("\u83B7\u53D6\u7F29\u7565\u56FE\u5931\u8D25:", error);
@@ -4653,15 +5087,15 @@ router2.delete("/:id([0-9a-fA-F-]{36})", async (req, res) => {
         console.error(`${file.source} \u6587\u4EF6\u5220\u9664\u5931\u8D25 (\u53EF\u80FD\u5DF2\u4E0D\u5B58\u5728):`, err);
       }
     } else {
-      const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
-      if (fs9.existsSync(filePath)) {
-        fs9.unlinkSync(filePath);
+      const filePath = file.path || path11.join(UPLOAD_DIR3, file.stored_name);
+      if (fs10.existsSync(filePath)) {
+        fs10.unlinkSync(filePath);
       }
     }
     if (file.thumbnail_path) {
-      const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
-      if (fs9.existsSync(thumbPath)) {
-        fs9.unlinkSync(thumbPath);
+      const thumbPath = path11.join(THUMBNAIL_DIR3, path11.basename(file.thumbnail_path));
+      if (fs10.existsSync(thumbPath)) {
+        fs10.unlinkSync(thumbPath);
       }
     }
     await query("DELETE FROM files WHERE id = $1", [id]);
@@ -4700,15 +5134,15 @@ router2.post("/batch-delete", async (req, res) => {
           const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
           await provider.deleteFile(file.path);
         } else {
-          const filePath = file.path || path9.join(UPLOAD_DIR3, file.stored_name);
-          if (fs9.existsSync(filePath)) {
-            fs9.unlinkSync(filePath);
+          const filePath = file.path || path11.join(UPLOAD_DIR3, file.stored_name);
+          if (fs10.existsSync(filePath)) {
+            fs10.unlinkSync(filePath);
           }
         }
         if (file.thumbnail_path) {
-          const thumbPath = path9.join(THUMBNAIL_DIR3, path9.basename(file.thumbnail_path));
-          if (fs9.existsSync(thumbPath)) {
-            fs9.unlinkSync(thumbPath);
+          const thumbPath = path11.join(THUMBNAIL_DIR3, path11.basename(file.thumbnail_path));
+          if (fs10.existsSync(thumbPath)) {
+            fs10.unlinkSync(thumbPath);
           }
         }
       } catch (err) {
@@ -4806,6 +5240,53 @@ router2.patch("/rename-folder", async (req, res) => {
     res.status(500).json({ error: "\u91CD\u547D\u540D\u6587\u4EF6\u5939\u5931\u8D25" });
   }
 });
+router2.patch("/:id([0-9a-fA-F-]{36})/move", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { folder } = req.body;
+    if (folder !== null && typeof folder !== "string") {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u79F0\u683C\u5F0F\u9519\u8BEF" });
+    }
+    const trimmedFolder = folder ? folder.trim() : null;
+    if (trimmedFolder && /[\/\\:*?"<>|]/.test(trimmedFolder)) {
+      return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const result = await query("SELECT * FROM files WHERE id = $1", [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728" });
+    }
+    await query("UPDATE files SET folder = $1, updated_at = NOW() WHERE id = $2", [trimmedFolder, id]);
+    res.json({ success: true, folder: trimmedFolder });
+  } catch (error) {
+    console.error("\u79FB\u52A8\u6587\u4EF6\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u79FB\u52A8\u6587\u4EF6\u5931\u8D25" });
+  }
+});
+router2.patch("/move-folder", async (req, res) => {
+  try {
+    const { oldName, newName } = req.body;
+    if (!oldName || typeof oldName !== "string") {
+      return res.status(400).json({ error: "\u539F\u6587\u4EF6\u5939\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A" });
+    }
+    if (newName !== null && typeof newName !== "string") {
+      return res.status(400).json({ error: "\u76EE\u6807\u6587\u4EF6\u5939\u540D\u79F0\u683C\u5F0F\u9519\u8BEF" });
+    }
+    const trimmedOld = oldName.trim();
+    const trimmedNew = newName ? newName.trim() : null;
+    if (trimmedNew && /[\/\\:*?"<>|]/.test(trimmedNew)) {
+      return res.status(400).json({ error: "\u76EE\u6807\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
+    }
+    const checkResult = await query("SELECT COUNT(*) as cnt FROM files WHERE folder = $1", [trimmedOld]);
+    if (parseInt(checkResult.rows[0].cnt) === 0) {
+      return res.status(404).json({ error: "\u539F\u6587\u4EF6\u5939\u4E0D\u5B58\u5728" });
+    }
+    await query("UPDATE files SET folder = $1, updated_at = NOW() WHERE folder = $2", [trimmedNew, trimmedOld]);
+    res.json({ success: true, folder: trimmedNew });
+  } catch (error) {
+    console.error("\u79FB\u52A8\u6587\u4EF6\u5939\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u79FB\u52A8\u6587\u4EF6\u5939\u5931\u8D25" });
+  }
+});
 router2.post("/:id([0-9a-fA-F-]{36})/share", async (req, res) => {
   try {
     const { id } = req.params;
@@ -4883,9 +5364,9 @@ var files_default = router2;
 init_db();
 import { Router as Router3 } from "express";
 import multer from "multer";
-import { v4 as uuidv43 } from "uuid";
-import path10 from "path";
-import fs10 from "fs";
+import { v4 as uuidv4 } from "uuid";
+import path12 from "path";
+import fs11 from "fs";
 
 // src/middleware/apiKey.ts
 init_db();
@@ -4942,17 +5423,17 @@ function decodeFilename(filename) {
   }
   return filename;
 }
-var TEMP_DIR = path10.join(process.cwd(), "data", "temp");
-if (!fs10.existsSync(TEMP_DIR)) {
-  fs10.mkdirSync(TEMP_DIR, { recursive: true });
+var TEMP_DIR = path12.join(process.cwd(), "data", "temp");
+if (!fs11.existsSync(TEMP_DIR)) {
+  fs11.mkdirSync(TEMP_DIR, { recursive: true });
 }
 var storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     cb(null, TEMP_DIR);
   },
   filename: (_req, file, cb) => {
-    const ext = path10.extname(file.originalname);
-    const storedName = `${uuidv43()}${ext}`;
+    const ext = path12.extname(file.originalname);
+    const storedName = `${uuidv4()}${ext}`;
     cb(null, storedName);
   }
 });
@@ -4972,13 +5453,13 @@ var handleUpload = async (req, res, source = "web") => {
   const originalName = decodeFilename(file.originalname);
   const mimeType = file.mimetype;
   const size = file.size;
-  const tempPath = path10.resolve(file.path);
-  const storedName = file.filename;
+  const tempPath = path12.resolve(file.path);
+  const activeAccountId = storageManager.getActiveAccountId();
+  const storedName = await getUniqueStoredName(originalName, folder || null, activeAccountId);
   console.log(`[Upload] \u{1F4C1} Received file: ${originalName} (${mimeType}, ${size} bytes)`);
   console.log(`[Upload] \u{1F3E0} Local temp path: ${tempPath}`);
   try {
     const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
     console.log(`[Upload] \u{1F6E0}\uFE0F  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || "none (local)"}`);
     let thumbnailPath = null;
     let width = null;
@@ -4987,7 +5468,7 @@ var handleUpload = async (req, res, source = "web") => {
       try {
         const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
         if (thumbResult) {
-          thumbnailPath = path10.basename(thumbResult);
+          thumbnailPath = path12.basename(thumbResult);
           console.log(`[Upload] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(tempPath, mimeType);
           width = dims.width;
@@ -5003,12 +5484,12 @@ var handleUpload = async (req, res, source = "web") => {
     try {
       storedPath = await provider.saveFile(tempPath, storedName, mimeType);
     } catch (err) {
-      if (fs10.existsSync(tempPath)) fs10.unlinkSync(tempPath);
+      if (fs11.existsSync(tempPath)) fs11.unlinkSync(tempPath);
       throw err;
     }
-    if (fs10.existsSync(tempPath)) {
+    if (fs11.existsSync(tempPath)) {
       try {
-        fs10.unlinkSync(tempPath);
+        fs11.unlinkSync(tempPath);
       } catch (e) {
         console.warn("Failed to clean up temp file:", e);
       }
@@ -5041,7 +5522,7 @@ var handleUpload = async (req, res, source = "web") => {
     });
   } catch (error) {
     console.error("\u4E0A\u4F20\u5904\u7406\u5931\u8D25:", error);
-    if (fs10.existsSync(tempPath)) fs10.unlinkSync(tempPath);
+    if (fs11.existsSync(tempPath)) fs11.unlinkSync(tempPath);
     res.status(500).json({ error: "\u6587\u4EF6\u4E0A\u4F20\u5931\u8D25" });
   }
 };
@@ -5058,7 +5539,8 @@ init_db();
 import { Router as Router4 } from "express";
 import checkDiskSpaceModule2 from "check-disk-space";
 import os3 from "os";
-import path11 from "path";
+import path13 from "path";
+import fs12 from "fs";
 import axios3 from "axios";
 var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router4 = Router4();
@@ -5083,7 +5565,7 @@ function getGoogleDriveRedirectUri(req) {
 }
 router4.get("/stats", requireAuth, async (_req, res) => {
   try {
-    const diskPath = os3.platform() === "win32" ? "C:" : path11.resolve(UPLOAD_DIR4);
+    const diskPath = os3.platform() === "win32" ? "C:" : path13.resolve(UPLOAD_DIR4);
     const diskSpace = await checkDiskSpace2(diskPath);
     const result = await query(`
             SELECT 
@@ -5091,7 +5573,7 @@ router4.get("/stats", requireAuth, async (_req, res) => {
                 COALESCE(SUM(size), 0) as total_size
             FROM files
         `);
-    const foomclousStats = result.rows[0];
+    const flcloudsStats = result.rows[0];
     res.json({
       server: {
         total: formatBytes3(diskSpace.size),
@@ -5102,11 +5584,11 @@ router4.get("/stats", requireAuth, async (_req, res) => {
         freeBytes: diskSpace.free,
         usedPercent: Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100)
       },
-      foomclous: {
-        used: formatBytes3(parseInt(foomclousStats.total_size)),
-        usedBytes: parseInt(foomclousStats.total_size),
-        fileCount: parseInt(foomclousStats.file_count),
-        usedPercent: Math.round(parseInt(foomclousStats.total_size) / diskSpace.size * 100)
+      flclouds: {
+        used: formatBytes3(parseInt(flcloudsStats.total_size)),
+        usedBytes: parseInt(flcloudsStats.total_size),
+        fileCount: parseInt(flcloudsStats.file_count),
+        usedPercent: Math.round(parseInt(flcloudsStats.total_size) / diskSpace.size * 100)
       }
     });
   } catch (error) {
@@ -5150,22 +5632,40 @@ router4.get("/config", requireAuth, async (req, res) => {
     const provider = storageManager2.getProvider();
     const activeAccountId = storageManager2.getActiveAccountId();
     const accounts = await storageManager2.getAccounts();
+    const telegramUserDownloadEnabled = await getSetting("telegram_user_download_enabled", "false");
+    const telegramUserSessionFilePath = getTelegramUserSessionFilePath();
+    const telegramUserSessionReady = fs12.existsSync(telegramUserSessionFilePath) && isTelegramUserClientReady();
     const redirectUri = getOneDriveRedirectUri(req);
     res.json({
       provider: provider.name,
       activeAccountId,
       accounts,
       redirectUri,
-      googleDriveRedirectUri: getGoogleDriveRedirectUri(req)
+      googleDriveRedirectUri: getGoogleDriveRedirectUri(req),
+      telegramUserDownloadEnabled: telegramUserDownloadEnabled === "true",
+      telegramUserSessionReady
     });
   } catch (error) {
     console.error("\u83B7\u53D6\u5B58\u50A8\u914D\u7F6E\u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u5B58\u50A8\u914D\u7F6E\u5931\u8D25" });
   }
 });
+router4.post("/config/telegram-user-download", requireAuth, async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    if (enabled && !isTelegramUserClientReady()) {
+      return res.status(400).json({ error: "Telegram \u7528\u6237 session \u672A\u5C31\u7EEA\uFF0C\u8BF7\u5148\u751F\u6210 session \u5E76\u91CD\u542F\u540E\u7AEF" });
+    }
+    await setSetting("telegram_user_download_enabled", enabled ? "true" : "false");
+    res.json({ success: true, enabled });
+  } catch (error) {
+    console.error("\u66F4\u65B0 Telegram \u7528\u6237\u4E0B\u8F7D\u8BBE\u7F6E\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u66F4\u65B0 Telegram \u7528\u6237\u4E0B\u8F7D\u8BBE\u7F6E\u5931\u8D25" });
+  }
+});
 router4.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, tenantId, redirectUri, clientSecret } = req.body;
+    const { clientId, tenantId, redirectUri, clientSecret, name } = req.body;
     if (!clientId || !redirectUri) {
       return res.status(400).json({ error: "\u7F3A\u5C11 Client ID \u6216 Redirect URI" });
     }
@@ -5178,6 +5678,9 @@ router4.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
     }
     await StorageManager2.updateSetting("onedrive_client_id", clientId);
     await StorageManager2.updateSetting("onedrive_tenant_id", tenantId || "common");
+    if (name) {
+      await StorageManager2.updateSetting("onedrive_pending_name", name);
+    }
     res.json({ authUrl });
   } catch (error) {
     console.error("\u83B7\u53D6\u6388\u6743 URL \u5931\u8D25:", error);
@@ -5258,7 +5761,7 @@ router4.get("/onedrive/callback", async (req, res) => {
 });
 router4.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, clientSecret, redirectUri } = req.body;
+    const { clientId, clientSecret, redirectUri, name } = req.body;
     if (!clientId || !clientSecret || !redirectUri) {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570 (Client ID, Client Secret \u6216 Redirect URI)" });
     }
@@ -5267,6 +5770,9 @@ router4.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
     await StorageManager2.updateSetting("google_drive_client_id", clientId);
     await StorageManager2.updateSetting("google_drive_client_secret", clientSecret);
     await StorageManager2.updateSetting("google_drive_redirect_uri", redirectUri);
+    if (name) {
+      await StorageManager2.updateSetting("google_drive_pending_name", name);
+    }
     res.json({ authUrl });
   } catch (error) {
     console.error("\u83B7\u53D6 Google Drive \u6388\u6743 URL \u5931\u8D25:", error);
@@ -5282,7 +5788,7 @@ router4.get("/google-drive/callback", async (req, res) => {
     if (!code) {
       return res.send("\u7F3A\u5C11\u6388\u6743\u7801 (code)");
     }
-    const { storageManager: storageManager2, GoogleDriveStorageProvider: GoogleDriveStorageProvider2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const { storageManager: storageManager2, GoogleDriveStorageProvider: GoogleDriveStorageProvider2, StorageManager: StorageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
     const clientId = await storageManager2.getSetting("google_drive_client_id");
     const clientSecret = await storageManager2.getSetting("google_drive_client_secret") || "";
     const redirectUri = await storageManager2.getSetting("google_drive_redirect_uri") || getGoogleDriveRedirectUri(req);
@@ -5293,7 +5799,9 @@ router4.get("/google-drive/callback", async (req, res) => {
     if (!tokens.refresh_token) {
       return res.send("\u6388\u6743\u5931\u8D25\uFF1A\u672A\u83B7\u5F97 Refresh Token\u3002\u8BF7\u786E\u4FDD\u662F\u9996\u6B21\u6388\u6743\uFF0C\u6216\u5728 Google \u63A7\u5236\u53F0\u4E2D\u64A4\u9500\u6743\u9650\u540E\u91CD\u8BD5\u3002");
     }
-    await storageManager2.addGoogleDriveAccount("Google Drive Account", clientId, clientSecret, tokens.refresh_token, redirectUri);
+    const pendingName = await storageManager2.getSetting("google_drive_pending_name");
+    await StorageManager2.updateSetting("google_drive_pending_name", "");
+    await storageManager2.addGoogleDriveAccount(pendingName || "Google Drive Account", clientId, clientSecret, tokens.refresh_token, redirectUri);
     const accounts = await storageManager2.getAccounts();
     const newAccount = accounts.filter((a) => a.type === "google_drive").sort((a, b) => b.created_at - a.created_at)[0];
     if (newAccount) {
@@ -5307,12 +5815,16 @@ router4.get("/google-drive/callback", async (req, res) => {
                         <p style="color: #15803d; margin-bottom: 20px;">Google Drive \u5DF2\u6210\u529F\u8FDE\u63A5\u5E76\u542F\u7528\u3002</p>
                         <button onclick="window.close()" style="padding: 10px 20px; background: #16a34a; color: white; border: none; border-radius: 8px; cursor: pointer;">\u5173\u95ED\u6B64\u7A97\u53E3</button>
                         <script>
-                            setTimeout(() => {
+                            const notifyParent = () => {
                                 if (window.opener) {
                                     window.opener.postMessage('google_drive_auth_success', '*');
                                 }
+                            };
+                            notifyParent();
+                            setTimeout(() => {
+                                notifyParent();
                                 window.close();
-                            }, 3000);
+                            }, 1200);
                         </script>
                     </div>
                 </body>
@@ -5445,17 +5957,17 @@ var storage_default = router4;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router5 } from "express";
-import { v4 as uuidv44 } from "uuid";
-import path12 from "path";
-import fs11 from "fs";
+import { v4 as uuidv42 } from "uuid";
+import path14 from "path";
+import fs13 from "fs";
 init_storage();
 var router5 = Router5();
 var UPLOAD_DIR5 = process.env.UPLOAD_DIR || "./data/uploads";
 var THUMBNAIL_DIR4 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var CHUNK_DIR = process.env.CHUNK_DIR || "./data/chunks";
 [UPLOAD_DIR5, THUMBNAIL_DIR4, CHUNK_DIR].forEach((dir) => {
-  if (!fs11.existsSync(dir)) {
-    fs11.mkdirSync(dir, { recursive: true });
+  if (!fs13.existsSync(dir)) {
+    fs13.mkdirSync(dir, { recursive: true });
   }
 });
 var uploadSessions = /* @__PURE__ */ new Map();
@@ -5463,9 +5975,9 @@ setInterval(() => {
   const now = /* @__PURE__ */ new Date();
   uploadSessions.forEach((session, uploadId) => {
     if (now.getTime() - session.createdAt.getTime() > 24 * 60 * 60 * 1e3) {
-      const chunkDir = path12.join(CHUNK_DIR, uploadId);
-      if (fs11.existsSync(chunkDir)) {
-        fs11.rmSync(chunkDir, { recursive: true });
+      const chunkDir = path14.join(CHUNK_DIR, uploadId);
+      if (fs13.existsSync(chunkDir)) {
+        fs13.rmSync(chunkDir, { recursive: true });
       }
       uploadSessions.delete(uploadId);
     }
@@ -5495,9 +6007,9 @@ router5.post("/init", (req, res) => {
     if (!filename || !totalChunks || !mimeType || !totalSize) {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570" });
     }
-    const uploadId = uuidv44();
-    const chunkDir = path12.join(CHUNK_DIR, uploadId);
-    fs11.mkdirSync(chunkDir, { recursive: true });
+    const uploadId = uuidv42();
+    const chunkDir = path14.join(CHUNK_DIR, uploadId);
+    fs13.mkdirSync(chunkDir, { recursive: true });
     uploadSessions.set(uploadId, {
       uploadId,
       filename: decodeFilename2(filename),
@@ -5531,8 +6043,8 @@ router5.post("/chunk", async (req, res) => {
     if (!session) {
       return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u8FC7\u671F" });
     }
-    const chunkPath = path12.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
-    const writeStream = fs11.createWriteStream(chunkPath);
+    const chunkPath = path14.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
+    const writeStream = fs13.createWriteStream(chunkPath);
     await new Promise((resolve, reject) => {
       req.pipe(writeStream);
       req.on("end", () => {
@@ -5572,15 +6084,15 @@ router5.post("/complete", async (req, res) => {
         totalChunks: session.totalChunks
       });
     }
-    const ext = path12.extname(session.filename);
-    const storedName = `${uuidv44()}${ext}`;
-    const finalPath = path12.resolve(path12.join(UPLOAD_DIR5, storedName));
-    const writeStream = fs11.createWriteStream(finalPath);
+    const activeAccountId = storageManager.getActiveAccountId();
+    const storedName = await getUniqueStoredName(session.filename, session.folder || null, activeAccountId);
+    const finalPath = path14.resolve(path14.join(UPLOAD_DIR5, storedName));
+    const writeStream = fs13.createWriteStream(finalPath);
     console.log(`[ChunkedComplete] \u{1F9E9} Merging ${session.totalChunks} chunks for: ${session.filename}`);
     console.log(`[ChunkedComplete] \u{1F3E0} Final temp path: ${finalPath}`);
     for (let i = 0; i < session.totalChunks; i++) {
-      const chunkPath = path12.join(CHUNK_DIR, uploadId, `chunk_${i}`);
-      const chunkData = fs11.readFileSync(chunkPath);
+      const chunkPath = path14.join(CHUNK_DIR, uploadId, `chunk_${i}`);
+      const chunkData = fs13.readFileSync(chunkPath);
       writeStream.write(chunkData);
     }
     await new Promise((resolve, reject) => {
@@ -5588,8 +6100,8 @@ router5.post("/complete", async (req, res) => {
       writeStream.on("finish", resolve);
       writeStream.on("error", reject);
     });
-    const chunkDir = path12.join(CHUNK_DIR, uploadId);
-    fs11.rmSync(chunkDir, { recursive: true });
+    const chunkDir = path14.join(CHUNK_DIR, uploadId);
+    fs13.rmSync(chunkDir, { recursive: true });
     uploadSessions.delete(uploadId);
     let thumbnailPath = null;
     let width = null;
@@ -5599,7 +6111,7 @@ router5.post("/complete", async (req, res) => {
         console.log(`[ChunkedComplete] \u{1F5BC}\uFE0F  MIME: ${session.mimeType}, starting generation...`);
         const thumbResult = await generateThumbnail(finalPath, storedName, session.mimeType);
         if (thumbResult) {
-          thumbnailPath = path12.basename(thumbResult);
+          thumbnailPath = path14.basename(thumbResult);
           console.log(`[ChunkedComplete] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(finalPath, session.mimeType);
           width = dims.width;
@@ -5613,17 +6125,16 @@ router5.post("/complete", async (req, res) => {
     }
     let storedPath = "";
     const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
     console.log(`[ChunkedComplete] \u{1F6E0}\uFE0F  Provider: ${provider.name}, accountId: ${activeAccountId || "none (local)"}`);
     try {
       storedPath = await provider.saveFile(finalPath, storedName, session.mimeType);
     } catch (err) {
-      if (fs11.existsSync(finalPath)) fs11.unlinkSync(finalPath);
+      if (fs13.existsSync(finalPath)) fs13.unlinkSync(finalPath);
       throw err;
     }
-    if (fs11.existsSync(finalPath)) {
+    if (fs13.existsSync(finalPath)) {
       try {
-        fs11.unlinkSync(finalPath);
+        fs13.unlinkSync(finalPath);
       } catch (e) {
       }
     }
@@ -5659,9 +6170,9 @@ router5.delete("/:uploadId", (req, res) => {
     const uploadId = req.params.uploadId;
     const session = uploadSessions.get(uploadId);
     if (session) {
-      const chunkDir = path12.join(CHUNK_DIR, uploadId);
-      if (fs11.existsSync(chunkDir)) {
-        fs11.rmSync(chunkDir, { recursive: true });
+      const chunkDir = path14.join(CHUNK_DIR, uploadId);
+      if (fs13.existsSync(chunkDir)) {
+        fs13.rmSync(chunkDir, { recursive: true });
       }
       uploadSessions.delete(uploadId);
     }
@@ -5701,21 +6212,28 @@ var PORT = process.env.PORT || 51947;
 var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
 var THUMBNAIL_DIR5 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
-if (!fs12.existsSync(UPLOAD_DIR6)) {
-  fs12.mkdirSync(UPLOAD_DIR6, { recursive: true });
+if (!fs14.existsSync(UPLOAD_DIR6)) {
+  fs14.mkdirSync(UPLOAD_DIR6, { recursive: true });
   console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR6}`);
 }
-if (!fs12.existsSync(THUMBNAIL_DIR5)) {
-  fs12.mkdirSync(THUMBNAIL_DIR5, { recursive: true });
+if (!fs14.existsSync(THUMBNAIL_DIR5)) {
+  fs14.mkdirSync(THUMBNAIL_DIR5, { recursive: true });
   console.log(`\u{1F4C1} \u521B\u5EFA\u7F29\u7565\u56FE\u76EE\u5F55: ${THUMBNAIL_DIR5}`);
 }
-if (!fs12.existsSync(CHUNK_DIR2)) {
-  fs12.mkdirSync(CHUNK_DIR2, { recursive: true });
+if (!fs14.existsSync(CHUNK_DIR2)) {
+  fs14.mkdirSync(CHUNK_DIR2, { recursive: true });
   console.log(`\u{1F4C1} \u521B\u5EFA\u5206\u5757\u76EE\u5F55: ${CHUNK_DIR2}`);
 }
+var configuredCorsOrigin = process.env.CORS_ORIGIN || "";
+var allowedOrigins = configuredCorsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean);
+var allowAnyOrigin = allowedOrigins.includes("*");
 app.use(cors({
-  origin: true,
-  // 允许所有来源
+  origin: allowAnyOrigin ? true : (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS origin not allowed: ${origin}`));
+  },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: ["Content-Type", "X-API-Key", "X-Upload-Id", "X-Chunk-Index", "Authorization"]
@@ -5737,7 +6255,7 @@ app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR5, {
 }));
 app.use("/api/files", requireAuthOrSignedUrl, files_default);
 app.use("/api/upload", requireAuth, upload_default);
-app.use("/api/v1/upload", upload_default);
+app.use("/api/v1/upload", requireAuth, upload_default);
 app.use("/api/chunked", requireAuth, chunkedUpload_default);
 app.use("/api/storage", storage_default);
 app.get("/health", (_req, res) => {
@@ -5757,15 +6275,17 @@ app.listen(PORT, async () => {
     console.error("\u5B58\u50A8\u7BA1\u7406\u5668\u521D\u59CB\u5316\u5931\u8D25:", e);
   }
   if (telegramEnabled) {
+    await initTelegramUserClient();
     await initTelegramBot();
   }
   console.log(`
-\u{1F680} FoomClous \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
+\u{1F680} FlClouds \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
-\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path13.resolve(UPLOAD_DIR6)}
-\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path13.resolve(THUMBNAIL_DIR5)}
+\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path15.resolve(UPLOAD_DIR6)}
+\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path15.resolve(THUMBNAIL_DIR5)}
 \u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${passwordProtected ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
 \u{1F916} Telegram Bot: ${telegramEnabled ? "\u5DF2\u542F\u7528 (\u652F\u63012GB\u6587\u4EF6)" : "\u672A\u542F\u7528"}
+\u{1F464} Telegram User Download: ${isTelegramUserClientReady() ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
     `);
 });
 var index_default = app;
