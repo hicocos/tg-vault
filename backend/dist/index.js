@@ -2381,10 +2381,12 @@ function getTypeFolder(mimeType) {
     image: "images",
     video: "videos",
     audio: "audio",
-    document: "documents",
-    other: "others"
+    document: "documents"
   };
-  return map[type] || "others";
+  return map[type] || null;
+}
+function hasAny(value, keywords) {
+  return keywords.some((keyword) => value.includes(keyword));
 }
 function getDetailedTypeFolder(mimeType, fileName) {
   const lowerMime = (mimeType || "").toLowerCase();
@@ -2413,16 +2415,36 @@ function getDetailedTypeFolder(mimeType, fileName) {
     ".iso",
     ".img"
   ]);
-  const archiveExts = /* @__PURE__ */ new Set([".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz"]);
-  const codeExts = /* @__PURE__ */ new Set([".js", ".ts", ".py", ".json", ".xml", ".sql", ".html", ".css", ".java", ".go", ".rs", ".php", ".rb", ".cpp", ".c", ".h"]);
+  const imageExts = /* @__PURE__ */ new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif", ".tif", ".tiff", ".avif", ".ico"]);
+  const rawImageExts = /* @__PURE__ */ new Set([".raw", ".dng", ".cr2", ".cr3", ".nef", ".arw", ".orf", ".rw2"]);
+  const videoExts = /* @__PURE__ */ new Set([".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi", ".flv", ".wmv", ".mpeg", ".mpg", ".ts", ".m2ts", ".3gp"]);
+  const audioExts = /* @__PURE__ */ new Set([".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma", ".aiff", ".alac"]);
+  const archiveExts = /* @__PURE__ */ new Set([".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".zst", ".lz", ".lzma", ".cab"]);
+  const codeExts = /* @__PURE__ */ new Set([".js", ".jsx", ".ts", ".tsx", ".py", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".env", ".sql", ".html", ".css", ".scss", ".sass", ".less", ".java", ".go", ".rs", ".php", ".rb", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".cs", ".swift", ".kt", ".kts", ".dart", ".lua", ".pl", ".r", ".sh", ".bat", ".cmd", ".ps1", ".vue", ".svelte"]);
+  const textExts = /* @__PURE__ */ new Set([".txt", ".md", ".markdown", ".rtf", ".log", ".nfo"]);
+  const spreadsheetExts = /* @__PURE__ */ new Set([".xls", ".xlsx", ".xlsm", ".ods", ".csv", ".tsv", ".numbers"]);
+  const presentationExts = /* @__PURE__ */ new Set([".ppt", ".pptx", ".pps", ".ppsx", ".odp", ".key"]);
+  const wordExts = /* @__PURE__ */ new Set([".doc", ".docx", ".odt", ".pages"]);
+  const ebookExts = /* @__PURE__ */ new Set([".epub", ".mobi", ".azw", ".azw3", ".fb2", ".cbz", ".cbr"]);
+  const fontExts = /* @__PURE__ */ new Set([".ttf", ".otf", ".woff", ".woff2", ".eot"]);
+  const designExts = /* @__PURE__ */ new Set([".psd", ".ai", ".sketch", ".fig", ".xd", ".indd", ".svg"]);
+  const torrentExts = /* @__PURE__ */ new Set([".torrent", ".magnet"]);
   if (installerExts.has(ext) || lowerMime.includes("android.package-archive") || lowerMime.includes("apple.installer") || lowerMime.includes("x-msdownload") || lowerMime.includes("x-msi") || lowerMime.includes("x-apple-diskimage") || lowerMime.includes("x-debian-package") || lowerMime.includes("x-rpm") || lowerMime.includes("x-iso9660-image") || lowerMime.includes("executable")) return "apps";
-  if (lowerMime.includes("epub") || lowerMime.includes("mobi") || [".epub", ".mobi"].includes(ext)) return "ebooks";
+  if (imageExts.has(ext) || lowerMime.startsWith("image/")) return "images";
+  if (rawImageExts.has(ext)) return "raw-images";
+  if (videoExts.has(ext) || lowerMime.startsWith("video/")) return "videos";
+  if (audioExts.has(ext) || lowerMime.startsWith("audio/")) return "audio";
+  if (fontExts.has(ext) || lowerMime.includes("font") || lowerMime.includes("opentype")) return "fonts";
+  if (designExts.has(ext) || hasAny(lowerMime, ["photoshop", "illustrator", "figma", "sketch"])) return "design";
+  if (torrentExts.has(ext) || lowerMime.includes("bittorrent")) return "torrents";
+  if (lowerMime.includes("epub") || lowerMime.includes("mobi") || ebookExts.has(ext)) return "ebooks";
   if (lowerMime.includes("pdf") || ext === ".pdf") return "pdfs";
   if (lowerMime.includes("zip") || lowerMime.includes("rar") || lowerMime.includes("7z") || lowerMime.includes("tar") || lowerMime.includes("gzip") || lowerMime.includes("compressed") || archiveExts.has(ext)) return "archives";
-  if (lowerMime.includes("spreadsheet") || lowerMime.includes("excel") || [".xls", ".xlsx", ".csv"].includes(ext)) return "spreadsheets";
-  if (lowerMime.includes("presentation") || lowerMime.includes("powerpoint") || [".ppt", ".pptx"].includes(ext)) return "presentations";
-  if (lowerMime.includes("word") || [".doc", ".docx"].includes(ext)) return "word-docs";
+  if (lowerMime.includes("spreadsheet") || lowerMime.includes("excel") || spreadsheetExts.has(ext)) return "spreadsheets";
+  if (lowerMime.includes("presentation") || lowerMime.includes("powerpoint") || presentationExts.has(ext)) return "presentations";
+  if (lowerMime.includes("word") || wordExts.has(ext)) return "word-docs";
   if (lowerMime.includes("javascript") || lowerMime.includes("typescript") || lowerMime.includes("python") || lowerMime.includes("json") || lowerMime.includes("xml") || lowerMime.includes("sql") || codeExts.has(ext)) return "code";
+  if (lowerMime.startsWith("text/") || textExts.has(ext)) return "text";
   return getTypeFolder(mimeType);
 }
 async function getStoragePathRules() {
@@ -2459,7 +2481,10 @@ function buildStorageFolderWithRules(options, rules) {
     segments.push(normalizeSegment(options.folder, "folder"));
   }
   if (rules.byType) {
-    segments.push(getDetailedTypeFolder(options.mimeType, options.fileName));
+    const typeFolder = getDetailedTypeFolder(options.mimeType, options.fileName);
+    if (typeFolder) {
+      segments.push(typeFolder);
+    }
   }
   if (segments.length === 0) return null;
   return segments.join("/");
