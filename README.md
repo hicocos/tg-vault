@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <strong>FlClouds</strong> 是一款面向个人和小团队的私有云存储系统，支持大文件切片上传、图片/视频预览、Web 管理、Telegram Bot 操作、账号级 Telegram 下载。
+  <strong>FlClouds</strong> 是一款面向个人和小团队的 Telegram 转存与私有云存储系统，支持频道/群组媒体转存、账号级 Telegram 下载、按日期抓取、订阅同步、自动按来源与文件类型归档，并提供 Web 管理、图片/视频预览和大文件上传能力。
 </p>
 
 ---
@@ -122,7 +122,7 @@ docker compose up -d
 
 ## 🤖 Telegram Bot 配置指南
 
-集成 Telegram Bot 后，你可以通过聊天窗口上传文件、查看任务、删除文件、查看存储统计，并调用 yt-dlp 下载视频链接。
+集成 Telegram Bot 后，你可以通过聊天窗口上传文件、查看任务、删除文件、查看存储统计、调用 yt-dlp 下载视频链接，也可以通过账号级下载器把 Telegram 频道/群组媒体转存到当前存储源。
 
 ### 1. 获取 Bot Token
 
@@ -174,11 +174,28 @@ docker compose up -d
 | `/path_rules` | 设置保存路径是否按来源/频道、文件类型分层 |
 | `/duplicate_mode` | 设置重复文件跳过或生成副本 |
 | `/cleanup_settings` | 设置自动清理开关，本地存储用户可关闭以防默认删除文件 |
+| `/tg_date` | 按日期向导抓取 Telegram 频道/群组媒体 |
+| `/tg_preview_date` | 预览指定日期范围内可下载的 Telegram 媒体 |
+| `/tg_sub` | 管理 Telegram 频道订阅，支持查看、添加和取消订阅 |
 | `/delete <ID>` | 删除指定文件，支持 ID 前缀 |
 | `/ytdlp <url>` | 解析视频链接并下载到当前存储源 |
 
 > [!TIP]
 > 多文件上传数量达到 9 个及以上时，Bot 会自动进入静默排队模式，避免刷屏；可随时用 `/tasks` 查看进度。
+
+---
+
+## 📡 Telegram 转存与订阅
+
+账号级 Telegram 下载器支持把频道/群组中的媒体转存到 FlClouds，并交给当前启用的存储源保存。
+
+- `/tg_date`：按向导输入频道、开始日期和结束日期，抓取指定日期范围内的媒体
+- `/tg_preview_date`：先预览日期范围内的媒体数量与概况，再决定是否下载
+- `/tg_sub`：管理频道订阅；回复序号取消订阅，回复 `@channel_username` 或 `https://t.me/channel_username` 添加订阅
+- 后台任务会记录入队、跳过、重复和失败状态，可通过 `/tasks` 查看进度
+- 文件默认按来源/频道和类型归档，例如 `telegram/channel_username/images/`、`telegram/channel_username/videos/`
+
+当来源名称缺失或包含特殊字符时，系统会使用安全 fallback，避免生成非法路径或重复嵌套目录。
 
 ---
 
@@ -295,9 +312,12 @@ docker system prune -f
 - 📦 大文件切片上传与断点续传
 - 🖼️ 图片缩略图、视频预览与流式播放
 - 🤖 Telegram Bot 上传、下载、删除、任务队列与存储统计
-- 👤 Telegram 用户账号级 MTProto 下载器
+- 👤 Telegram 用户账号级 MTProto 下载器，支持频道/群组媒体转存
+- 📅 按日期抓取、下载前预览与频道订阅同步
 - 🔁 桥接群/频道转发，改善多人私聊媒体不可见问题
-- ⚙️ Telegram 并发下载 worker 调参
+- 🗂️ 按来源/频道和文件类型自动归档，特殊名称安全 fallback
+- ⚙️ Telegram 并发下载 worker 调参，激进模式带二次确认
+- 🧯 重复文件处理、路径规则和本地孤儿文件清理开关
 - 📥 yt-dlp 视频链接下载到当前存储源
 - 🔐 Web / Bot 双重验证与访问密码保护
 - 🧩 Google Drive 等存储源配置与授权刷新
