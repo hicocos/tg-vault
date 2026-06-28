@@ -11,22 +11,25 @@ const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
 
 // 获取文件列表
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
     try {
         const { storageManager } = await import('../services/storage.js');
         const activeAccountId = storageManager.getActiveAccountId();
         const provider = storageManager.getProvider();
 
+        const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit || '200'), 10) || 200));
+        const offset = Math.max(0, parseInt(String(req.query.offset || '0'), 10) || 0);
         let queryStr = '';
         let params: any[] = [];
 
         if (provider.name === 'local') {
             // 本地存储模式：只显示 source = 'local' 的文件
-            queryStr = 'SELECT * FROM files WHERE source = \'local\' ORDER BY created_at DESC';
+            queryStr = 'SELECT * FROM files WHERE source = \'local\' ORDER BY created_at DESC LIMIT $1 OFFSET $2';
+            params = [limit, offset];
         } else {
             // 云盘模式：只显示当前激活账户的文件
-            queryStr = 'SELECT * FROM files WHERE storage_account_id = $1 ORDER BY created_at DESC';
-            params = [activeAccountId];
+            queryStr = 'SELECT * FROM files WHERE storage_account_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3';
+            params = [activeAccountId, limit, offset];
         }
 
         const result = await query(queryStr, params);
@@ -734,22 +737,25 @@ router.post('/:id([0-9a-fA-F-]{36})/share', async (req: Request, res: Response) 
 });
 
 // 获取收藏的文件
-router.get('/favorites', async (_req: Request, res: Response) => {
+router.get('/favorites', async (req: Request, res: Response) => {
     try {
         const { storageManager } = await import('../services/storage.js');
         const activeAccountId = storageManager.getActiveAccountId();
         const provider = storageManager.getProvider();
 
+        const limit = Math.min(500, Math.max(1, parseInt(String(req.query.limit || '200'), 10) || 200));
+        const offset = Math.max(0, parseInt(String(req.query.offset || '0'), 10) || 0);
         let queryStr = '';
         let params: any[] = [];
 
         if (provider.name === 'local') {
             // 本地存储模式：只显示 source = 'local' 的收藏文件
-            queryStr = 'SELECT * FROM files WHERE source = \'local\' AND is_favorite = true ORDER BY created_at DESC';
+            queryStr = 'SELECT * FROM files WHERE source = \'local\' AND is_favorite = true ORDER BY created_at DESC LIMIT $1 OFFSET $2';
+            params = [limit, offset];
         } else {
             // 云盘模式：只显示当前激活账户的收藏文件
-            queryStr = 'SELECT * FROM files WHERE storage_account_id = $1 AND is_favorite = true ORDER BY created_at DESC';
-            params = [activeAccountId];
+            queryStr = 'SELECT * FROM files WHERE storage_account_id = $1 AND is_favorite = true ORDER BY created_at DESC LIMIT $2 OFFSET $3';
+            params = [activeAccountId, limit, offset];
         }
 
         const result = await query(queryStr, params);

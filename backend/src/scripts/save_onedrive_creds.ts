@@ -4,6 +4,7 @@ const { Pool } = pkg;
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { encryptSettingValue } from '../utils/credentialCrypto.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,15 +16,19 @@ const pool = new Pool({
 });
 
 // ============================================
-// 在此填入您的 OneDrive 国际版凭证
+// 从环境变量读取 OneDrive 国际版凭证，禁止硬编码真实 token
 // ============================================
 const CREDENTIALS = {
-    onedrive_client_id: 'REMOVED_ONEDRIVE_CLIENT_ID',
-    onedrive_client_secret: '', // Public client has no secret
-    onedrive_refresh_token: 'REMOVED_ONEDRIVE_REFRESH_TOKEN',
-    onedrive_tenant_id: '79e54b9b-9f89-4c66-be4d-6f5bb457703b',
+    onedrive_client_id: process.env.ONEDRIVE_CLIENT_ID || '',
+    onedrive_client_secret: process.env.ONEDRIVE_CLIENT_SECRET || '',
+    onedrive_refresh_token: process.env.ONEDRIVE_REFRESH_TOKEN || '',
+    onedrive_tenant_id: process.env.ONEDRIVE_TENANT_ID || 'common',
     storage_provider: 'onedrive'
 };
+
+if (!CREDENTIALS.onedrive_client_id || !CREDENTIALS.onedrive_refresh_token) {
+    throw new Error('Missing ONEDRIVE_CLIENT_ID or ONEDRIVE_REFRESH_TOKEN');
+}
 // ============================================
 
 const updateSetting = async (key: string, value: string) => {
@@ -31,7 +36,7 @@ const updateSetting = async (key: string, value: string) => {
         `INSERT INTO system_settings (key, value, updated_at) 
          VALUES ($1, $2, NOW()) 
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-        [key, value]
+        [key, encryptSettingValue(key, value)]
     );
     console.log(`✓ Updated setting: ${key}`);
 };
@@ -73,14 +78,7 @@ async function main() {
         console.error('\n✗ 自动保存凭证失败 (可能是因为本地没有运行数据库)');
         console.error('  错误信息:', err.message);
 
-        console.log('\n请手动在您的数据库管理工具中运行以下 SQL 语句：\n');
-        console.log('---------------------------------------------------');
-        console.log(`INSERT INTO system_settings (key, value, updated_at) VALUES ('onedrive_client_id', '${CREDENTIALS.onedrive_client_id}', NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`);
-        console.log(`INSERT INTO system_settings (key, value, updated_at) VALUES ('onedrive_client_secret', '${CREDENTIALS.onedrive_client_secret}', NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`);
-        console.log(`INSERT INTO system_settings (key, value, updated_at) VALUES ('onedrive_refresh_token', '${CREDENTIALS.onedrive_refresh_token}', NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`);
-        console.log(`INSERT INTO system_settings (key, value, updated_at) VALUES ('onedrive_tenant_id', '${CREDENTIALS.onedrive_tenant_id}', NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`);
-        console.log(`INSERT INTO system_settings (key, value, updated_at) VALUES ('storage_provider', '${CREDENTIALS.storage_provider}', NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`);
-        console.log('---------------------------------------------------\n');
+        console.log('\n请通过应用设置页面重新添加 OneDrive，或使用环境变量重新运行本脚本。不会输出包含 refresh token 的 SQL。\n');
 
         process.exit(1);
     } finally {

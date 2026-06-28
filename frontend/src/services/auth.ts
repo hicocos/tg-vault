@@ -69,6 +69,7 @@ class AuthService {
     async login(password: string): Promise<{ success: boolean; error?: string; requiresTOTP?: boolean }> {
         try {
             const response = await fetch(`${API_BASE}/api/auth/login`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password }),
@@ -95,6 +96,7 @@ class AuthService {
     async verifyTOTP(password: string, totpToken: string): Promise<{ success: boolean; error?: string }> {
         try {
             const response = await fetch(`${API_BASE}/api/auth/verify-totp`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ password, totpToken }),
@@ -119,6 +121,7 @@ class AuthService {
 
         try {
             const response = await fetch(`${API_BASE}/api/auth/verify`, {
+                credentials: 'include',
                 headers: this.getAuthHeaders(),
             });
 
@@ -137,6 +140,7 @@ class AuthService {
     async logout(): Promise<void> {
         try {
             await fetch(`${API_BASE}/api/auth/logout`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: this.getAuthHeaders(),
             });
@@ -150,6 +154,7 @@ class AuthService {
     async get2FASetupInfo(): Promise<{ qrDataUrl: string; enabled: boolean }> {
         try {
             const response = await fetch(`${API_BASE}/api/auth/2fa-setup`, {
+                credentials: 'include',
                 headers: this.getAuthHeaders(),
             });
 
@@ -168,6 +173,7 @@ class AuthService {
     async activate2FA(totpToken: string): Promise<{ success: boolean; error?: string }> {
         try {
             const response = await fetch(`${API_BASE}/api/auth/2fa-activate`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -191,6 +197,7 @@ class AuthService {
     async disable2FA(password: string): Promise<{ success: boolean; error?: string }> {
         try {
             const response = await fetch(`${API_BASE}/api/auth/2fa-disable`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

@@ -66,6 +66,7 @@ class FileAPI {
     // 获取文件列表
     async getFiles(): Promise<FileData[]> {
         const response = await fetch(`${API_BASE}/api/files`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -76,6 +77,7 @@ class FileAPI {
     // 获取单个文件
     async getFile(id: string): Promise<FileData> {
         const response = await fetch(`${API_BASE}/api/files/${id}`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -136,6 +138,7 @@ class FileAPI {
             });
 
             xhr.open('POST', `${API_BASE}/api/upload`);
+            xhr.withCredentials = true;
 
             // 添加认证头
             const token = authService.getToken();
@@ -154,6 +157,7 @@ class FileAPI {
 
         // 1. 初始化上传
         const initResponse = await fetch(`${API_BASE}/api/chunked/init`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({
@@ -203,6 +207,7 @@ class FileAPI {
 
             // 3. 完成上传
             const completeResponse = await fetch(`${API_BASE}/api/chunked/complete`, {
+                credentials: 'include',
                 method: 'POST',
                 headers: getHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ uploadId }),
@@ -244,6 +249,7 @@ class FileAPI {
     // 删除文件
     async deleteFile(id: string): Promise<{ success: boolean; message: string }> {
         const response = await fetch(`${API_BASE}/api/files/${id}`, {
+            credentials: 'include',
             method: 'DELETE',
             headers: getHeaders(),
         });
@@ -255,6 +261,7 @@ class FileAPI {
     // 批量删除
     async batchDelete(fileIds: string[], folderNames: string[]): Promise<{ success: boolean; message: string }> {
         const response = await fetch(`${API_BASE}/api/files/batch-delete`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ fileIds, folderNames }),
@@ -266,6 +273,7 @@ class FileAPI {
     // 创建分享链接
     async createShareLink(fileId: string, password?: string, expiration?: string): Promise<{ link: string }> {
         const response = await fetch(`${API_BASE}/api/files/${fileId}/share`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ password, expiration }),
@@ -282,6 +290,7 @@ class FileAPI {
     // 获取下载 URL (直接链接或签名链接)
     async getDownloadLink(id: string): Promise<string> {
         const response = await fetch(`${API_BASE}/api/files/${id}/download-url`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -318,6 +327,7 @@ class FileAPI {
     // 获取存储统计
     async getStorageStats(): Promise<StorageStats> {
         const response = await fetch(`${API_BASE}/api/storage/stats`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -336,6 +346,7 @@ class FileAPI {
         telegramUserSessionReady?: boolean;
     }> {
         const response = await fetch(`${API_BASE}/api/storage/config`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -345,6 +356,7 @@ class FileAPI {
 
     async setTelegramUserDownloadEnabled(enabled: boolean): Promise<{ success: boolean; enabled: boolean }> {
         const response = await fetch(`${API_BASE}/api/storage/config/telegram-user-download`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ enabled }),
@@ -360,6 +372,7 @@ class FileAPI {
     // 更新 OneDrive 配置
     async updateOneDriveConfig(clientId: string, clientSecret: string, refreshToken: string, tenantId: string = 'common', name?: string): Promise<{ success: boolean; message: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/onedrive`, {
+            credentials: 'include',
             method: 'PUT',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, clientSecret, refreshToken, tenantId, name }),
@@ -372,6 +385,7 @@ class FileAPI {
     // 添加 Aliyun OSS 账户
     async addAliyunOSSAccount(name: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string): Promise<{ success: boolean; message: string; accountId: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/aliyun-oss`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, region, accessKeyId, accessKeySecret, bucket }),
@@ -387,6 +401,7 @@ class FileAPI {
     // 添加 S3 账户
     async addS3Account(name: string, endpoint: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string, forcePathStyle: boolean = false): Promise<{ success: boolean; message: string; accountId: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/s3`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle }),
@@ -402,6 +417,7 @@ class FileAPI {
     // 添加 WebDAV 账户
     async addWebDAVAccount(name: string, url: string, username?: string, password?: string): Promise<{ success: boolean; message: string; accountId: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/webdav`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, url, username, password }),
@@ -417,6 +433,7 @@ class FileAPI {
     // 切换存储提供商或账户
     async switchStorageProvider(provider: 'local' | 'onedrive' | 'aliyun_oss' | 's3' | 'webdav' | 'google_drive', accountId?: string): Promise<{ success: boolean; message: string }> {
         const response = await fetch(`${API_BASE}/api/storage/switch`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ provider, accountId }),
@@ -432,6 +449,7 @@ class FileAPI {
     // 获取所有账户
     async getAccounts(): Promise<StorageAccount[]> {
         const response = await fetch(`${API_BASE}/api/storage/accounts`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -442,6 +460,7 @@ class FileAPI {
     // 删除账户
     async deleteAccount(accountId: string): Promise<{ success: boolean; message: string }> {
         const response = await fetch(`${API_BASE}/api/storage/accounts/${accountId}`, {
+            credentials: 'include',
             method: 'DELETE',
             headers: getHeaders(),
         });
@@ -455,6 +474,7 @@ class FileAPI {
 
     async createFolder(folderName: string): Promise<{ success: boolean; folder: string }> {
         const response = await fetch(`${API_BASE}/api/files/folders`, {
+            credentials: 'include',
             method: 'POST',
             headers: {
                 ...getHeaders(),
@@ -474,6 +494,7 @@ class FileAPI {
     // 重命名文件
     async renameFile(id: string, name: string): Promise<{ success: boolean; name: string }> {
         const response = await fetch(`${API_BASE}/api/files/${id}/rename`, {
+            credentials: 'include',
             method: 'PATCH',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name }),
@@ -489,6 +510,7 @@ class FileAPI {
     // 重命名文件夹
     async renameFolder(oldName: string, newName: string): Promise<{ success: boolean; name: string }> {
         const response = await fetch(`${API_BASE}/api/files/rename-folder`, {
+            credentials: 'include',
             method: 'PATCH',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ oldName, newName }),
@@ -504,6 +526,7 @@ class FileAPI {
     // 移动文件
     async moveFile(id: string, folder: string | null): Promise<{ success: boolean; folder: string | null }> {
         const response = await fetch(`${API_BASE}/api/files/${id}/move`, {
+            credentials: 'include',
             method: 'PATCH',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ folder }),
@@ -519,6 +542,7 @@ class FileAPI {
     // 移动文件夹
     async moveFolder(oldName: string, newName: string | null): Promise<{ success: boolean; folder: string | null }> {
         const response = await fetch(`${API_BASE}/api/files/move-folder`, {
+            credentials: 'include',
             method: 'PATCH',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ oldName, newName }),
@@ -533,6 +557,7 @@ class FileAPI {
     // 获取收藏的文件
     async getFavoriteFiles(): Promise<FileData[]> {
         const response = await fetch(`${API_BASE}/api/files/favorites`, {
+            credentials: 'include',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
@@ -543,6 +568,7 @@ class FileAPI {
     // 切换文件收藏状态
     async toggleFavorite(fileId: string): Promise<{ success: boolean; isFavorite: boolean }> {
         const response = await fetch(`${API_BASE}/api/files/${fileId}/favorite`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
         });
@@ -554,6 +580,7 @@ class FileAPI {
     // 切换文件夹收藏状态
     async toggleFolderFavorite(folderName: string): Promise<{ success: boolean; isFavorite: boolean }> {
         const response = await fetch(`${API_BASE}/api/files/folders/favorite`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ folderName }),
@@ -572,6 +599,7 @@ class FileAPI {
 
     async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, clientSecret?: string, name?: string): Promise<{ authUrl: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/onedrive/auth-url`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, tenantId, redirectUri, clientSecret, name }),
@@ -587,6 +615,7 @@ class FileAPI {
 
     async getGoogleDriveAuthUrl(clientId: string, clientSecret: string, redirectUri: string, name?: string): Promise<{ authUrl: string }> {
         const response = await fetch(`${API_BASE}/api/storage/config/google-drive/auth-url`, {
+            credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, clientSecret, redirectUri, name }),

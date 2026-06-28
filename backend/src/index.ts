@@ -17,7 +17,7 @@ import helmet from 'helmet';
 dotenv.config();
 
 const app = express();
-app.set('trust proxy', 1); // Trust the first proxy
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
 const PORT = process.env.PORT || 51947;
 
 // 确保上传目录存在
@@ -61,12 +61,23 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Upload-Id', 'X-Chunk-Index', 'Authorization'],
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
 
 // 安全头部
 app.use(helmet({
-    contentSecurityPolicy: false, // 如果需要外部资源加载，可设为 false 或自定义
-    crossOriginResourcePolicy: { policy: "cross-origin" }
+    contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+            "default-src": ["'self'"],
+            "img-src": ["'self'", "data:", "blob:", "https:"],
+            "media-src": ["'self'", "blob:", "https:"],
+            "connect-src": ["'self'", "https:"],
+            "style-src": ["'self'", "'unsafe-inline'"],
+            "script-src": ["'self'"],
+        },
+    },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
 
 // 认证路由（不需要认证）
@@ -98,7 +109,7 @@ app.get('/health', (_req, res) => {
 // 错误处理
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('❌ 错误:', err);
-    res.status(500).json({ error: err.message || '服务器内部错误' });
+    res.status(500).json({ error: '服务器内部错误' });
 });
 
 app.listen(PORT, async () => {

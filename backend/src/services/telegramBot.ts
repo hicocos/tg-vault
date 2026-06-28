@@ -23,6 +23,7 @@ import { cleanupOrphanFiles, isAutoCleanupEnabled, startPeriodicCleanup } from '
 import { verifyPassword } from '../utils/telegramUtils.js';
 import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildCleanupNotice } from '../utils/telegramMessages.js';
 import { query } from '../db/index.js';
+import { assertPublicHttpUrl } from '../utils/networkSecurity.js';
 
 // Session File Path
 const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || './data/telegram_session.txt';
@@ -42,6 +43,53 @@ interface TelegramWizardState {
 }
 
 const telegramWizardStates = new Map<number, TelegramWizardState>();
+
+interface RateBucket {
+    windowStartedAt: number;
+    count: number;
+}
+
+const telegramRateBuckets = new Map<string, RateBucket>();
+const TELEGRAM_MESSAGE_RATE_WINDOW_MS = Math.max(10_000, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || '60000', 10) || 60_000);
+const TELEGRAM_MESSAGE_RATE_MAX = Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || '30', 10) || 30);
+const TELEGRAM_HEAVY_RATE_WINDOW_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_HEAVY_RATE_WINDOW_MS || '600000', 10) || 600_000);
+const TELEGRAM_HEAVY_RATE_MAX = Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || '5', 10) || 5);
+const TELEGRAM_HEAVY_COMMANDS = new Set(['/ytdlp', '/tg_date', '/tg_tag', '/cleanup_settings']);
+
+function consumeTelegramRateLimit(userId: number, text: string): { limited: boolean; retryAfterSeconds: number } {
+    const now = Date.now();
+    const normalized = text.trim().split(/\s+/, 1)[0].replace(/@\w+$/, '').toLowerCase();
+    const checks = [
+        { key: `${userId}:all`, windowMs: TELEGRAM_MESSAGE_RATE_WINDOW_MS, max: TELEGRAM_MESSAGE_RATE_MAX },
+    ];
+
+    if (TELEGRAM_HEAVY_COMMANDS.has(normalized)) {
+        checks.push({ key: `${userId}:heavy:${normalized}`, windowMs: TELEGRAM_HEAVY_RATE_WINDOW_MS, max: TELEGRAM_HEAVY_RATE_MAX });
+    }
+
+    let longestRetryAfter = 0;
+    for (const check of checks) {
+        const bucket = telegramRateBuckets.get(check.key);
+        if (!bucket || now - bucket.windowStartedAt >= check.windowMs) {
+            telegramRateBuckets.set(check.key, { windowStartedAt: now, count: 1 });
+            continue;
+        }
+        if (bucket.count >= check.max) {
+            longestRetryAfter = Math.max(longestRetryAfter, Math.ceil((check.windowMs - (now - bucket.windowStartedAt)) / 1000));
+            continue;
+        }
+        bucket.count += 1;
+    }
+
+    // Opportunistic cleanup to avoid unbounded growth in long-running bots.
+    for (const [key, bucket] of telegramRateBuckets) {
+        if (now - bucket.windowStartedAt > Math.max(TELEGRAM_MESSAGE_RATE_WINDOW_MS, TELEGRAM_HEAVY_RATE_WINDOW_MS) * 2) {
+            telegramRateBuckets.delete(key);
+        }
+    }
+
+    return { limited: longestRetryAfter > 0, retryAfterSeconds: longestRetryAfter };
+}
 
 function isCancelInput(text: string): boolean {
     return /^(取消|cancel|退出|stop)$/i.test(text.trim());
@@ -606,6 +654,12 @@ export async function initTelegramBot(): Promise<void> {
 
                 if (!chatId) return;
 
+                const rateLimit = consumeTelegramRateLimit(senderId, text);
+                if (rateLimit.limited) {
+                    await message.reply({ message: `⏳ 操作过于频繁，请 ${rateLimit.retryAfterSeconds} 秒后再试。` });
+                    return;
+                }
+
                 console.log(`🤖 Received text from ${senderId}: ${text}`);
 
                 // Commands
@@ -626,7 +680,7 @@ export async function initTelegramBot(): Promise<void> {
                         const qrDataUrl = await generateOTPAuthUrl();
                         const base64Data = qrDataUrl.replace(/^data:image\/png;base64,/, "");
                         const buffer = Buffer.from(base64Data, 'base64');
-                        const tempPath = path.join(process.cwd(), `temp_qr_${chatId}.png`);
+                        const tempPath = path.join(process.cwd(), `temp_qr_${senderId}_${Date.now()}_${Math.random().toString(36).slice(2)}.png`);
                         fs.writeFileSync(tempPath, buffer);
 
                         const qrMessage = await client.sendFile(chatId, {
@@ -675,8 +729,10 @@ export async function initTelegramBot(): Promise<void> {
                     }
 
                     const url = parts[0];
-                    if (!/^https?:\/\//i.test(url)) {
-                        await message.reply({ message: '❌ 无效链接：必须以 http:// 或 https:// 开头' });
+                    try {
+                        await assertPublicHttpUrl(url);
+                    } catch (error) {
+                        await message.reply({ message: `❌ 无效链接：${error instanceof Error ? error.message : '不允许访问该地址'}` });
                         return;
                     }
 

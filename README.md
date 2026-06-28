@@ -100,7 +100,6 @@ docker compose up -d
 | `CORS_ORIGIN` | 允许跨域的前端来源 | `https://cloud.yourdomain.com` | 你的前端网页公网地址，例如 Nginx/Caddy 指向宿主机 `47832` |
 | `DOMAIN` | 应用主域名，不带协议 | `cloud.yourdomain.com` | 填前端主域名，用于生成链接和展示 |
 | `ACCESS_PASSWORD_HASH` | 可选，网页登录/接口访问密码的 SHA-256 Hash | `sha256_hash_here...` | 见“生成密码哈希”章节；不填则不启用访问密码 |
-| `SESSION_SECRET` | 推荐，固定会话和签名 URL 密钥 | `openssl rand -hex 32` 生成值 | 公网部署务必设置；不填时重启会导致登录会话和签名 URL 失效 |
 | `TELEGRAM_BOT_TOKEN` | 可选，Telegram Bot Token | `123456:ABC-DEF...` | 找 [@BotFather](https://t.me/BotFather) 创建机器人后获取 |
 | `TELEGRAM_API_ID` | 可选，Telegram API ID | `123456` | 登录 [my.telegram.org](https://my.telegram.org) 创建应用后获取 |
 | `TELEGRAM_API_HASH` | 可选，Telegram API Hash | `abcdef123456...` | 与 `TELEGRAM_API_ID` 在同一页面获取 |
@@ -117,6 +116,8 @@ docker compose up -d
 | `YTDLP_BIN` | 可选，yt-dlp 可执行文件路径 | `yt-dlp` | 镜像内默认已安装；只有自定义环境找不到命令时才需要改 |
 | `YTDLP_WORK_DIR` | 可选，yt-dlp 下载临时目录 | `./data/uploads/ytdlp` | 默认即可；需要独立磁盘目录时再改 |
 | `YTDLP_MAX_CONCURRENT` | 可选，yt-dlp 并发任务数 | `1` | 按服务器 CPU、带宽和目标站点限速情况调整 |
+| `TELEGRAM_RATE_WINDOW_MS` / `TELEGRAM_RATE_MAX` | 可选，Telegram Bot 普通消息限流窗口/次数 | `60000` / `30` | 防止单用户刷命令压垮服务 |
+| `TELEGRAM_HEAVY_RATE_WINDOW_MS` / `TELEGRAM_HEAVY_RATE_MAX` | 可选，Telegram Bot 重型命令限流窗口/次数 | `600000` / `5` | 作用于 `/ytdlp`、`/tg_date`、`/tg_tag`、`/cleanup_settings` |
 
 ---
 
@@ -234,13 +235,9 @@ echo -n "your_password" | sha256sum | awk '{print $1}'
 
 将生成的 64 位字符串填入 `.env` 的 `ACCESS_PASSWORD_HASH`。
 
-### 生成会话密钥
+### 自动密钥说明
 
-```bash
-openssl rand -hex 32
-```
-
-将生成的字符串填入 `.env` 的 `SESSION_SECRET`，用于保持服务重启后的登录会话与签名 URL 校验稳定。
+FlClouds 会在首次启动时自动生成内部密钥，并保存到 Docker 数据卷的 `/data/secrets/` 目录中。正常部署无需手动配置。迁移服务器时请连同 Docker volume 一起备份，否则已加密的第三方存储凭证可能需要重新添加。
 
 ### 双重验证 (TOTP)
 

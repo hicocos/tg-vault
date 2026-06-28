@@ -10,7 +10,7 @@ services:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
     container_name: flclouds-frontend
     ports:
-      - "47832:80"
+      - "127.0.0.1:47832:80"
     networks:
       - flclouds-network
     restart: unless-stopped
@@ -21,12 +21,12 @@ services:
     build: ./backend
     container_name: flclouds-backend
     ports:
-      - "51947:51947"
+      - "127.0.0.1:51947:51947"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://flclouds:${DB_PASSWORD:-flclouds123}@postgres:5432/flclouds
+      - DATABASE_URL=postgresql://flclouds:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/flclouds
       - PORT=51947
       - UPLOAD_DIR=/data/uploads
       - THUMBNAIL_DIR=/data/thumbnails
@@ -40,6 +40,8 @@ services:
       - CORS_ORIGIN=${CORS_ORIGIN:-https://cloud.example.com}
       - ACCESS_PASSWORD_HASH=${ACCESS_PASSWORD_HASH:-}
       - SESSION_SECRET=${SESSION_SECRET:-}
+      - STORAGE_CREDENTIALS_SECRET=${STORAGE_CREDENTIALS_SECRET:-}
+      - FLCLOUDS_SECRET_DIR=/data/secrets
       - DOMAIN=${DOMAIN:-cloud.example.com}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
@@ -49,6 +51,10 @@ services:
       - TELEGRAM_USER_SESSION_FILE=${TELEGRAM_USER_SESSION_FILE:-/data/telegram_user_session.txt}
       - TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID=${TELEGRAM_DOWNLOAD_BRIDGE_CHAT_ID:-}
       - TELEGRAM_DOWNLOAD_WORKERS=${TELEGRAM_DOWNLOAD_WORKERS:-4}
+      - TELEGRAM_RATE_WINDOW_MS=${TELEGRAM_RATE_WINDOW_MS:-60000}
+      - TELEGRAM_RATE_MAX=${TELEGRAM_RATE_MAX:-30}
+      - TELEGRAM_HEAVY_RATE_WINDOW_MS=${TELEGRAM_HEAVY_RATE_WINDOW_MS:-600000}
+      - TELEGRAM_HEAVY_RATE_MAX=${TELEGRAM_HEAVY_RATE_MAX:-5}
       - TOTP_SECRET=${TOTP_SECRET:-}
     volumes:
       - file-storage:/data
@@ -63,7 +69,7 @@ services:
     environment:
       - POSTGRES_DB=flclouds
       - POSTGRES_USER=flclouds
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-flclouds123}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql

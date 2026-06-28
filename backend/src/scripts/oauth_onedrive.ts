@@ -8,8 +8,9 @@ import { URL } from 'url';
 // 用于获取 AccessToken 和 RefreshToken
 // ============================================
 
-const CLIENT_ID = 'REMOVED_ONEDRIVE_CLIENT_ID';
-const TENANT_ID = '79e54b9b-9f89-4c66-be4d-6f5bb457703b'; // 您的租户ID
+const CLIENT_ID = process.env.ONEDRIVE_CLIENT_ID || '';
+if (!CLIENT_ID) throw new Error('Missing ONEDRIVE_CLIENT_ID');
+const TENANT_ID = process.env.ONEDRIVE_TENANT_ID || 'common';
 const REDIRECT_URI = 'http://localhost:53682/';
 const SCOPE = 'Files.ReadWrite.All offline_access';
 
@@ -67,11 +68,8 @@ const server = http.createServer(async (req, res) => {
             console.log('==========================================\n');
             console.log(`Access Token (有效期 ${expires_in} 秒):`);
             console.log(access_token.substring(0, 100) + '...\n');
-            console.log('Refresh Token (用于保存到数据库):');
-            console.log(refresh_token);
-            console.log('\n==========================================');
-            console.log('请复制上面的 Refresh Token');
-            console.log('==========================================');
+            console.log('Refresh Token 已生成。请通过应用设置页面保存，或保存到安全的密码管理器/环境变量中。');
+            console.log('为避免终端日志泄露，脚本不再打印完整 refresh token。');
 
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(`

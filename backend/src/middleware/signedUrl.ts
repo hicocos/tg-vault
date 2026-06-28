@@ -5,8 +5,8 @@ import { requireAuth } from '../routes/auth.js';
 
 // 生成签名
 export function generateSignature(fileId: string, expires: number): string {
-    const data = `${fileId}:${expires}:${SESSION_SECRET}`;
-    return crypto.createHash('sha256').update(data).digest('hex');
+    const data = `${fileId}:${expires}`;
+    return crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('hex');
 }
 
 // 生成签名的 URL helper
@@ -53,8 +53,14 @@ export function verifySignedUrl(req: Request): boolean {
 
     // 验证签名
     const expectedSign = generateSignature(id, expiresTimestamp);
-    if (sign !== expectedSign) {
-        console.log('[SignedURL] Signature mismatch:', { id, received: sign, expected: expectedSign });
+    try {
+        const received = Buffer.from(sign, 'hex');
+        const expected = Buffer.from(expectedSign, 'hex');
+        if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
+            console.log('[SignedURL] Signature mismatch:', { id });
+            return false;
+        }
+    } catch {
         return false;
     }
 

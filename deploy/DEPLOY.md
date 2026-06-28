@@ -3,7 +3,7 @@
 ## 前置条件
 
 - Debian 系统服务器
-- 域名 `co.zrn.qzz.io` 已解析到服务器 IP
+- 域名 `cloud.example.com` 已解析到服务器 IP
 - 开放端口：80, 443
 
 ## 部署步骤
@@ -43,7 +43,7 @@ chmod +x deploy/install.sh
 
 3. **访问网站**
 
-部署完成后，访问 https://co.zrn.qzz.io
+部署完成后，访问 https://cloud.example.com
 
 ---
 
@@ -100,7 +100,10 @@ sudo chown -R $USER:$USER /opt/flclouds
 cd /opt/flclouds
 
 # 生成随机数据库密码
-echo "DB_PASSWORD=$(openssl rand -base64 32 | tr -d '/+=' | cut -c1-32)" > .env
+{
+  echo "DB_PASSWORD=*** rand -base64 32 | tr -d '/+=' | cut -c1-32)"
+} > .env
+
 ```
 
 #### 4. 首次启动（获取 SSL 证书）
@@ -122,7 +125,7 @@ docker compose run --rm certbot certonly --webroot \
     --email your-email@example.com \
     --agree-tos \
     --no-eff-email \
-    -d co.zrn.qzz.io
+    -d cloud.example.com
 ```
 
 #### 5. 启用 HTTPS
@@ -137,7 +140,7 @@ docker compose restart nginx
 
 #### 6. 验证
 
-访问 https://co.zrn.qzz.io
+访问 https://cloud.example.com
 
 ---
 

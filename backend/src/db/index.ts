@@ -83,6 +83,8 @@ async function initializeDatabase() {
         }
 
         await ensureFavoritesColumn();
+        await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hash VARCHAR(64)`);
+        await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash) WHERE key_hash IS NOT NULL`);
 
         console.log('✅ 数据库表结构初始化完成');
     } catch (err: any) {

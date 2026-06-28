@@ -12,8 +12,17 @@ import { getSignedUrl } from '../middleware/signedUrl.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
+import { rateLimit } from 'express-rate-limit';
 
 const router = Router();
+
+const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: '上传请求过于频繁，请稍后再试' },
+});
 
 // 修复中文文件名编码问题
 function decodeFilename(filename: string): string {
@@ -190,12 +199,12 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
 };
 
 // 内部上传接口（前端使用）
-router.post('/', upload.single('file'), async (req: Request, res: Response) => {
+router.post('/', uploadLimiter, upload.single('file'), async (req: Request, res: Response) => {
     await handleUpload(req, res, 'web');
 });
 
 // 外部 API 上传接口（需要 API Key）
-router.post('/api', validateApiKey, upload.single('file'), async (req: Request, res: Response) => {
+router.post('/api', uploadLimiter, validateApiKey, upload.single('file'), async (req: Request, res: Response) => {
     await handleUpload(req, res, 'api');
 });
 

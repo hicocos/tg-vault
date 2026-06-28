@@ -8,6 +8,16 @@ import { createClient, WebDAVClient } from 'webdav';
 import { google } from 'googleapis';
 import { query } from '../db/index.js';
 import { safeJoin } from '../utils/localPath.js';
+import {
+    decryptSettingValue,
+    decryptStorageConfig,
+    encryptCredential,
+    encryptSettingValue,
+    encryptStorageConfig,
+    isEncryptedCredential,
+    isSensitiveSettingKey,
+    storageConfigNeedsEncryption,
+} from '../utils/credentialCrypto.js';
 
 // 接口定义
 export interface IStorageProvider {
@@ -399,10 +409,11 @@ export class OneDriveStorageProvider implements IStorageProvider {
     /**
      * 生成 OAuth 授权 URL
      */
-    static generateAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string): string {
+    static generateAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, state?: string): string {
         const scope = encodeURIComponent('Files.ReadWrite.All offline_access');
         const encodedRedirect = encodeURIComponent(redirectUri);
-        return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?client_id=${clientId}&scope=${scope}&response_type=code&redirect_uri=${encodedRedirect}&response_mode=query`;
+        const stateParam = state ? `&state=${encodeURIComponent(state)}` : '';
+        return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?client_id=${clientId}&scope=${scope}&response_type=code&redirect_uri=${encodedRedirect}&response_mode=query${stateParam}`;
     }
 
     /**
@@ -900,12 +911,13 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         this.drive = google.drive({ version: 'v3', auth: this.oauth2Client });
     }
 
-    static generateAuthUrl(clientId: string, clientSecret: string, redirectUri: string): string {
+    static generateAuthUrl(clientId: string, clientSecret: string, redirectUri: string, state?: string): string {
         const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
         return oauth2Client.generateAuthUrl({
             access_type: 'offline',
             scope: ['https://www.googleapis.com/auth/drive.file'],
-            prompt: 'consent'
+            prompt: 'consent',
+            state
         });
     }
 
@@ -1180,14 +1192,24 @@ export class StorageManager {
 
             console.log(`[StorageManager] Active provider from settings: ${providerName}`);
 
-            // 3. 加载所有存储账户
+            // 3. 加载所有存储账户。敏感字段在数据库中加密存储，读取时解密；旧明文配置会自动迁移为加密格式。
             const accountsRes = await query('SELECT * FROM storage_accounts');
             // 获取全局 Secret 作为回退（兼容旧版本或用户未特定输入的情况）
             const globalSecretRes = await query("SELECT value FROM system_settings WHERE key = 'onedrive_client_secret'");
-            const globalSecret = globalSecretRes.rows[0]?.value || '';
+            const globalSecretRaw = globalSecretRes.rows[0]?.value || '';
+            const globalSecret = globalSecretRaw ? decryptSettingValue('onedrive_client_secret', globalSecretRaw) : '';
+            if (globalSecretRaw && !isEncryptedCredential(globalSecretRaw)) {
+                await StorageManager.updateSetting('onedrive_client_secret', globalSecretRaw);
+            }
+            await this.encryptLegacySensitiveSettings();
 
             for (const row of accountsRes.rows) {
-                const config = row.config;
+                const rawConfig = row.config || {};
+                const config = decryptStorageConfig(rawConfig);
+                if (storageConfigNeedsEncryption(rawConfig)) {
+                    await query('UPDATE storage_accounts SET config = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(encryptStorageConfig(rawConfig)), row.id]);
+                    console.log(`[StorageManager] Encrypted stored credentials for account ${row.id}`);
+                }
                 let provider: IStorageProvider | null = null;
 
                 if (row.type === 'onedrive') {
@@ -1266,20 +1288,22 @@ export class StorageManager {
             const clientSecret = await this.getSetting('onedrive_client_secret') || '';
             const tenantId = await this.getSetting('onedrive_tenant_id') || 'common';
 
-            // 检查是否已经迁移过（通过 clientId 匹配测试）
-            const existing = await query('SELECT id FROM storage_accounts WHERE config->>\'clientId\' = $1', [clientId]);
+            // 检查是否已经迁移过（通过 clientId 匹配测试，兼容加密后的 config）
+            const existingAccounts = await query('SELECT id, config FROM storage_accounts WHERE type = $1', ['onedrive']);
+            const existing = existingAccounts.rows.find((row: any) => decryptStorageConfig(row.config || {}).clientId === clientId);
             let accountId: string;
 
-            if (existing.rows.length === 0) {
+            if (!existing) {
+                const encryptedConfig = encryptStorageConfig({ clientId, clientSecret, refreshToken, tenantId });
                 const insertRes = await query(
                     `INSERT INTO storage_accounts (type, name, config, is_active) 
                      VALUES ($1, $2, $3, $4) RETURNING id`,
-                    ['onedrive', 'Default Account', JSON.stringify({ clientId, clientSecret, refreshToken, tenantId }), true]
+                    ['onedrive', 'Default Account', JSON.stringify(encryptedConfig), true]
                 );
                 accountId = insertRes.rows[0].id;
                 console.log('[StorageManager] Legacy config migrated successfully.');
             } else {
-                accountId = existing.rows[0].id;
+                accountId = existing.id;
                 console.log('[StorageManager] Legacy config already migrated, account ID:', accountId);
             }
 
@@ -1298,17 +1322,29 @@ export class StorageManager {
         }
     }
 
+    private async encryptLegacySensitiveSettings() {
+        const res = await query('SELECT key, value FROM system_settings');
+        for (const row of res.rows) {
+            if (isSensitiveSettingKey(row.key) && row.value && !isEncryptedCredential(row.value)) {
+                await StorageManager.updateSetting(row.key, row.value);
+                console.log(`[StorageManager] Encrypted sensitive setting ${row.key}`);
+            }
+        }
+    }
+
     async getSetting(key: string): Promise<string | null> {
         const res = await query('SELECT value FROM system_settings WHERE key = $1', [key]);
-        return res.rows[0]?.value || null;
+        const value = res.rows[0]?.value || null;
+        return value ? decryptSettingValue(key, value) : null;
     }
 
     static async updateSetting(key: string, value: string) {
+        const storedValue = encryptSettingValue(key, value);
         await query(
             `INSERT INTO system_settings (key, value, updated_at) 
              VALUES ($1, $2, NOW()) 
              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-            [key, value]
+            [key, storedValue]
         );
     }
 
@@ -1317,7 +1353,7 @@ export class StorageManager {
             `UPDATE storage_accounts 
              SET config = config || jsonb_build_object('refreshToken', $2::text), updated_at = NOW()
              WHERE id = $1`,
-            [accountId, refreshToken]
+            [accountId, encryptCredential(refreshToken)]
         );
     }
 
@@ -1344,14 +1380,15 @@ export class StorageManager {
 
     // 添加新的 OneDrive 账户 (如果 Client ID 已存在则更新现有记录)
     async addOneDriveAccount(name: string, clientId: string, clientSecret: string, refreshToken: string, tenantId: string = 'common') {
-        const config = JSON.stringify({ clientId, clientSecret, refreshToken, tenantId });
+        const config = JSON.stringify(encryptStorageConfig({ clientId, clientSecret, refreshToken, tenantId }));
 
-        // 检查是否已存在相同 Client ID 的账户
-        const existing = await query('SELECT id FROM storage_accounts WHERE type = $1 AND config->>\'clientId\' = $2', ['onedrive', clientId]);
+        // 检查是否已存在相同 Client ID 的账户（兼容旧明文/新加密 config，避免 JSONB 里明文可查敏感字段）
+        const existingAccounts = await query('SELECT id, config FROM storage_accounts WHERE type = $1', ['onedrive']);
+        const existing = existingAccounts.rows.find((row: any) => decryptStorageConfig(row.config || {}).clientId === clientId);
 
         let targetId: string;
-        if (existing.rows.length > 0) {
-            targetId = existing.rows[0].id;
+        if (existing) {
+            targetId = existing.id;
             console.log(`[StorageManager] Updating existing OneDrive account: ${targetId} (ClientID: ${clientId.substring(0, 8)}...)`);
             await query(
                 'UPDATE storage_accounts SET name = $1, config = $2, updated_at = NOW() WHERE id = $3',
@@ -1391,7 +1428,7 @@ export class StorageManager {
     }
 
     async addAliyunOSSAccount(name: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string) {
-        const config = JSON.stringify({ region, accessKeyId, accessKeySecret, bucket });
+        const config = JSON.stringify(encryptStorageConfig({ region, accessKeyId, accessKeySecret, bucket }));
 
         const res = await query(
             `INSERT INTO storage_accounts (type, name, config, is_active) 
@@ -1408,7 +1445,7 @@ export class StorageManager {
     }
 
     async addS3Account(name: string, endpoint: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string, forcePathStyle: boolean = false) {
-        const config = JSON.stringify({ endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle });
+        const config = JSON.stringify(encryptStorageConfig({ endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle }));
 
         const res = await query(
             `INSERT INTO storage_accounts (type, name, config, is_active) 
@@ -1425,7 +1462,7 @@ export class StorageManager {
     }
 
     async addWebDAVAccount(name: string, url: string, username?: string, password?: string) {
-        const config = JSON.stringify({ url, username, password });
+        const config = JSON.stringify(encryptStorageConfig({ url, username, password }));
 
         const res = await query(
             `INSERT INTO storage_accounts (type, name, config, is_active) 
@@ -1442,7 +1479,7 @@ export class StorageManager {
     }
 
     async addGoogleDriveAccount(name: string, clientId: string, clientSecret: string, refreshToken: string, redirectUri: string) {
-        const config = JSON.stringify({ clientId, clientSecret, refreshToken, redirectUri });
+        const config = JSON.stringify(encryptStorageConfig({ clientId, clientSecret, refreshToken, redirectUri }));
 
         const res = await query(
             `INSERT INTO storage_accounts (type, name, config, is_active) 

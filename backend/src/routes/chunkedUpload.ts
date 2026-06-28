@@ -9,8 +9,22 @@ import { getSignedUrl } from '../middleware/signedUrl.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
+import { rateLimit } from 'express-rate-limit';
 
 const router = Router();
+
+const chunkedUploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: '分块上传请求过于频繁，请稍后再试' },
+});
+const MAX_CHUNK_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_UPLOAD_CHUNK_MB || '64', 10) * 1024 * 1024);
+const MAX_UPLOAD_SESSIONS = Math.max(10, parseInt(process.env.MAX_UPLOAD_SESSIONS || '200', 10) || 200);
+const MAX_TOTAL_CHUNKS = Math.max(1, parseInt(process.env.MAX_TOTAL_CHUNKS || '50000', 10) || 50000);
+
+router.use(chunkedUploadLimiter);
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const THUMBNAIL_DIR = process.env.THUMBNAIL_DIR || './data/thumbnails';
@@ -99,6 +113,14 @@ router.post('/init', (req: Request, res: Response) => {
         if (!filename || !totalChunks || !mimeType || !totalSize) {
             return res.status(400).json({ error: '缺少必要参数' });
         }
+        const normalizedTotalChunks = Number(totalChunks);
+        const normalizedTotalSize = Number(totalSize);
+        if (!Number.isInteger(normalizedTotalChunks) || normalizedTotalChunks < 1 || normalizedTotalChunks > MAX_TOTAL_CHUNKS || !Number.isFinite(normalizedTotalSize) || normalizedTotalSize < 1) {
+            return res.status(400).json({ error: '上传参数无效' });
+        }
+        if (uploadSessions.size >= MAX_UPLOAD_SESSIONS) {
+            return res.status(429).json({ error: '当前上传会话过多，请稍后再试' });
+        }
 
         const uploadId = uuidv4();
         const chunkDir = path.join(CHUNK_DIR, uploadId);
@@ -107,10 +129,10 @@ router.post('/init', (req: Request, res: Response) => {
         uploadSessions.set(uploadId, {
             uploadId,
             filename: decodeFilename(filename),
-            totalChunks,
+            totalChunks: normalizedTotalChunks,
             uploadedChunks: new Set(),
             mimeType,
-            totalSize,
+            totalSize: normalizedTotalSize,
             folder,
             createdAt: new Date(),
         });
@@ -144,12 +166,26 @@ router.post('/chunk', async (req: Request, res: Response) => {
             return res.status(404).json({ error: '上传会话不存在或已过期' });
         }
 
+        if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
+            return res.status(400).json({ error: '分块索引超出范围' });
+        }
+        const declaredLength = Number(req.headers['content-length'] || 0);
+        if (declaredLength > MAX_CHUNK_BYTES) {
+            return res.status(413).json({ error: '单个分块过大' });
+        }
         const chunkPath = path.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
 
         // 使用流式写入
         const writeStream = fs.createWriteStream(chunkPath);
 
         await new Promise<void>((resolve, reject) => {
+            let receivedBytes = 0;
+            req.on('data', (chunk: Buffer) => {
+                receivedBytes += chunk.length;
+                if (receivedBytes > MAX_CHUNK_BYTES) {
+                    req.destroy(new Error('单个分块过大'));
+                }
+            });
             req.pipe(writeStream);
             req.on('end', () => {
                 session.uploadedChunks.add(chunkIndex);

@@ -2,6 +2,32 @@ import { TOTP, NobleCryptoPlugin, ScureBase32Plugin } from 'otplib';
 import QRCode from 'qrcode';
 import crypto from 'crypto';
 import { getSetting, setSetting } from './settings.js';
+import { SESSION_SECRET } from './config.js';
+
+
+function totpEncryptionKey(): Buffer {
+    return crypto.createHash('sha256').update(SESSION_SECRET).digest();
+}
+
+function encryptSecret(plain: string): string {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', totpEncryptionKey(), iv);
+    const ciphertext = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `enc:v1:${iv.toString('base64url')}:${tag.toString('base64url')}:${ciphertext.toString('base64url')}`;
+}
+
+function decryptSecret(value: string): string {
+    if (!value.startsWith('enc:v1:')) return value;
+    const [, , ivText, tagText, cipherText] = value.split(':');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', totpEncryptionKey(), Buffer.from(ivText, 'base64url'));
+    decipher.setAuthTag(Buffer.from(tagText, 'base64url'));
+    return Buffer.concat([decipher.update(Buffer.from(cipherText, 'base64url')), decipher.final()]).toString('utf8');
+}
+
+async function setTOTPSecret(secret: string): Promise<void> {
+    await setSetting('totp_secret', encryptSecret(secret));
+}
 
 // 初始化 TOTP 实例
 const authenticator = new TOTP({
@@ -20,7 +46,18 @@ async function getTOTPSecret(): Promise<string | null> {
     }
 
     // 2. 检查数据库
-    return await getSetting('totp_secret');
+    const stored = await getSetting('totp_secret');
+    if (!stored) return null;
+    try {
+        const secret = decryptSecret(stored);
+        if (!stored.startsWith('enc:v1:')) {
+            await setTOTPSecret(secret);
+        }
+        return secret;
+    } catch (error) {
+        console.error('TOTP 密钥解密失败:', error);
+        return null;
+    }
 }
 
 /**
@@ -78,7 +115,7 @@ export async function generateOTPAuthUrl(user: string = 'Admin'): Promise<string
     if (!secret || isMalformed) {
         // 使用 otplib 生成标准 Base32 密钥 (通常为 16 或 32 个字符)
         secret = authenticator.generateSecret();
-        await setSetting('totp_secret', secret);
+        await setTOTPSecret(secret);
         console.log('✅ 已为系统自动生成标准 Base32 2FA 密钥并存入数据库');
     }
 

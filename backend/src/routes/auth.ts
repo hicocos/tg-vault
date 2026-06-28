@@ -45,6 +45,29 @@ async function sendLoginNotification(req: Request) {
 
 const router = Router();
 
+function getAuthToken(req: Request): string | undefined {
+    const headerToken = req.headers['authorization']?.replace('Bearer ', '');
+    if (headerToken) return headerToken;
+    const cookieHeader = req.headers.cookie || '';
+    const match = cookieHeader.split(';').map(v => v.trim()).find(v => v.startsWith('flclouds_token='));
+    return match ? decodeURIComponent(match.slice('flclouds_token='.length)) : undefined;
+}
+
+function setAuthCookie(res: Response, token: string, expiresAt: Date) {
+    res.cookie('flclouds_token', token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+        expires: expiresAt,
+        path: '/',
+    });
+}
+
+function clearAuthCookie(res: Response) {
+    res.clearCookie('flclouds_token', { path: '/' });
+}
+
+
 // 简单的会话存储（生产环境建议用 Redis）
 const sessions = new Map<string, { createdAt: Date; expiresAt: Date }>();
 
@@ -75,7 +98,13 @@ function verifyPassword(password: string): boolean {
         return true;
     }
     const inputHash = hashPassword(password);
-    return inputHash === ACCESS_PASSWORD_HASH;
+    try {
+        const input = Buffer.from(inputHash, 'hex');
+        const expected = Buffer.from(ACCESS_PASSWORD_HASH, 'hex');
+        return input.length === expected.length && crypto.timingSafeEqual(input, expected);
+    } catch {
+        return false;
+    }
 }
 
 // 登录频率限制：15分钟内最多5次尝试
@@ -97,7 +126,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     }
 
     if (!verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
+        return res.status(401).json({ error: '认证失败' });
     }
 
     // 检查是否启用了 2FA
@@ -119,6 +148,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
     // 异步发送通知
     sendLoginNotification(req);
 
+    setAuthCookie(res, token, expiresAt);
     res.json({
         success: true,
         token,
@@ -136,12 +166,12 @@ router.post('/verify-totp', loginLimiter, async (req: Request, res: Response) =>
 
     // 再次验证密码（确保安全性）
     if (!verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
+        return res.status(401).json({ error: '认证失败' });
     }
 
     // 验证 TOTP
     if (!(await verifyTOTP(totpToken))) {
-        return res.status(401).json({ error: '验证码错误' });
+        return res.status(401).json({ error: '认证失败' });
     }
 
     const token = generateToken();
@@ -153,6 +183,7 @@ router.post('/verify-totp', loginLimiter, async (req: Request, res: Response) =>
     // 异步发送通知
     sendLoginNotification(req);
 
+    setAuthCookie(res, token, expiresAt);
     res.json({
         success: true,
         token,
@@ -195,7 +226,7 @@ router.post('/2fa-disable', requireAuth, async (req: Request, res: Response) => 
     if (!password) return res.status(400).json({ error: '请输入密码验证' });
 
     if (!verifyPassword(password)) {
-        return res.status(401).json({ error: '密码错误' });
+        return res.status(401).json({ error: '认证失败' });
     }
 
     try {
@@ -209,7 +240,7 @@ router.post('/2fa-disable', requireAuth, async (req: Request, res: Response) => 
 
 // 验证 Token
 router.get('/verify', (req: Request, res: Response) => {
-    const token = req.headers['authorization']?.replace('Bearer ', '');
+    const token = getAuthToken(req);
 
     if (!token) {
         return res.status(401).json({ valid: false, error: '未提供 Token' });
@@ -226,10 +257,11 @@ router.get('/verify', (req: Request, res: Response) => {
 
 // 登出接口
 router.post('/logout', (req: Request, res: Response) => {
-    const token = req.headers['authorization']?.replace('Bearer ', '');
+    const token = getAuthToken(req);
     if (token) {
         sessions.delete(token);
     }
+    clearAuthCookie(res);
     res.json({ success: true });
 });
 
@@ -266,7 +298,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     }
 
     // 优先从 Authorization header 获取 token
-    let token = req.headers['authorization']?.replace('Bearer ', '');
+    let token = getAuthToken(req);
 
     if (!token) {
         return res.status(401).json({ error: '未授权访问' });

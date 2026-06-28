@@ -65,7 +65,8 @@ CREATE OR REPLACE TRIGGER files_updated_at
 CREATE TABLE IF NOT EXISTS api_keys (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(100) NOT NULL,
-    key VARCHAR(64) NOT NULL UNIQUE,
+    key VARCHAR(128) NOT NULL UNIQUE,
+    key_hash VARCHAR(64) UNIQUE,
     permissions JSONB DEFAULT '["upload"]',
     enabled BOOLEAN DEFAULT true,
     last_used_at TIMESTAMPTZ,

@@ -12,6 +12,7 @@ import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
+const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
 
 export function isAutoCleanupEnabled(): boolean {
     return ['1', 'true', 'yes', 'on'].includes((process.env.AUTO_CLEANUP_ORPHANS || 'true').toLowerCase());
@@ -140,6 +141,8 @@ export async function cleanupOrphanFiles(): Promise<CleanupStats> {
         for (const file of diskFiles) {
             const relativePath = getRelativeStoragePath(UPLOAD_DIR, file.path);
             if (relativePath && !dbFileSet.has(relativePath)) {
+                const ageMs = Date.now() - fs.statSync(file.path).mtimeMs;
+                if (ageMs < ORPHAN_MIN_AGE_MS) continue;
                 try {
                     await safeUnlink(file.path, UPLOAD_DIR);
                     stats.deletedCount++;

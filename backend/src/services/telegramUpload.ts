@@ -44,6 +44,20 @@ const TG_DISK_WATERMARK_RECHECK_MS = Math.max(5000, parseInt(process.env.TG_DISK
 const TG_DISK_WATERMARK_MAX_WAIT_MS = Math.max(0, parseInt(process.env.TG_DISK_WATERMARK_MAX_WAIT_MS || '0', 10) || 0);
 const TG_MEDIA_GROUP_ENQUEUE_BATCH_SIZE = Math.max(1, parseInt(process.env.TG_MEDIA_GROUP_ENQUEUE_BATCH_SIZE || '50', 10) || 50);
 
+const TG_DEBUG_LOG_PATH = process.env.TG_STATUS_DEBUG_LOG || path.join(process.cwd(), 'data', 'logs', 'tg_silent_debug.log');
+const TG_DEBUG_LOG_MAX_BYTES = Math.max(1024 * 1024, parseInt(process.env.TG_DEBUG_LOG_MAX_MB || '5', 10) * 1024 * 1024);
+function appendTelegramDebugLog(line: string) {
+    if (process.env.TG_STATUS_DEBUG !== '1') return;
+    try {
+        fs.mkdirSync(path.dirname(TG_DEBUG_LOG_PATH), { recursive: true });
+        if (fs.existsSync(TG_DEBUG_LOG_PATH) && fs.statSync(TG_DEBUG_LOG_PATH).size > TG_DEBUG_LOG_MAX_BYTES) {
+            fs.renameSync(TG_DEBUG_LOG_PATH, `${TG_DEBUG_LOG_PATH}.${Date.now()}.old`);
+        }
+        fs.appendFileSync(TG_DEBUG_LOG_PATH, line);
+    } catch { }
+}
+
+
 interface DownloadableMessageRef {
     id: number;
     fileInfo: { fileName: string; mimeType: string };
@@ -630,7 +644,7 @@ function getBackgroundFileCount(chatIdStr: string): number {
 
     const logLine = `[TG][silent][${Date.now()}] fileCount chat=${chatIdStr}: activeFiles=${activeFilesCount} activeBatchFiles=${activeBatchFiles} => total=${count}\n`;
     console.log(logLine.trim());
-    try { fs.appendFileSync('tg_silent_debug.log', logLine); } catch (e) { }
+    appendTelegramDebugLog(logLine)
 
     return count;
 }
@@ -646,7 +660,7 @@ async function trySilentMode(client: TelegramClient, chatId: Api.TypeEntityLike,
 
     const logLine = `[TG][silent][${Date.now()}] tryCheck chat=${chatIdStr} fileCount=${fileCount} isSilent=${isSilent}\n`;
     console.log(logLine.trim());
-    try { fs.appendFileSync('tg_silent_debug.log', logLine); } catch (e) { }
+    appendTelegramDebugLog(logLine)
 
     if (fileCount > 3 || isSilent) {
         if (!isSilent) {
@@ -951,7 +965,7 @@ async function refreshConsolidatedMessage(client: TelegramClient, chatId: Api.Ty
     const fileCount = getBackgroundFileCount(chatIdStr);
 
     const logLine = `[TG][consolidated][${Date.now()}] check chat=${chatIdStr} silent=${alreadySilent} fileCount=${fileCount} replyTo=${!!replyTo}\n`;
-    try { fs.appendFileSync('tg_silent_debug.log', logLine); } catch (e) { }
+    appendTelegramDebugLog(logLine)
 
     if (alreadySilent || fileCount > 3) {
         await trySilentMode(client, chatId, replyTo);

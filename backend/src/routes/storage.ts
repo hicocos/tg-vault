@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import axios from 'axios';
+import crypto from 'crypto';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { getTelegramUserSessionFilePath, isTelegramUserClientReady } from '../services/telegramUserClient.js';
 
@@ -175,7 +176,8 @@ router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: 
         }
 
         const { OneDriveStorageProvider, StorageManager } = await import('../services/storage.js');
-        const authUrl = OneDriveStorageProvider.generateAuthUrl(clientId, tenantId || 'common', redirectUri);
+        const oauthState = crypto.randomBytes(24).toString('base64url');
+        const authUrl = OneDriveStorageProvider.generateAuthUrl(clientId, tenantId || 'common', redirectUri, oauthState);
 
         // 临保存配置以便回调使用
         if (clientSecret) {
@@ -186,6 +188,7 @@ router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: 
         }
         await StorageManager.updateSetting('onedrive_client_id', clientId);
         await StorageManager.updateSetting('onedrive_tenant_id', tenantId || 'common');
+        await StorageManager.updateSetting('onedrive_oauth_state', oauthState);
         if (name) {
             await StorageManager.updateSetting('onedrive_pending_name', name);
         }
@@ -208,6 +211,11 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
 
         if (!code) {
             return res.send('缺少授权码 (code)');
+        }
+
+        const expectedState = await (await import('../services/storage.js')).storageManager.getSetting('onedrive_oauth_state');
+        if (!state || !expectedState || state !== expectedState) {
+            return res.status(400).send('OAuth state 校验失败，请返回设置页面重新发起授权。');
         }
 
         // 从临时存储或数据库中恢复之前发起的配置请求信息
@@ -289,7 +297,7 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
         `);
     } catch (error: any) {
         console.error('OneDrive 回调处理失败:', error);
-        res.status(500).send(`授权处理出错: ${error.message}`);
+        res.status(500).send('授权处理出错，请检查后端日志。');
     }
 });
 
@@ -302,12 +310,14 @@ router.post('/config/google-drive/auth-url', requireAuth, async (req: Request, r
         }
 
         const { GoogleDriveStorageProvider, StorageManager } = await import('../services/storage.js');
-        const authUrl = GoogleDriveStorageProvider.generateAuthUrl(clientId, clientSecret, redirectUri);
+        const oauthState = crypto.randomBytes(24).toString('base64url');
+        const authUrl = GoogleDriveStorageProvider.generateAuthUrl(clientId, clientSecret, redirectUri, oauthState);
 
         // 临时保存配置以便回调使用
         await StorageManager.updateSetting('google_drive_client_id', clientId);
         await StorageManager.updateSetting('google_drive_client_secret', clientSecret);
         await StorageManager.updateSetting('google_drive_redirect_uri', redirectUri);
+        await StorageManager.updateSetting('google_drive_oauth_state', oauthState);
         if (name) {
             await StorageManager.updateSetting('google_drive_pending_name', name);
         }
@@ -322,7 +332,7 @@ router.post('/config/google-drive/auth-url', requireAuth, async (req: Request, r
 // Google Drive OAuth 回调
 router.get('/google-drive/callback', async (req: Request, res: Response) => {
     try {
-        const { code, error } = req.query;
+        const { code, state, error } = req.query;
 
         if (error) {
             return res.send(`授权失败: ${error}`);
@@ -333,6 +343,10 @@ router.get('/google-drive/callback', async (req: Request, res: Response) => {
         }
 
         const { storageManager, GoogleDriveStorageProvider, StorageManager } = await import('../services/storage.js');
+        const expectedState = await storageManager.getSetting('google_drive_oauth_state');
+        if (!state || !expectedState || state !== expectedState) {
+            return res.status(400).send('OAuth state 校验失败，请返回设置页面重新发起授权。');
+        }
         const clientId = await storageManager.getSetting('google_drive_client_id');
         const clientSecret = await storageManager.getSetting('google_drive_client_secret') || '';
         const redirectUri = await storageManager.getSetting('google_drive_redirect_uri') || getGoogleDriveRedirectUri(req);
@@ -350,6 +364,7 @@ router.get('/google-drive/callback', async (req: Request, res: Response) => {
         // 获取待处理的账户名称并清理
         const pendingName = await storageManager.getSetting('google_drive_pending_name');
         await StorageManager.updateSetting('google_drive_pending_name', '');
+        await StorageManager.updateSetting('google_drive_oauth_state', '');
 
         // 保存账户
         await storageManager.addGoogleDriveAccount(pendingName || 'Google Drive Account', clientId, clientSecret, tokens.refresh_token, redirectUri);
@@ -386,7 +401,7 @@ router.get('/google-drive/callback', async (req: Request, res: Response) => {
         `);
     } catch (error: any) {
         console.error('Google Drive 回调处理失败:', error);
-        res.status(500).send(`授权处理出错: ${error.message}`);
+        res.status(500).send('授权处理出错，请检查后端日志。');
     }
 });
 
