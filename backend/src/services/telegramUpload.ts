@@ -316,6 +316,7 @@ interface DownloadTask {
     endTime?: number;
     totalSize?: number;
     downloadedSize?: number;
+    settleCancelled?: () => void;
 }
 
 // 下载队列 management 类
@@ -341,6 +342,7 @@ class BetterDownloadQueue {
                 totalSize,
                 downloadedSize: 0,
                 rawExecute: execute,
+                settleCancelled: () => resolve(),
                 // The actual execution logic
                 execute: async () => {
                     task.status = 'active';
@@ -381,15 +383,13 @@ class BetterDownloadQueue {
     }
 
     private processNext() {
-        if (this.paused || this.active.length >= this.maxConcurrent || this.queue.length === 0) {
-            return;
-        }
-
-        const task = this.queue.shift();
-        if (task) {
-            console.log(`[Queue] 🚀 Processing task: ${task.fileName}. Active: ${this.active.length + 1}, Pending: ${this.queue.length}`);
-            // Execute the wrapped function
-            task.execute();
+        while (!this.paused && this.active.length < this.maxConcurrent && this.queue.length > 0) {
+            const task = this.queue.shift();
+            if (task) {
+                console.log(`[Queue] 🚀 Processing task: ${task.fileName}. Active: ${this.active.length + 1}, Pending: ${this.queue.length}`);
+                // Execute the wrapped function
+                task.execute();
+            }
         }
     }
 
@@ -464,6 +464,7 @@ class BetterDownloadQueue {
             task.status = 'cancelled';
             task.error = reason;
             task.endTime = Date.now();
+            task.settleCancelled?.();
             this.history.unshift(task);
             cancelledPending = 1;
         }
@@ -495,6 +496,7 @@ class BetterDownloadQueue {
             task.status = 'cancelled';
             task.error = reason;
             task.endTime = Date.now();
+            task.settleCancelled?.();
             this.history.unshift(task);
         }
 
@@ -1759,7 +1761,7 @@ export async function downloadTelegramChannelRange(
                 skipped += 1;
                 failed += 1;
                 completed += 1;
-                skippedMessageIds.push(item.id);
+                failedMessageIds.push(item.id);
                 await refreshSegmentStatus(false, fileName);
                 return;
             }

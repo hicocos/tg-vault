@@ -322,15 +322,21 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
             const ids = Array.from({ length: count }, (_, index) => lastMessageId + index + 1);
             const jobId = await createJob(Number(row.user_id), row.chat_id?.toString(), 'subscription_sync', row.source, { fromId: lastMessageId + 1, toId: latestMessageId });
+            const candidateMessages = await expandMessagesWithMediaGroups(userClient, row.source, (await userClient.getMessages(row.source as any, { ids })).filter(Boolean) as Api.Message[]);
+            await persistDownloadItems(jobId, row.source, candidateMessages);
             await updateJob(jobId, { status: 'running', started_at: new Date(), total_count: ids.length });
 
             const targetChat = row.chat_id || row.user_id;
             const requestMessage = ({ chatId: targetChat, id: latestMessageId } as unknown) as Api.Message;
             const downloadResult = await downloadTelegramChannelRange(botClient, requestMessage, row.source, 0, ids.length, 'newer', ids);
+            await updateDownloadItemsStatus(jobId, downloadResult.successfulMessageIds, 'success');
+            await updateDownloadItemsStatus(jobId, downloadResult.failedMessageIds, 'failed', '下载失败');
+            await updateDownloadItemsStatus(jobId, downloadResult.skippedMessageIds, 'skipped');
             await updateJob(jobId, {
-                status: 'completed',
+                status: downloadResult.failed > 0 ? 'completed_with_errors' : 'completed',
                 enqueued_count: downloadResult.found,
                 skipped_count: downloadResult.skipped,
+                error: downloadResult.failed > 0 ? `${downloadResult.failed} 个文件下载失败` : null,
                 finished_at: new Date(),
             });
             await query('UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2', [latestMessageId, row.id]);

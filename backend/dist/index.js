@@ -2867,6 +2867,7 @@ var BetterDownloadQueue = class {
         totalSize,
         downloadedSize: 0,
         rawExecute: execute,
+        settleCancelled: () => resolve(),
         // The actual execution logic
         execute: async () => {
           task.status = "active";
@@ -2900,13 +2901,12 @@ var BetterDownloadQueue = class {
     });
   }
   processNext() {
-    if (this.paused || this.active.length >= this.maxConcurrent || this.queue.length === 0) {
-      return;
-    }
-    const task = this.queue.shift();
-    if (task) {
-      console.log(`[Queue] \u{1F680} Processing task: ${task.fileName}. Active: ${this.active.length + 1}, Pending: ${this.queue.length}`);
-      task.execute();
+    while (!this.paused && this.active.length < this.maxConcurrent && this.queue.length > 0) {
+      const task = this.queue.shift();
+      if (task) {
+        console.log(`[Queue] \u{1F680} Processing task: ${task.fileName}. Active: ${this.active.length + 1}, Pending: ${this.queue.length}`);
+        task.execute();
+      }
     }
   }
   getStats() {
@@ -2973,6 +2973,7 @@ var BetterDownloadQueue = class {
       task.status = "cancelled";
       task.error = reason;
       task.endTime = Date.now();
+      task.settleCancelled?.();
       this.history.unshift(task);
       cancelledPending = 1;
     }
@@ -3002,6 +3003,7 @@ var BetterDownloadQueue = class {
       task.status = "cancelled";
       task.error = reason;
       task.endTime = Date.now();
+      task.settleCancelled?.();
       this.history.unshift(task);
     }
     for (const task of this.active) {
@@ -3897,7 +3899,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         skipped += 1;
         failed += 1;
         completed += 1;
-        skippedMessageIds.push(item.id);
+        failedMessageIds.push(item.id);
         await refreshSegmentStatus(false, fileName);
         return;
       }
@@ -5445,14 +5447,20 @@ async function runSubscriptionScan(botClient) {
       const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
       const ids = Array.from({ length: count }, (_, index) => lastMessageId + index + 1);
       const jobId = await createJob(Number(row.user_id), row.chat_id?.toString(), "subscription_sync", row.source, { fromId: lastMessageId + 1, toId: latestMessageId });
+      const candidateMessages = await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean));
+      await persistDownloadItems(jobId, row.source, candidateMessages);
       await updateJob(jobId, { status: "running", started_at: /* @__PURE__ */ new Date(), total_count: ids.length });
       const targetChat = row.chat_id || row.user_id;
       const requestMessage = { chatId: targetChat, id: latestMessageId };
       const downloadResult = await downloadTelegramChannelRange(botClient, requestMessage, row.source, 0, ids.length, "newer", ids);
+      await updateDownloadItemsStatus(jobId, downloadResult.successfulMessageIds, "success");
+      await updateDownloadItemsStatus(jobId, downloadResult.failedMessageIds, "failed", "\u4E0B\u8F7D\u5931\u8D25");
+      await updateDownloadItemsStatus(jobId, downloadResult.skippedMessageIds, "skipped");
       await updateJob(jobId, {
-        status: "completed",
+        status: downloadResult.failed > 0 ? "completed_with_errors" : "completed",
         enqueued_count: downloadResult.found,
         skipped_count: downloadResult.skipped,
+        error: downloadResult.failed > 0 ? `${downloadResult.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null,
         finished_at: /* @__PURE__ */ new Date()
       });
       await query("UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2", [latestMessageId, row.id]);
