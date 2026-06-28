@@ -23,6 +23,7 @@ import {
     buildSilentModeNotice,
     buildSilentAllTasksComplete,
     buildSilentProgress,
+    buildTaskControlButtons,
     buildBatchStatus,
     buildConsolidatedStatus,
     type BatchFile,
@@ -266,11 +267,11 @@ async function ensureSilentNotice(client: TelegramClient, chatId: Api.TypeEntity
     const sendPromise = (async () => {
         let sMsg: any;
         if (replyToMsg) {
-            sMsg = await safeReply(replyToMsg, { message: text });
+            sMsg = await safeReply(replyToMsg, { message: text, buttons: buildTaskControlButtons(getSessionTaskId(chatIdStr)) });
         }
         if (!sMsg) {
             try {
-                sMsg = await client.sendMessage(chatId, { message: text });
+                sMsg = await client.sendMessage(chatId, { message: text, buttons: buildTaskControlButtons(getSessionTaskId(chatIdStr)) });
             } catch (e) {
                 console.error(`[TG][silent] notice-send-failed chat=${chatIdStr}:`, e);
             }
@@ -563,6 +564,8 @@ interface SilentSession {
     taskId: string;
     knownTaskKeys: Set<string>;
     knownTaskCounts: Map<string, number>;
+    folders: Set<string>;
+    providers: Set<string>;
 }
 
 const silentSessionMap = new Map<string, SilentSession>();
@@ -585,7 +588,7 @@ function getSilentSession(chatIdStr: string): SilentSession {
     let s = silentSessionMap.get(chatIdStr);
     if (!s) {
         const taskId = createSessionTaskId();
-        s = { total: 0, completed: 0, failed: 0, taskId, knownTaskKeys: new Set(), knownTaskCounts: new Map() };
+        s = { total: 0, completed: 0, failed: 0, taskId, knownTaskKeys: new Set(), knownTaskCounts: new Map(), folders: new Set(), providers: new Set() };
         silentSessionMap.set(chatIdStr, s);
         taskIdToChatId.set(taskId, chatIdStr);
     }
@@ -594,7 +597,7 @@ function getSilentSession(chatIdStr: string): SilentSession {
 
 function startSilentSession(chatIdStr: string, total: number): SilentSession {
     const taskId = createSessionTaskId();
-    const s = { total, completed: 0, failed: 0, taskId, knownTaskKeys: new Set<string>(), knownTaskCounts: new Map<string, number>() };
+    const s = { total, completed: 0, failed: 0, taskId, knownTaskKeys: new Set<string>(), knownTaskCounts: new Map<string, number>(), folders: new Set<string>(), providers: new Set<string>() };
     silentSessionMap.set(chatIdStr, s);
     taskIdToChatId.set(taskId, chatIdStr);
     return s;
@@ -613,8 +616,26 @@ async function finalizeSilentSessionIfDone(client: TelegramClient, chatId: Api.T
 
     // 编辑静默通知为完成消息
     if (silentMsgId) {
-        const text = buildSilentAllTasksComplete(s?.total || 0, s?.failed || 0, s?.taskId);
-        await safeEditMessage(client, chatId, { message: silentMsgId, text });
+        const text = buildSilentAllTasksComplete(
+            s?.total || 0,
+            s?.failed || 0,
+            s?.taskId,
+            getConsolidatedFiles(chatIdStr),
+            [
+                ...getConsolidatedBatches(chatIdStr),
+                ...Array.from(s?.folders || []).map((folder, index) => ({
+                    id: `session-folder-${index}`,
+                    folderName: folder,
+                    folderPath: folder,
+                    totalFiles: 1,
+                    completed: 1,
+                    successful: 1,
+                    failed: 0,
+                    providerName: Array.from(s?.providers || [])[0],
+                })),
+            ],
+        );
+        await safeEditMessage(client, chatId, { message: silentMsgId, text, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
     }
 
     // 清理静默状态
@@ -738,6 +759,8 @@ interface ChatTransferSession {
     failed: number;
     knownTaskKeys: Set<string>;
     knownTaskCounts: Map<string, number>;
+    folders: Set<string>;
+    providers: Set<string>;
 }
 
 const chatTransferSessions = new Map<string, ChatTransferSession>();
@@ -745,10 +768,21 @@ const chatTransferSessions = new Map<string, ChatTransferSession>();
 function getChatTransferSession(chatId: string): ChatTransferSession {
     let session = chatTransferSessions.get(chatId);
     if (!session) {
-        session = { total: 0, completed: 0, failed: 0, knownTaskKeys: new Set(), knownTaskCounts: new Map() };
+        session = { total: 0, completed: 0, failed: 0, knownTaskKeys: new Set(), knownTaskCounts: new Map(), folders: new Set(), providers: new Set() };
         chatTransferSessions.set(chatId, session);
     }
     return session;
+}
+
+function rememberTransferDestination(chatId: string, folder?: string | null, providerName?: string) {
+    const session = getChatTransferSession(chatId);
+    if (folder) session.folders.add(folder);
+    if (providerName) session.providers.add(providerName);
+    const silentSession = silentSessionMap.get(chatId);
+    if (silentSession) {
+        if (folder) silentSession.folders.add(folder);
+        if (providerName) silentSession.providers.add(providerName);
+    }
 }
 
 function updateTaskCount(totalTracker: Pick<ChatTransferSession, 'total' | 'knownTaskKeys' | 'knownTaskCounts'>, key: string, count: number) {
@@ -779,6 +813,14 @@ function syncChatTransferSession(chatId: string): ChatTransferSession {
     const failedBatches = batches.reduce((sum, batch) => sum + batch.failed, 0);
     const completedFiles = files.filter(file => file.phase === 'success' || file.phase === 'failed').length;
     const failedFiles = files.filter(file => file.phase === 'failed').length;
+    for (const batch of batches) {
+        if (batch.folderPath) session.folders.add(batch.folderPath);
+        if (batch.providerName) session.providers.add(batch.providerName);
+    }
+    for (const file of files) {
+        if (file.folder) session.folders.add(file.folder);
+        if (file.providerName) session.providers.add(file.providerName);
+    }
     session.completed = Math.max(session.completed, completedBatches + completedFiles);
     session.failed = Math.max(session.failed, failedBatches + failedFiles);
 
@@ -901,6 +943,12 @@ function syncSilentSessionTotals(chatIdStr: string): SilentSession | null {
     for (const [key, count] of transferSession.knownTaskCounts) {
         updateTaskCount(session, key, count);
     }
+    for (const folder of transferSession.folders) {
+        session.folders.add(folder);
+    }
+    for (const provider of transferSession.providers) {
+        session.providers.add(provider);
+    }
     session.total = Math.max(session.total, transferSession.total);
     session.completed = Math.max(session.completed, transferSession.completed);
     session.failed = Math.max(session.failed, transferSession.failed);
@@ -918,7 +966,7 @@ async function refreshSilentProgress(client: TelegramClient, chatId: Api.TypeEnt
     const batches = getConsolidatedBatches(chatIdStr);
     const files = getConsolidatedFiles(chatIdStr);
     const text = buildSilentProgress(session.total, batches, files, session.completed, session.failed, session.taskId);
-    await safeEditMessage(client, chatId, { message: silentMsgId, text });
+    await safeEditMessage(client, chatId, { message: silentMsgId, text, buttons: buildTaskControlButtons(session.taskId) });
 }
 
 
@@ -1003,6 +1051,10 @@ export function getDownloadQueueStats() {
 
 export function getTaskStatus() {
     return downloadQueue.getDetailedStatus();
+}
+
+export function resolveTaskChatIdForControl(taskId?: string): string | undefined {
+    return resolveTaskChatId(taskId);
 }
 
 export function forceStopDownloadTasks(reason?: string) {
@@ -1309,6 +1361,7 @@ function generateBatchStatusMessage(queue: MediaGroupQueue): string {
             error: f.error,
         })),
         folderName: queue.folderName,
+        folderPath: queue.folderPath,
         providerName: provider.name,
         queuePending: stats.pending,
         queueActive: stats.active,
@@ -1327,7 +1380,7 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
             // 获取唯一的存储文件名
             const activeAccountId = storageManager.getActiveAccountId();
             const chatName = await getTelegramChatName(file.message);
-            const batchFolder = queue?.folderName && queue.folderName !== chatName ? queue.folderName : null;
+            const batchFolder = null;
             const storageRules = await getStoragePathRules();
             const storageFolder = buildStorageFolderWithRules({
                 source: 'telegram',
@@ -1356,6 +1409,12 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
                     file.status = 'success';
                     file.size = actualSize;
                     file.fileType = fileType;
+                    if (queue?.chatId) {
+                        const chatIdStr = queue.chatId.toString();
+                        const batchId = (file.message as any).groupedId?.toString();
+                        if (batchId) updateBatch(chatIdStr, batchId, { folderPath: storageFolder || undefined, providerName: storageManager.getProvider().name });
+                        rememberTransferDestination(chatIdStr, storageFolder, storageManager.getProvider().name);
+                    }
                     if (localFilePath && fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
                     return true;
                 }
@@ -1394,6 +1453,12 @@ async function processFileUpload(client: TelegramClient, file: FileUploadItem, q
             file.status = 'success';
             file.size = actualSize;
             file.fileType = fileType;
+            if (queue?.chatId) {
+                const chatIdStr = queue.chatId.toString();
+                const batchId = (file.message as any).groupedId?.toString();
+                if (batchId) updateBatch(chatIdStr, batchId, { folderPath: storageFolder || undefined, providerName: provider.name });
+                rememberTransferDestination(chatIdStr, storageFolder, provider.name);
+            }
             return true;
 
         } catch (error) {
@@ -1482,6 +1547,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
     registerBatch(chatId.toString(), batchId, {
         id: batchId,
         folderName,
+        folderPath: undefined,
         totalFiles: queue.files.length,
         completed: 0,
         successful: 0,
@@ -1501,6 +1567,23 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
     queue.folderName = sanitizedFolderName;
     for (const file of queue.files) {
         file.targetDir = targetDir;
+    }
+
+    const firstBatchFile = queue.files[0];
+    if (firstBatchFile) {
+        const chatName = await getTelegramChatName(firstBatchFile.message);
+        const batchFolder = null;
+        const storageRules = await getStoragePathRules();
+        const folderPreview = buildStorageFolderWithRules({
+            source: 'telegram',
+            chatName,
+            folder: batchFolder,
+            mimeType: firstBatchFile.mimeType,
+            fileName: firstBatchFile.fileName,
+        }, storageRules);
+        updateBatch(chatId.toString(), batchId, { folderName: queue.folderName, folderPath: folderPreview || undefined });
+        queue.folderPath = folderPreview || undefined;
+        rememberTransferDestination(chatId.toString(), folderPreview, storageManager.getProvider().name);
     }
 
     // 立即显示合并状态（静默模式下跳过）
@@ -1569,6 +1652,7 @@ async function processBatchUpload(client: TelegramClient, mediaGroupId: string):
 
         // 最后一次更新状态
         await onBatchProgress();
+        await finalizeSilentSessionIfDone(client, chatId);
 
     } finally {
         clearInterval(statusUpdater);
@@ -1722,6 +1806,7 @@ export async function downloadTelegramChannelRange(
         registerBatch(chatIdStr, batchId, {
             id: batchId,
             folderName: sourceEntity.toString(),
+            folderPath: undefined,
             totalFiles: downloadableRefs.length,
             completed: 0,
             successful: 0,
@@ -1786,6 +1871,17 @@ export async function downloadTelegramChannelRange(
                 status: 'pending',
             };
             try {
+                if (!getConsolidatedBatches(chatIdStr).find(batch => batch.id === batchId)?.folderPath) {
+                    const chatName = await getTelegramChatName(message);
+                    const storageRules = await getStoragePathRules();
+                    const folderPreview = buildStorageFolderWithRules({
+                        source: 'telegram',
+                        chatName,
+                        mimeType,
+                        fileName,
+                    }, storageRules);
+                    updateBatch(chatIdStr, batchId, { folderPath: folderPreview || undefined });
+                }
                 await processFileUpload(userClient, uploadItem);
                 if (uploadItem.status === 'success') {
                     successful += 1;
@@ -1810,6 +1906,7 @@ export async function downloadTelegramChannelRange(
     if (downloadableRefs.length > 0) {
         updateBatch(chatIdStr, batchId, { completed, successful, failed, queuePending: 0, currentFileName: undefined });
         await refreshSegmentStatus(true);
+        await finalizeSilentSessionIfDone(botClient, chatId);
         setTimeout(() => removeBatch(chatIdStr, batchId), 8000);
     }
 
@@ -1883,6 +1980,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 registerBatch(chatIdStr, batchId, {
                     id: batchId,
                     folderName: queue.folderName || 'media-group',
+                    folderPath: undefined,
                     totalFiles: queue.files.length,
                     completed: 0,
                     successful: 0,
@@ -2030,6 +2128,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                         if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath);
                         lastLocalPath = undefined;
                         updateUploadPhase(chatIdStr, uploadId, { phase: 'success', size: actualSize, providerName: storageManager.getProvider().name, fileType, folder: storageFolder });
+                        rememberTransferDestination(chatIdStr, storageFolder, storageManager.getProvider().name);
                         if (statusMsg && !silentSessionMap.has(chatIdStr)) {
                             await runStatusAction(chatId, async () => {
                                 await client.editMessage(chatId, {
@@ -2089,6 +2188,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
 
                 updateUploadPhase(chatIdStr, uploadId, { phase: 'success', size: actualSize, providerName: provider.name, fileType, folder: storageFolder });
+                rememberTransferDestination(chatIdStr, storageFolder, provider.name);
 
                 if (useConsolidated()) {
                     await runStatusAction(chatId, async () => {

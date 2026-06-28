@@ -5,6 +5,7 @@
  * 职责：消息格式化、存储提供商显示名、进度条渲染等。
  */
 
+import { Api } from 'telegram';
 import { formatBytes, getTypeEmoji } from './telegramUtils.js';
 // ─── 存储提供商显示名称 ───────────────────────────────────────
 
@@ -19,6 +20,64 @@ const PROVIDER_DISPLAY_MAP: Record<string, string> = {
 
 export function getProviderDisplayName(providerName: string): string {
     return PROVIDER_DISPLAY_MAP[providerName] || `📦 ${providerName}`;
+}
+
+function buildTaskControlLines(taskId?: string): string[] {
+    if (!taskId) return [`💡 发送 /tasks 查看实时任务状态`];
+    return [
+        `💡 下载队列控制：请优先点下方按钮`,
+        `⏸ 暂停：暂时停止继续下载，已在处理的任务会尽快停住`,
+        `▶️ 继续：从暂停处恢复后台下载队列`,
+        `🛑 取消：停止当前后台任务并清空等待项`,
+        ``,
+        `备用手动命令：`,
+        `/task_pause ${taskId}`,
+        `/task_resume ${taskId}`,
+        `/task_cancel ${taskId}`,
+    ];
+}
+
+export function buildTaskControlButtons(taskId?: string): Api.ReplyInlineMarkup | undefined {
+    if (!taskId) return undefined;
+    return new Api.ReplyInlineMarkup({
+        rows: [
+            new Api.KeyboardButtonRow({
+                buttons: [
+                    new Api.KeyboardButtonCallback({ text: '⏸ 暂停', data: Buffer.from(`tq_pause_${taskId}`) }),
+                    new Api.KeyboardButtonCallback({ text: '▶️ 继续', data: Buffer.from(`tq_resume_${taskId}`) }),
+                    new Api.KeyboardButtonCallback({ text: '🛑 取消', data: Buffer.from(`tq_cancel_${taskId}`) }),
+                ],
+            }),
+        ],
+    });
+}
+
+function collectCompletedFolders(
+    singleFiles: Array<{ phase: string; folder?: string | null }>,
+    batches: Array<{ folderName?: string; folderPath?: string; completed: number; totalFiles: number }>,
+): string[] {
+    const folders = new Set<string>();
+    singleFiles
+        .filter(file => file.phase === 'success' && file.folder)
+        .forEach(file => folders.add(file.folder!));
+    batches
+        .filter(batch => batch.completed === batch.totalFiles)
+        .forEach(batch => {
+            const folder = batch.folderPath || batch.folderName;
+            if (folder) folders.add(folder);
+        });
+    return Array.from(folders);
+}
+
+function formatFolderSummary(folders: string[], maxItems = 4): string[] {
+    if (folders.length === 0) return [];
+    const visible = folders.slice(0, maxItems);
+    const lines = [`📁 保存路径：${visible[0]}`];
+    visible.slice(1).forEach(folder => lines.push(`   └ ${folder}`));
+    if (folders.length > visible.length) {
+        lines.push(`   └ 另有 ${folders.length - visible.length} 个路径，可用 /list 查看`);
+    }
+    return lines;
 }
 
 // ─── 进度条渲染 ─────────────────────────────────────────────
@@ -453,21 +512,18 @@ export function buildSilentModeNotice(fileCount: number, taskId?: string): strin
         ``,
         `Bot 将在后台继续处理所有文件，请耐心等待。`,
         ``,
-        ...(taskId ? [
-            `💡 控制全局下载队列：`,
-            `/task_pause ${taskId}`,
-            `/task_resume ${taskId}`,
-            `/task_cancel ${taskId}`,
-        ] : [`💡 发送 /tasks 查看实时任务状态`]),
+        ...buildTaskControlLines(taskId),
     ].join('\n');
 }
 
 interface SilentProgressBatch {
     folderName: string;
+    folderPath?: string;
     totalFiles: number;
     completed: number;
     successful: number;
     failed: number;
+    providerName?: string;
     queuePending?: number;
     currentFileName?: string;
 }
@@ -477,6 +533,8 @@ interface SilentProgressFile {
     phase: ConsolidatedUploadFile['phase'];
     downloaded?: number;
     total?: number;
+    providerName?: string;
+    folder?: string | null;
 }
 
 export function buildSilentProgress(
@@ -512,7 +570,7 @@ export function buildSilentProgress(
         ...(activeBatch ? [`📁 批次: ${activeBatch.folderName}`] : []),
         ...(activeBatch?.queuePending ? [`🕒 队列等待: ${activeBatch.queuePending}`] : []),
         ``,
-        `💡 控制全局下载队列：${taskId ? `/task_pause ${taskId}　/task_resume ${taskId}　/task_cancel ${taskId}` : '发送 /tasks 查看实时任务状态'}`,
+        ...buildTaskControlLines(taskId),
         ...(taskId && failedFiles > 0 && remainingFiles === 0 ? [`🔄 检测到失败任务，可发送 /tg_retry ${taskId} 重试最近失败项`] : []),
     ].join('\n');
 }
@@ -527,8 +585,23 @@ export function buildSilentBatchComplete(types: string, providerName: string): s
     return `✅ **多文件上传完成！**\n🏷️ 类型: ${types}\n📍 ${getProviderDisplayName(providerName)}`;
 }
 
-export function buildSilentAllTasksComplete(totalCount: number, failedCount: number, taskId?: string): string {
+export function buildSilentAllTasksComplete(
+    totalCount: number,
+    failedCount: number,
+    taskId?: string,
+    singleFiles: SilentProgressFile[] = [],
+    batches: SilentProgressBatch[] = [],
+): string {
     const successCount = Math.max(0, totalCount - failedCount);
+    const providers = new Set<string>();
+    singleFiles.filter(f => f.phase === 'success' && f.providerName).forEach(f => providers.add(f.providerName!));
+    batches.filter(b => b.providerName).forEach(b => providers.add(b.providerName!));
+    const folders = collectCompletedFolders(singleFiles, batches);
+    const detailLines = [
+        ...(providers.size > 0 ? [`📍 存储: ${Array.from(providers).map(p => getProviderDisplayName(p)).join(', ')}`] : []),
+        ...formatFolderSummary(folders),
+    ];
+
     if (failedCount > 0) {
         return [
             `⚠️ **后台任务部分完成**`,
@@ -537,11 +610,12 @@ export function buildSilentAllTasksComplete(totalCount: number, failedCount: num
             `✅ 成功: ${successCount} 个文件`,
             `❌ 失败: ${failedCount} 个文件`,
             `📊 总计: ${totalCount} 个文件`,
+            ...detailLines,
             ``,
             ...(taskId ? [`🔄 检测到失败任务，发送 /tg_retry ${taskId} 重试最近失败项`] : []),
         ].join('\n');
     }
-    return [`✅ **后台任务全部完成**`, ``, ...(taskId ? [`🆔 任务：\`${taskId}\``] : []), `📊 总计: ${totalCount} 个文件`].join('\n');
+    return [`✅ **后台任务全部完成**`, ``, ...(taskId ? [`🆔 任务：\`${taskId}\``] : []), `📊 总计: ${totalCount} 个文件`, ...detailLines].join('\n');
 }
 
 // ─── 合并状态（单文件 + 批量） ──────────────────────────────
@@ -563,6 +637,7 @@ export interface ConsolidatedUploadFile {
 export interface ConsolidatedBatchEntry {
     id: string;
     folderName: string;
+    folderPath?: string;
     totalFiles: number;
     completed: number;
     successful: number;
@@ -642,6 +717,9 @@ export async function buildConsolidatedStatus(
         if (providers.size > 0) {
             lines.push(`📍 存储: ${Array.from(providers).map(p => getProviderDisplayName(p)).join(', ')}`);
         }
+
+        const folders = collectCompletedFolders(singleFiles, batches);
+        lines.push(...formatFolderSummary(folders));
 
         lines.push('');
         lines.push(`⏰ 完成时间: ${new Date().toLocaleString('zh-CN', {
@@ -740,6 +818,9 @@ export async function buildConsolidatedStatus(
             if (batch.providerName && isDone) {
                 lines.push(`    📍 ${getProviderDisplayName(batch.providerName)}`);
             }
+            if (batch.folderPath && isDone) {
+                lines.push(`    📁 ${batch.folderPath}`);
+            }
         });
     }
 
@@ -808,6 +889,7 @@ export interface BatchFile {
 interface BatchStatusData {
     files: BatchFile[];
     folderName?: string;
+    folderPath?: string;
     providerName?: string;
     queuePending: number;
     queueActive: number;
@@ -857,6 +939,9 @@ export function buildBatchStatus(data: BatchStatusData): string {
         lines.push(`🏷️ ${types}  📦 ${formatBytes(totalSize)}`);
         if (data.providerName) {
             lines.push(`📍 ${getProviderDisplayName(data.providerName)}`);
+        }
+        if (data.folderPath) {
+            lines.push(`📁 保存路径：${data.folderPath}`);
         }
     }
 
