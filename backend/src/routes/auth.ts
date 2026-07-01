@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { ACCESS_PASSWORD_HASH, SESSION_SECRET, TOKEN_EXPIRY } from '../utils/config.js';
-import { generateSignature } from '../middleware/signedUrl.js';
+import { generateSignature, type SignedUrlType } from '../middleware/signedUrl.js';
 import { rateLimit } from 'express-rate-limit';
 import { is2FAEnabled, verifyTOTP, generateOTPAuthUrl, activate2FA, disable2FA, getClientIP } from '../utils/security.js';
 import { UAParser } from 'ua-parser-js';
@@ -44,6 +44,12 @@ async function sendLoginNotification(req: Request) {
 }
 
 const router = Router();
+const SIGNED_URL_TYPES = new Set<SignedUrlType>(['preview', 'thumbnail', 'download']);
+
+function normalizeSignedUrlType(value: unknown): SignedUrlType | null {
+    if (typeof value !== 'string') return null;
+    return SIGNED_URL_TYPES.has(value as SignedUrlType) ? value as SignedUrlType : null;
+}
 
 function getAuthToken(req: Request): string | undefined {
     const headerToken = req.headers['authorization']?.replace('Bearer ', '');
@@ -274,19 +280,30 @@ router.get('/status', (_req: Request, res: Response) => {
 
 // 生成签名 URL (需要认证)
 router.post('/sign-url', requireAuth, (req: Request, res: Response) => {
-    const { fileId, expiresIn = 300 } = req.body; // 默认 5 分钟有效期
+    const { fileId, expiresIn = 300, type = 'preview' } = req.body; // 默认 5 分钟有效期
 
     if (!fileId) {
         return res.status(400).json({ error: '缺少 fileId' });
     }
 
-    const expires = Date.now() + (expiresIn * 1000);
-    const sign = generateSignature(fileId, expires);
+    const signedType = normalizeSignedUrlType(type);
+    if (!signedType) {
+        return res.status(400).json({ error: '签名类型无效' });
+    }
+
+    const expiresInSeconds = Number(expiresIn);
+    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+        return res.status(400).json({ error: '过期时间无效' });
+    }
+
+    const expires = Date.now() + (expiresInSeconds * 1000);
+    const sign = generateSignature(fileId, signedType, expires);
 
     res.json({
         sign,
         expires,
-        expiresIn
+        expiresIn: expiresInSeconds,
+        type: signedType,
     });
 });
 
