@@ -3,16 +3,39 @@ import crypto from 'crypto';
 import { SESSION_SECRET } from '../utils/config.js';
 import { requireAuth } from '../routes/auth.js';
 
+export type SignedUrlType = 'preview' | 'thumbnail' | 'download';
+
+const SIGNED_URL_TYPES = new Set<SignedUrlType>(['preview', 'thumbnail', 'download']);
+
+function normalizeSignedUrlType(value: string | undefined): SignedUrlType | null {
+    if (!value) return null;
+    return SIGNED_URL_TYPES.has(value as SignedUrlType) ? value as SignedUrlType : null;
+}
+
+function getSignedUrlRouteParts(req: Request): { id?: string; type: SignedUrlType | null } {
+    let id = req.params.id;
+    let type = normalizeSignedUrlType((req.params as Record<string, string | undefined>).type);
+
+    // Middleware is mounted on /api/files before route params are available, so parse the path.
+    const match = req.path.match(/^\/?([^\/]+)\/(preview|thumbnail|download)(?:\/|$)/);
+    if (match) {
+        id = id || match[1];
+        type = type || normalizeSignedUrlType(match[2]);
+    }
+
+    return { id, type };
+}
+
 // 生成签名
-export function generateSignature(fileId: string, expires: number): string {
-    const data = `${fileId}:${expires}`;
+export function generateSignature(fileId: string, type: SignedUrlType, expires: number): string {
+    const data = `${fileId}:${type}:${expires}`;
     return crypto.createHmac('sha256', SESSION_SECRET).update(data).digest('hex');
 }
 
 // 生成签名的 URL helper
-export function getSignedUrl(fileId: string, type: 'preview' | 'thumbnail' | 'download', expiresIn: number = 24 * 60 * 60) {
+export function getSignedUrl(fileId: string, type: SignedUrlType, expiresIn: number = 24 * 60 * 60) {
     const expires = Date.now() + (expiresIn * 1000);
-    const sign = generateSignature(fileId, expires);
+    const sign = generateSignature(fileId, type, expires);
     return `/api/files/${fileId}/${type}?sign=${sign}&expires=${expires}`;
 }
 
@@ -20,22 +43,10 @@ export function getSignedUrl(fileId: string, type: 'preview' | 'thumbnail' | 'do
 export function verifySignedUrl(req: Request): boolean {
     const sign = req.query.sign;
     const expires = req.query.expires;
-    let id = req.params.id;
+    const { id, type } = getSignedUrlRouteParts(req);
 
-    // 如果 middleware 挂载在 /api/files，req.params 可能为空，需要从 path 解析 ID
-    if (!id) {
-        // req.path 类似于 "/<id>/preview" 或 "/<id>"
-        // 匹配第一个路径段作为 ID
-        const match = req.path.match(/^\/?([^\/]+)/);
-        if (match) {
-            id = match[1];
-        } else {
-            console.log('[SignedURL] Failed to extract ID from path:', req.path);
-        }
-    }
-
-    if (typeof sign !== 'string' || typeof expires !== 'string' || typeof id !== 'string') {
-        console.log('[SignedURL] Missing or invalid params:', { sign, expires, id });
+    if (typeof sign !== 'string' || typeof expires !== 'string' || typeof id !== 'string' || !type) {
+        console.log('[SignedURL] Missing or invalid params:', { sign, expires, id, type });
         return false;
     }
 
@@ -52,12 +63,12 @@ export function verifySignedUrl(req: Request): boolean {
     }
 
     // 验证签名
-    const expectedSign = generateSignature(id, expiresTimestamp);
+    const expectedSign = generateSignature(id, type, expiresTimestamp);
     try {
         const received = Buffer.from(sign, 'hex');
         const expected = Buffer.from(expectedSign, 'hex');
         if (received.length !== expected.length || !crypto.timingSafeEqual(received, expected)) {
-            console.log('[SignedURL] Signature mismatch:', { id });
+            console.log('[SignedURL] Signature mismatch:', { id, type });
             return false;
         }
     } catch {
