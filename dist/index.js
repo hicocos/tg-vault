@@ -5978,7 +5978,7 @@ async function handleStorageCleanupCallback(client2, update, data) {
     const stats = await scanLocalDownloadFiles();
     if (data === "storage_clear_cancel") {
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: stats.count > 0 ? `\u5DF2\u53D6\u6D88\u6E05\u7406\u3002\u5F53\u524D\u672C\u5730\u4E0B\u8F7D\u6587\u4EF6\uFF1A${stats.count} \u4E2A\uFF0C\u5360\u7528 ${formatBytes(stats.totalSize)}\u3002` : "\u5DF2\u53D6\u6D88\u6E05\u7406\u3002\u5F53\u524D\u6CA1\u6709\u672C\u5730\u4E0B\u8F7D\u6587\u4EF6\u3002",
         buttons: buildStorageMaintenanceKeyboard(stats.count)
       });
@@ -5987,7 +5987,7 @@ async function handleStorageCleanupCallback(client2, update, data) {
     }
     if (data === "storage_clear_ask") {
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: [
           "\u26A0\uFE0F **\u786E\u8BA4\u5220\u9664\u672C\u5730\u670D\u52A1\u5668\u5168\u90E8\u4E0B\u8F7D\u6587\u4EF6\uFF1F**",
           "",
@@ -6014,7 +6014,7 @@ async function handleStorageCleanupCallback(client2, update, data) {
       }
       const after = await scanLocalDownloadFiles();
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: [
           "\u2705 **\u672C\u5730\u670D\u52A1\u5668\u4E0B\u8F7D\u6587\u4EF6\u5DF2\u6E05\u7406**",
           "",
@@ -6102,7 +6102,7 @@ async function handleDeleteConfirmCallback(client2, update, data) {
   }
   if (action === "cancel") {
     pendingDeleteConfirmations.delete(confirmId);
-    await client2.editMessage(update.peer, { message: update.msgId, text: `\u5DF2\u53D6\u6D88\u5220\u9664\uFF1A${pending.name}`, buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
+    await client2.editMessage(update.peer, { message: Number(update.msgId), text: `\u5DF2\u53D6\u6D88\u5220\u9664\uFF1A${pending.name}`, buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
     await client2.invoke(new Api4.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88" }));
     return;
   }
@@ -6112,7 +6112,7 @@ async function handleDeleteConfirmCallback(client2, update, data) {
     const file = result.rows[0];
     if (!file) {
       pendingDeleteConfirmations.delete(confirmId);
-      await client2.editMessage(update.peer, { message: update.msgId, text: "\u274C \u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728\u6216\u4E0D\u5728\u5F53\u524D\u5B58\u50A8\u8303\u56F4\u5185\u3002", buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
+      await client2.editMessage(update.peer, { message: Number(update.msgId), text: "\u274C \u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728\u6216\u4E0D\u5728\u5F53\u524D\u5B58\u50A8\u8303\u56F4\u5185\u3002", buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
       await client2.invoke(new Api4.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6587\u4EF6\u4E0D\u5B58\u5728", alert: true }));
       return;
     }
@@ -6123,7 +6123,7 @@ async function handleDeleteConfirmCallback(client2, update, data) {
     }
     await query("DELETE FROM files WHERE id = $1", [file.id]);
     pendingDeleteConfirmations.delete(confirmId);
-    await client2.editMessage(update.peer, { message: update.msgId, text: buildDeleteSuccess(file.name, file.id), buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
+    await client2.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id), buttons: new Api4.ReplyInlineMarkup({ rows: [] }) });
     await client2.invoke(new Api4.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u5220\u9664" }));
   } catch (error) {
     console.error("\u{1F916} \u786E\u8BA4\u5220\u9664\u6587\u4EF6\u5931\u8D25:", error);
@@ -6312,7 +6312,7 @@ async function handlePathRulesCallback(client2, update, data) {
       return;
     }
     await client2.editMessage(update.peer, {
-      message: update.msgId,
+      message: Number(update.msgId),
       text: buildPathSettingsText(pathCenterState, chatKey),
       buttons: buildPathSettingsKeyboard(pathCenterState)
     });
@@ -6341,7 +6341,7 @@ async function handleDuplicateModeCallback(client2, update, data) {
     const mode = match[1];
     await setSetting("duplicate_file_mode", mode);
     await client2.editMessage(update.peer, {
-      message: update.msgId,
+      message: Number(update.msgId),
       text: buildDuplicateModeText(mode),
       buttons: buildDuplicateModeKeyboard(mode)
     });
@@ -6374,7 +6374,7 @@ async function handleCleanupSettingsCallback(client2, update, data) {
       stopPeriodicCleanup();
     }
     await client2.editMessage(update.peer, {
-      message: update.msgId,
+      message: Number(update.msgId),
       text: buildCleanupSettingsText(enabled),
       buttons: buildCleanupSettingsKeyboard(enabled)
     });
@@ -6398,7 +6398,7 @@ async function handleDownloadWorkersCallback(client2, update, data) {
     if (data === "dw_cancel") {
       const current = await getCurrentDownloadWorkers();
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: buildDownloadWorkersText(current),
         buttons: buildDownloadWorkersKeyboard(current)
       });
@@ -6410,7 +6410,7 @@ async function handleDownloadWorkersCallback(client2, update, data) {
       const workers = Number(setMatch[1]);
       if (workers >= 12) {
         await client2.editMessage(update.peer, {
-          message: update.msgId,
+          message: Number(update.msgId),
           text: [
             `\u26A0\uFE0F **\u786E\u8BA4\u4F7F\u7528 ${workers} workers\uFF1F**`,
             "",
@@ -6428,7 +6428,7 @@ async function handleDownloadWorkersCallback(client2, update, data) {
       }
       await setSetting("telegram_download_workers", String(workers));
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: `${buildDownloadWorkersText(workers)}
 
 \u2705 \u5DF2\u5207\u6362\u4E3A ${workers} workers\uFF0C\u540E\u7EED\u65B0\u4E0B\u8F7D\u4EFB\u52A1\u7ACB\u5373\u751F\u6548\u3002`,
@@ -6442,7 +6442,7 @@ async function handleDownloadWorkersCallback(client2, update, data) {
       const workers = Number(confirmMatch[1]);
       await setSetting("telegram_download_workers", String(workers));
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: `${buildDownloadWorkersText(workers)}
 
 \u26A0\uFE0F \u5DF2\u786E\u8BA4\u5E76\u5207\u6362\u4E3A ${workers} workers\u3002\u82E5\u51FA\u73B0\u65AD\u6D41\u3001\u9650\u901F\u3001\u98CE\u63A7\u63D0\u793A\uFF0C\u8BF7\u7ACB\u5373\u964D\u56DE 4 \u6216 8\u3002`,
@@ -6474,7 +6474,7 @@ async function handleFileConcurrencyCallback(client2, update, data) {
       const current = await getCurrentFileConcurrency();
       setFileDownloadConcurrency(current);
       await client2.editMessage(update.peer, {
-        message: update.msgId,
+        message: Number(update.msgId),
         text: buildFileConcurrencyText(current),
         buttons: buildFileConcurrencyKeyboard(current)
       });
@@ -6486,7 +6486,7 @@ async function handleFileConcurrencyCallback(client2, update, data) {
       const concurrency = Number(setMatch[1]);
       if (concurrency === 4) {
         await client2.editMessage(update.peer, {
-          message: update.msgId,
+          message: Number(update.msgId),
           text: [
             "\u26A0\uFE0F **\u786E\u8BA4\u540C\u65F6\u4E0B\u8F7D 4 \u4E2A\u6587\u4EF6\uFF1F**",
             "",
@@ -6505,7 +6505,8 @@ async function handleFileConcurrencyCallback(client2, update, data) {
       await setSetting("telegram_file_download_concurrency", String(concurrency));
       const normalized = setFileDownloadConcurrency(concurrency);
       await client2.editMessage(update.peer, {
-        message: `${buildFileConcurrencyText(normalized)}
+        message: Number(update.msgId),
+        text: `${buildFileConcurrencyText(normalized)}
 
 \u2705 \u5DF2\u5207\u6362\u4E3A\u540C\u65F6\u4E0B\u8F7D ${normalized} \u4E2A\u6587\u4EF6\u3002`,
         buttons: buildFileConcurrencyKeyboard(normalized)
@@ -6518,7 +6519,8 @@ async function handleFileConcurrencyCallback(client2, update, data) {
       await setSetting("telegram_file_download_concurrency", "4");
       const normalized = setFileDownloadConcurrency(4);
       await client2.editMessage(update.peer, {
-        message: `${buildFileConcurrencyText(normalized)}
+        message: Number(update.msgId),
+        text: `${buildFileConcurrencyText(normalized)}
 
 \u26A0\uFE0F \u5DF2\u786E\u8BA4\u5E76\u5207\u6362\u4E3A\u540C\u65F6\u4E0B\u8F7D 4 \u4E2A\u6587\u4EF6\u3002\u82E5\u51FA\u73B0\u9650\u6D41\u3001\u65AD\u6D41\u6216\u4E0A\u4F20\u5931\u8D25\uFF0C\u8BF7\u7ACB\u5373\u964D\u56DE 2 \u6216 3\u3002`,
         buttons: buildFileConcurrencyKeyboard(normalized)

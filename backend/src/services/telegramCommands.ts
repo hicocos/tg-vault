@@ -376,7 +376,7 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
         const stats = await scanLocalDownloadFiles();
         if (data === 'storage_clear_cancel') {
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: stats.count > 0 ? `已取消清理。当前本地下载文件：${stats.count} 个，占用 ${formatBytes(stats.totalSize)}。` : '已取消清理。当前没有本地下载文件。',
                 buttons: buildStorageMaintenanceKeyboard(stats.count),
             });
@@ -386,7 +386,7 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
 
         if (data === 'storage_clear_ask') {
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: [
                     '⚠️ **确认删除本地服务器全部下载文件？**',
                     '',
@@ -414,7 +414,7 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
             }
             const after = await scanLocalDownloadFiles();
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: [
                     '✅ **本地服务器下载文件已清理**',
                     '',
@@ -548,7 +548,7 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
     }
     if (action === 'cancel') {
         pendingDeleteConfirmations.delete(confirmId);
-        await client.editMessage(update.peer, { message: update.msgId, text: `已取消删除：${pending.name}`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        await client.editMessage(update.peer, { message: Number(update.msgId), text: `已取消删除：${pending.name}`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
         return;
     }
@@ -558,14 +558,14 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
         const file = result.rows[0];
         if (!file) {
             pendingDeleteConfirmations.delete(confirmId);
-            await client.editMessage(update.peer, { message: update.msgId, text: '❌ 文件已不存在或不在当前存储范围内。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+            await client.editMessage(update.peer, { message: Number(update.msgId), text: '❌ 文件已不存在或不在当前存储范围内。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '文件不存在', alert: true }));
             return;
         }
         try { await removePhysicalFile(file); } catch (err) { console.warn('🤖 文件物理删除失败或文件已不存在:', err); }
         await query('DELETE FROM files WHERE id = $1', [file.id]);
         pendingDeleteConfirmations.delete(confirmId);
-        await client.editMessage(update.peer, { message: update.msgId, text: buildDeleteSuccess(file.name, file.id), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        await client.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已删除' }));
     } catch (error) {
         console.error('🤖 确认删除文件失败:', error);
@@ -749,7 +749,7 @@ export async function handlePathRulesCallback(client: TelegramClient, update: Ap
         }
 
         await client.editMessage(update.peer, {
-            message: update.msgId,
+            message: Number(update.msgId),
             text: buildPathSettingsText(pathCenterState, chatKey),
             buttons: buildPathSettingsKeyboard(pathCenterState),
         });
@@ -781,7 +781,7 @@ export async function handleDuplicateModeCallback(client: TelegramClient, update
         const mode = match[1] as DuplicateMode;
         await setSetting('duplicate_file_mode', mode);
         await client.editMessage(update.peer, {
-            message: update.msgId,
+            message: Number(update.msgId),
             text: buildDuplicateModeText(mode),
             buttons: buildDuplicateModeKeyboard(mode),
         });
@@ -817,7 +817,7 @@ export async function handleCleanupSettingsCallback(client: TelegramClient, upda
             stopPeriodicCleanup();
         }
         await client.editMessage(update.peer, {
-            message: update.msgId,
+            message: Number(update.msgId),
             text: buildCleanupSettingsText(enabled),
             buttons: buildCleanupSettingsKeyboard(enabled),
         });
@@ -843,7 +843,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
         if (data === 'dw_cancel') {
             const current = await getCurrentDownloadWorkers();
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: buildDownloadWorkersText(current),
                 buttons: buildDownloadWorkersKeyboard(current),
             });
@@ -856,7 +856,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             const workers = Number(setMatch[1]);
             if (workers >= 12) {
                 await client.editMessage(update.peer, {
-                    message: update.msgId,
+                    message: Number(update.msgId),
                     text: [
                         `⚠️ **确认使用 ${workers} workers？**`,
                         '',
@@ -875,7 +875,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
 
             await setSetting('telegram_download_workers', String(workers));
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: `${buildDownloadWorkersText(workers)}\n\n✅ 已切换为 ${workers} workers，后续新下载任务立即生效。`,
                 buttons: buildDownloadWorkersKeyboard(workers),
             });
@@ -888,7 +888,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             const workers = Number(confirmMatch[1]);
             await setSetting('telegram_download_workers', String(workers));
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: `${buildDownloadWorkersText(workers)}\n\n⚠️ 已确认并切换为 ${workers} workers。若出现断流、限速、风控提示，请立即降回 4 或 8。`,
                 buttons: buildDownloadWorkersKeyboard(workers),
             });
@@ -920,7 +920,7 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             const current = await getCurrentFileConcurrency();
             setFileDownloadConcurrency(current);
             await client.editMessage(update.peer, {
-                message: update.msgId,
+                message: Number(update.msgId),
                 text: buildFileConcurrencyText(current),
                 buttons: buildFileConcurrencyKeyboard(current),
             });
@@ -933,7 +933,7 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             const concurrency = Number(setMatch[1]);
             if (concurrency === 4) {
                 await client.editMessage(update.peer, {
-                    message: update.msgId,
+                    message: Number(update.msgId),
                     text: [
                         '⚠️ **确认同时下载 4 个文件？**',
                         '',
@@ -953,7 +953,8 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             await setSetting('telegram_file_download_concurrency', String(concurrency));
             const normalized = setFileDownloadConcurrency(concurrency);
             await client.editMessage(update.peer, {
-                message: `${buildFileConcurrencyText(normalized)}\n\n✅ 已切换为同时下载 ${normalized} 个文件。`,
+                message: Number(update.msgId),
+                text: `${buildFileConcurrencyText(normalized)}\n\n✅ 已切换为同时下载 ${normalized} 个文件。`,
                 buttons: buildFileConcurrencyKeyboard(normalized),
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已设置为 ${normalized}` }));
@@ -965,7 +966,8 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             await setSetting('telegram_file_download_concurrency', '4');
             const normalized = setFileDownloadConcurrency(4);
             await client.editMessage(update.peer, {
-                message: `${buildFileConcurrencyText(normalized)}\n\n⚠️ 已确认并切换为同时下载 4 个文件。若出现限流、断流或上传失败，请立即降回 2 或 3。`,
+                message: Number(update.msgId),
+                text: `${buildFileConcurrencyText(normalized)}\n\n⚠️ 已确认并切换为同时下载 4 个文件。若出现限流、断流或上传失败，请立即降回 2 或 3。`,
                 buttons: buildFileConcurrencyKeyboard(normalized),
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已确认 4 个文件并发', alert: true }));
