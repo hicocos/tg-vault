@@ -121,7 +121,7 @@ export async function generateOTPAuthUrl(user: string = 'Admin'): Promise<string
 
     const otpauth = authenticator.toURI({
         label: user,
-        issuer: 'FlClouds',
+        issuer: 'TG Vault',
         secret: secret
     });
 

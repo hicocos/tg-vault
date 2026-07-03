@@ -13,4 +13,4 @@ const getApiBase = () => {
 };
 
 export const API_BASE = getApiBase();
-console.log('🚀 FlClouds API_BASE:', API_BASE || '(relative path)');
+console.log('🚀 TG Vault API_BASE:', API_BASE || '(relative path)');

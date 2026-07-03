@@ -863,7 +863,7 @@ export async function initTelegramBot(): Promise<void> {
             connectionRetries: 15,
             retryDelay: 2000,
             useWSS: false,
-            deviceModel: 'FlClouds Bot',
+            deviceModel: 'TG Vault Bot',
             systemVersion: '1.0.0',
             appVersion: '1.0.0',
             floodSleepThreshold: 120,

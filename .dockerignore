@@ -3,7 +3,7 @@ node_modules
 *.log
 .env.local
 dist
-flclouds.tar.gz
+tg-vault.tar.gz
 verify_sanitization.js
 verify_sanitization.ts
 backend/*.sql

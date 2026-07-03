@@ -36,7 +36,7 @@ jobs:
         id: meta-backend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/flclouds-backend
+          images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-backend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -51,7 +51,7 @@ jobs:
         with:
           context: ./backend
           push: false
-          tags: flclouds-backend:pr-${{ github.event.pull_request.number }}
+          tags: tg-vault-backend:pr-${{ github.event.pull_request.number }}
 
       - name: Build and push Backend
         if: github.event_name != 'pull_request'
@@ -84,7 +84,7 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/flclouds-frontend
+          images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-frontend
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -99,7 +99,7 @@ jobs:
         with:
           context: ./frontend
           push: false
-          tags: flclouds-frontend:pr-${{ github.event.pull_request.number }}
+          tags: tg-vault-frontend:pr-${{ github.event.pull_request.number }}
 
       - name: Build and push Frontend
         if: github.event_name != 'pull_request'

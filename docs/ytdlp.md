@@ -1,6 +1,6 @@
 # YT-DLP 下载专区
 
-FlClouds 集成了 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，可以通过 Telegram Bot 发送链接，让服务器自动解析并下载，然后上传到当前选中的存储源。
+TG Vault 集成了 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，可以通过 Telegram Bot 发送链接，让服务器自动解析并下载，然后上传到当前选中的存储源。
 
 ---
 

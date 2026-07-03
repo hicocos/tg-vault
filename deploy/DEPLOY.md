@@ -1,4 +1,4 @@
-# FlClouds 服务器部署指南
+# TG Vault 服务器部署指南
 
 ## 前置条件
 
@@ -14,11 +14,11 @@
 
 ```bash
 # 在本地打包项目（不包含 node_modules）
-cd C:\Users\admin\Desktop\FlClouds
-tar --exclude='node_modules' --exclude='.git' -czvf flclouds.tar.gz .
+cd C:\Users\admin\Desktop\tg-vault
+tar --exclude='node_modules' --exclude='.git' -czvf tg-vault.tar.gz .
 
 # 上传到服务器
-scp flclouds.tar.gz user@your-server-ip:/tmp/
+scp tg-vault.tar.gz user@your-server-ip:/tmp/
 ```
 
 2. **在服务器上解压并运行部署脚本**
@@ -28,9 +28,9 @@ scp flclouds.tar.gz user@your-server-ip:/tmp/
 ssh user@your-server-ip
 
 # 解压
-sudo mkdir -p /opt/flclouds
-cd /opt/flclouds
-sudo tar -xzvf /tmp/flclouds.tar.gz
+sudo mkdir -p /opt/tg-vault
+cd /opt/tg-vault
+sudo tar -xzvf /tmp/tg-vault.tar.gz
 
 # 修改部署脚本中的邮箱
 nano deploy/install.sh
@@ -87,17 +87,17 @@ exit
 
 ```bash
 # 创建目录
-sudo mkdir -p /opt/flclouds
-sudo chown -R $USER:$USER /opt/flclouds
+sudo mkdir -p /opt/tg-vault
+sudo chown -R $USER:$USER /opt/tg-vault
 
-# 上传文件到 /opt/flclouds
+# 上传文件到 /opt/tg-vault
 # (使用 scp, rsync, 或 SFTP)
 ```
 
 #### 3. 创建环境变量文件
 
 ```bash
-cd /opt/flclouds
+cd /opt/tg-vault
 
 # 生成随机数据库密码
 {
@@ -148,7 +148,7 @@ docker compose restart nginx
 
 ```bash
 # 进入项目目录
-cd /opt/flclouds
+cd /opt/tg-vault
 
 # 查看服务状态
 docker compose ps
@@ -186,10 +186,10 @@ docker compose restart nginx
 
 ```bash
 # 备份数据库
-docker compose exec postgres pg_dump -U flclouds flclouds > backup_$(date +%Y%m%d).sql
+docker compose exec postgres pg_dump -U tgvault tgvault > backup_$(date +%Y%m%d).sql
 
 # 备份上传文件
-docker run --rm -v flclouds_file-storage:/data -v $(pwd):/backup alpine tar czvf /backup/files_$(date +%Y%m%d).tar.gz /data
+docker run --rm -v tg-vault_file-storage:/data -v $(pwd):/backup alpine tar czvf /backup/files_$(date +%Y%m%d).tar.gz /data
 ```
 
 ## 故障排查
@@ -214,7 +214,7 @@ docker compose restart nginx
 ### 数据库连接失败
 ```bash
 # 检查数据库状态
-docker compose exec postgres pg_isready -U flclouds
+docker compose exec postgres pg_isready -U tgvault
 
 # 查看数据库日志
 docker compose logs postgres

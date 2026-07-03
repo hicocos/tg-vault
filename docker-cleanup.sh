@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Docker 垃圾清理脚本
-# 用于清理 FlClouds 项目的 Docker 垃圾文件
+# 用于清理 TG Vault 项目的 Docker 垃圾文件
 
 echo "========================================="
 echo "Docker 垃圾清理脚本"

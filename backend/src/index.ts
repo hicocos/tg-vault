@@ -149,7 +149,7 @@ app.listen(PORT, async () => {
     const initialSetupRequired = await isInitialSetupRequired();
 
     console.log(`
-🚀 FlClouds 后端服务已启动
+🚀 TG Vault 后端服务已启动
 📍 端口: ${PORT}
 📁 上传目录: ${path.resolve(UPLOAD_DIR)}
 🖼️  缩略图目录: ${path.resolve(THUMBNAIL_DIR)}

@@ -1,32 +1,32 @@
-name: flclouds
+name: tg-vault
 
 services:
   # 前端（暴露到宿主机供 Nginx 反代）
   frontend:
-    image: flclouds-frontend:latest
+    image: tg-vault-frontend:latest
     build:
       context: ./frontend
       args:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
-    container_name: flclouds-frontend
+    container_name: tg-vault-frontend
     ports:
       - "127.0.0.1:47832:80"
     networks:
-      - flclouds-network
+      - tg-vault-network
     restart: unless-stopped
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: flclouds-backend:latest
+    image: tg-vault-backend:latest
     build: ./backend
-    container_name: flclouds-backend
+    container_name: tg-vault-backend
     ports:
       - "127.0.0.1:51947:51947"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      - DATABASE_URL=postgresql://flclouds:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/flclouds
+      - DATABASE_URL=postgresql://tgvault:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tgvault
       - PORT=51947
       - NODE_ENV=production
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
@@ -39,7 +39,7 @@ services:
       - CORS_ORIGIN=${CORS_ORIGIN:-https://cloud.example.com}
       - SESSION_SECRET=${SESSION_SECRET:-}
       - STORAGE_CREDENTIALS_SECRET=${STORAGE_CREDENTIALS_SECRET:-}
-      - FLCLOUDS_SECRET_DIR=/data/secrets
+      - TG_VAULT_SECRET_DIR=/data/secrets
       - DOMAIN=${DOMAIN:-cloud.example.com}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
@@ -55,25 +55,25 @@ services:
     volumes:
       - file-storage:/data
     networks:
-      - flclouds-network
+      - tg-vault-network
     restart: unless-stopped
 
   # 数据库
   postgres:
     image: postgres:16-alpine
-    container_name: flclouds-postgres
+    container_name: tg-vault-postgres
     environment:
-      - POSTGRES_DB=flclouds
-      - POSTGRES_USER=flclouds
+      - POSTGRES_DB=tgvault
+      - POSTGRES_USER=tgvault
       - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
-      - flclouds-network
+      - tg-vault-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U flclouds -d flclouds" ]
+      test: [ "CMD-SHELL", "pg_isready -U tgvault -d tgvault" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -85,5 +85,5 @@ volumes:
     driver: local
 
 networks:
-  flclouds-network:
+  tg-vault-network:
     driver: bridge

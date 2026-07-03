@@ -12,7 +12,7 @@ dotenv.config();
 const { Pool } = pg;
 
 export const pool = new Pool({
-    connectionString: process.env.DATABASE_URL || 'postgresql://flclouds:password@localhost:5432/flclouds',
+    connectionString: process.env.DATABASE_URL || 'postgresql://tgvault:password@localhost:5432/tgvault',
 });
 
 let initializationPromise: Promise<void> | null = null;

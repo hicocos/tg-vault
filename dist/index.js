@@ -91,7 +91,7 @@ var init_db = __esm({
     dotenv.config();
     ({ Pool } = pg);
     pool = new Pool({
-      connectionString: process.env.DATABASE_URL || "postgresql://flclouds:password@localhost:5432/flclouds"
+      connectionString: process.env.DATABASE_URL || "postgresql://tgvault:password@localhost:5432/tgvault"
     });
     initializationPromise = null;
     pool.on("connect", async () => {
@@ -120,8 +120,8 @@ import fs2 from "fs";
 import path2 from "path";
 function getCandidateSecretDirs() {
   const dirs = [];
-  if (process.env.FLCLOUDS_SECRET_DIR?.trim()) {
-    dirs.push(process.env.FLCLOUDS_SECRET_DIR.trim());
+  if (process.env.TG_VAULT_SECRET_DIR?.trim()) {
+    dirs.push(process.env.TG_VAULT_SECRET_DIR.trim());
   }
   const uploadDir = process.env.UPLOAD_DIR || "./data/uploads";
   dirs.push(path2.join(path2.dirname(path2.resolve(uploadDir)), "secrets"));
@@ -635,7 +635,7 @@ var init_storage = __esm({
       }
     };
     OneDriveStorageProvider = class {
-      // 使用第三方存储根目录，不再额外套 FlClouds 目录
+      // 使用第三方存储根目录，不再额外套 TG Vault 目录
       constructor(id, clientId, clientSecret, refreshToken, tenantId = "common") {
         this.id = id;
         this.clientId = clientId;
@@ -1081,7 +1081,7 @@ var init_storage = __esm({
       oauth2Client;
       drive;
       tokenExpiresAt = 0;
-      GOOGLE_DRIVE_FOLDER = "FlClouds";
+      GOOGLE_DRIVE_FOLDER = "TG Vault";
       folderIdCache = /* @__PURE__ */ new Map();
       folderEnsureLocks = /* @__PURE__ */ new Map();
       static generateAuthUrl(clientId, clientSecret, redirectUri, state) {
@@ -1750,7 +1750,7 @@ async function generateOTPAuthUrl(user = "Admin") {
   }
   const otpauth = authenticator.toURI({
     label: user,
-    issuer: "FlClouds",
+    issuer: "TG Vault",
     secret
   });
   return await QRCode.toDataURL(otpauth);
@@ -2175,13 +2175,13 @@ function buildAuthSuccess() {
   ].join("\n");
 }
 function buildStartPrompt() {
-  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 FlClouds Bot\uFF01**
+  return `\u{1F44B} **\u6B22\u8FCE\u4F7F\u7528 TG Vault Bot\uFF01**
 
 \u{1F510} \u8BF7\u4F7F\u7528\u4E0B\u65B9\u952E\u76D8\u8F93\u5165\u5BC6\u7801\uFF1A`;
 }
 function buildHelp() {
   return [
-    `\u{1F4D6} **FlClouds Bot \u5E2E\u52A9**`,
+    `\u{1F4D6} **TG Vault Bot \u5E2E\u52A9**`,
     LINE,
     ``,
     `**\u{1F4E4} \u6587\u4EF6\u4E0A\u4F20**`,
@@ -2781,7 +2781,7 @@ async function initTelegramUserClient() {
     connectionRetries: 15,
     retryDelay: 2e3,
     useWSS: false,
-    deviceModel: "FlClouds User Downloader",
+    deviceModel: "TG Vault User Downloader",
     systemVersion: "1.0.0",
     appVersion: "1.0.0",
     floodSleepThreshold: 120
@@ -5259,8 +5259,19 @@ async function updateDownloadItemsStatus(jobId, messageIds, status, error) {
 function parseDateOnly(value, endOfDay = false) {
   const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) throw new Error("\u65E5\u671F\u683C\u5F0F\u5FC5\u987B\u662F YYYY-MM-DD");
-  const [, year, month, day] = match;
-  return /* @__PURE__ */ new Date(`${year}-${month}-${day}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}Z`);
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  return new Date(Date.UTC(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0
+  ));
 }
 async function createJob(userId, chatId, kind, source, params) {
   const result = await query(
@@ -5942,9 +5953,9 @@ async function handleStorage(message) {
             FROM files
             WHERE ${scope.clause}
         `, scope.params);
-    const flcloudsStats = result.rows[0];
-    const totalSize = parseInt(flcloudsStats.total_size);
-    const fileCount = parseInt(flcloudsStats.file_count);
+    const tgVaultStats = result.rows[0];
+    const totalSize = parseInt(tgVaultStats.total_size);
+    const fileCount = parseInt(tgVaultStats.file_count);
     const usedPercent = Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100);
     const queueStats = getDownloadQueueStats();
     const localStats = await scanLocalDownloadFiles();
@@ -7514,7 +7525,7 @@ async function initTelegramBot() {
       connectionRetries: 15,
       retryDelay: 2e3,
       useWSS: false,
-      deviceModel: "FlClouds Bot",
+      deviceModel: "TG Vault Bot",
       systemVersion: "1.0.0",
       appVersion: "1.0.0",
       floodSleepThreshold: 120
@@ -8181,11 +8192,11 @@ function getAuthToken(req) {
   const headerToken = req.headers["authorization"]?.replace("Bearer ", "");
   if (headerToken) return headerToken;
   const cookieHeader = req.headers.cookie || "";
-  const match = cookieHeader.split(";").map((v) => v.trim()).find((v) => v.startsWith("flclouds_token="));
-  return match ? decodeURIComponent(match.slice("flclouds_token=".length)) : void 0;
+  const match = cookieHeader.split(";").map((v) => v.trim()).find((v) => v.startsWith("tg_vault_token="));
+  return match ? decodeURIComponent(match.slice("tg_vault_token=".length)) : void 0;
 }
 function setAuthCookie(res, token, expiresAt) {
-  res.cookie("flclouds_token", token, {
+  res.cookie("tg_vault_token", token, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.COOKIE_SECURE === "true" || process.env.NODE_ENV === "production",
@@ -8194,7 +8205,7 @@ function setAuthCookie(res, token, expiresAt) {
   });
 }
 function clearAuthCookie(res) {
-  res.clearCookie("flclouds_token", { path: "/" });
+  res.clearCookie("tg_vault_token", { path: "/" });
 }
 var sessions = /* @__PURE__ */ new Map();
 setInterval(() => {
@@ -9000,7 +9011,7 @@ init_db();
 init_localPath();
 import { Router as Router3 } from "express";
 import path17 from "path";
-var router3 = Router3();
+var router3 = Router3({ strict: true });
 var UPLOAD_DIR6 = path17.resolve(process.env.UPLOAD_DIR || "./data/uploads");
 var THUMBNAIL_DIR6 = path17.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 var CLOUD_SOURCES2 = /* @__PURE__ */ new Set(["onedrive", "aliyun_oss", "s3", "webdav", "google_drive"]);
@@ -9029,7 +9040,7 @@ async function removePhysicalFile2(file) {
     await safeUnlink(thumbPath, THUMBNAIL_DIR6);
   }
 }
-router3.post("/batch-delete", async (req, res) => {
+router3.post("/batch-delete", requireAuth, async (req, res) => {
   try {
     const { fileIds = [], folderNames = [] } = req.body;
     if (!Array.isArray(fileIds) || !Array.isArray(folderNames)) {
@@ -9073,7 +9084,7 @@ router3.post("/batch-delete", async (req, res) => {
     res.status(500).json({ error: "\u6279\u91CF\u5220\u9664\u5931\u8D25" });
   }
 });
-router3.patch("/rename-folder", async (req, res) => {
+router3.patch("/rename-folder", requireAuth, async (req, res) => {
   try {
     const { oldName, newName } = req.body;
     if (!oldName || !newName || typeof oldName !== "string" || typeof newName !== "string") {
@@ -9113,7 +9124,7 @@ router3.patch("/rename-folder", async (req, res) => {
     res.status(500).json({ error: "\u91CD\u547D\u540D\u6587\u4EF6\u5939\u5931\u8D25" });
   }
 });
-router3.patch("/move-folder", async (req, res) => {
+router3.patch("/move-folder", requireAuth, async (req, res) => {
   try {
     const { oldName, newName } = req.body;
     if (!oldName || typeof oldName !== "string") {
@@ -9412,7 +9423,7 @@ router5.get("/stats", requireAuth, async (_req, res) => {
             FROM files
             WHERE ${scope.clause}
         `, scope.params);
-    const flcloudsStats = result.rows[0];
+    const tgVaultStats = result.rows[0];
     res.json({
       server: {
         total: formatBytes3(diskSpace.size),
@@ -9423,11 +9434,11 @@ router5.get("/stats", requireAuth, async (_req, res) => {
         freeBytes: diskSpace.free,
         usedPercent: Math.round((diskSpace.size - diskSpace.free) / diskSpace.size * 100)
       },
-      flclouds: {
-        used: formatBytes3(parseInt(flcloudsStats.total_size)),
-        usedBytes: parseInt(flcloudsStats.total_size),
-        fileCount: parseInt(flcloudsStats.file_count),
-        usedPercent: Math.round(parseInt(flcloudsStats.total_size) / diskSpace.size * 100)
+      tgvault: {
+        used: formatBytes3(parseInt(tgVaultStats.total_size)),
+        usedBytes: parseInt(tgVaultStats.total_size),
+        fileCount: parseInt(tgVaultStats.file_count),
+        usedPercent: Math.round(parseInt(tgVaultStats.total_size) / diskSpace.size * 100)
       }
     });
   } catch (error) {
@@ -10233,7 +10244,7 @@ app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR8, {
   maxAge: "7d",
   etag: true
 }));
-app.use("/api/files", requireAuth, folderOperations_default);
+app.use("/api/files", folderOperations_default);
 app.use("/api/files", requireAuthOrSignedUrl, files_default);
 app.use("/api/upload", requireAuth, upload_default);
 app.use("/api/v1/upload", requireAuth, upload_default);
@@ -10260,7 +10271,7 @@ app.listen(PORT, async () => {
   }
   const initialSetupRequired = await isInitialSetupRequired();
   console.log(`
-\u{1F680} FlClouds \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
+\u{1F680} TG Vault \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
 \u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path21.resolve(UPLOAD_DIR9)}
 \u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path21.resolve(THUMBNAIL_DIR8)}

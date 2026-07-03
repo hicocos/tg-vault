@@ -1,4 +1,4 @@
--- FlClouds 数据库表结构
+-- TG Vault 数据库表结构
 
 -- 启用 UUID 扩展
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";

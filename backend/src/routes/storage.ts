@@ -56,7 +56,7 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
         const diskPath = os.platform() === 'win32' ? 'C:' : path.resolve(UPLOAD_DIR);
         const diskSpace = await checkDiskSpace(diskPath);
 
-        // 获取当前存储范围内 FlClouds 使用的空间
+        // 获取当前存储范围内 TG Vault 使用的空间
         const scope = await getCurrentStorageScope();
         const result = await query(`
             SELECT
@@ -66,7 +66,7 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
             WHERE ${scope.clause}
         `, scope.params);
 
-        const flcloudsStats = result.rows[0];
+        const tgVaultStats = result.rows[0];
 
         res.json({
             server: {
@@ -78,11 +78,11 @@ router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
                 freeBytes: diskSpace.free,
                 usedPercent: Math.round(((diskSpace.size - diskSpace.free) / diskSpace.size) * 100),
             },
-            flclouds: {
-                used: formatBytes(parseInt(flcloudsStats.total_size)),
-                usedBytes: parseInt(flcloudsStats.total_size),
-                fileCount: parseInt(flcloudsStats.file_count),
-                usedPercent: Math.round((parseInt(flcloudsStats.total_size) / diskSpace.size) * 100),
+            tgvault: {
+                used: formatBytes(parseInt(tgVaultStats.total_size)),
+                usedBytes: parseInt(tgVaultStats.total_size),
+                fileCount: parseInt(tgVaultStats.file_count),
+                usedPercent: Math.round((parseInt(tgVaultStats.total_size) / diskSpace.size) * 100),
             },
         });
     } catch (error) {
@@ -574,7 +574,7 @@ router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) 
         const accountName = accountRes.rows[0].name;
         const accountType = accountRes.rows[0].type;
 
-        // 删除该账户关联的 FlClouds 文件索引。不要把外部文件记录置 NULL，避免变成“本地/空账户”幽灵文件。
+        // 删除该账户关联的 TG Vault 文件索引。不要把外部文件记录置 NULL，避免变成“本地/空账户”幽灵文件。
         // 这里只清理数据库索引，不删除云端原文件；如需删除云端文件，应另做高危二次确认流程。
         const fileRes = await query('DELETE FROM files WHERE storage_account_id = $1', [id]);
 

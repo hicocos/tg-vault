@@ -4,8 +4,8 @@ import path from 'path';
 
 function getCandidateSecretDirs(): string[] {
     const dirs: string[] = [];
-    if (process.env.FLCLOUDS_SECRET_DIR?.trim()) {
-        dirs.push(process.env.FLCLOUDS_SECRET_DIR.trim());
+    if (process.env.TG_VAULT_SECRET_DIR?.trim()) {
+        dirs.push(process.env.TG_VAULT_SECRET_DIR.trim());
     }
 
     const uploadDir = process.env.UPLOAD_DIR || './data/uploads';

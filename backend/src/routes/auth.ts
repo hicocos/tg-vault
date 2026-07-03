@@ -61,12 +61,12 @@ function getAuthToken(req: Request): string | undefined {
     const headerToken = req.headers['authorization']?.replace('Bearer ', '');
     if (headerToken) return headerToken;
     const cookieHeader = req.headers.cookie || '';
-    const match = cookieHeader.split(';').map(v => v.trim()).find(v => v.startsWith('flclouds_token='));
-    return match ? decodeURIComponent(match.slice('flclouds_token='.length)) : undefined;
+    const match = cookieHeader.split(';').map(v => v.trim()).find(v => v.startsWith('tg_vault_token='));
+    return match ? decodeURIComponent(match.slice('tg_vault_token='.length)) : undefined;
 }
 
 function setAuthCookie(res: Response, token: string, expiresAt: Date) {
-    res.cookie('flclouds_token', token, {
+    res.cookie('tg_vault_token', token, {
         httpOnly: true,
         sameSite: 'lax',
         secure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
@@ -76,7 +76,7 @@ function setAuthCookie(res: Response, token: string, expiresAt: Date) {
 }
 
 function clearAuthCookie(res: Response) {
-    res.clearCookie('flclouds_token', { path: '/' });
+    res.clearCookie('tg_vault_token', { path: '/' });
 }
 
 

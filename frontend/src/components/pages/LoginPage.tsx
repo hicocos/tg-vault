@@ -128,11 +128,11 @@ export const LoginPage = ({ onLogin, setupRequired = false, onSetup }: LoginPage
                     >
                         <img
                             src="/logo.png"
-                            alt="FlClouds Logo"
+                            alt="TG Vault Logo"
                             className="w-20 h-20 rounded-2xl shadow-lg shadow-black/10"
                         />
                     </motion.div>
-                    <h1 className="text-2xl font-bold tracking-tight text-foreground">FlClouds</h1>
+                    <h1 className="text-2xl font-bold tracking-tight text-foreground">TG Vault</h1>
                     <p className="text-muted-foreground mt-1">
                         {setupRequired ? '首次启动，请创建唯一管理员密码' : (step === 'password' ? '请输入访问密码' : '双重身份验证')}
                     </p>

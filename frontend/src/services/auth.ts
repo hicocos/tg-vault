@@ -16,12 +16,12 @@ class AuthService {
     }
 
     setToken() {
-        // Authentication is stored only in the HttpOnly flclouds_token cookie.
+        // Authentication is stored only in the HttpOnly tg_vault_token cookie.
     }
 
     clearToken() {
-        localStorage.removeItem('flclouds_token');
-        localStorage.removeItem('flclouds_token_expiry');
+        localStorage.removeItem('tg_vault_token');
+        localStorage.removeItem('tg_vault_token_expiry');
     }
 
     isAuthenticated(): boolean {

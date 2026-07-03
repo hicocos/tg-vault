@@ -273,7 +273,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
     };
 
     const handleDeleteAccount = async (accountId: string, accountName: string) => {
-        if (!window.confirm(`确定要删除账户 "${accountName}" 吗？\n\n将删除该账户在 FlClouds 中的文件索引记录，但不会删除云端原文件。`)) return;
+        if (!window.confirm(`确定要删除账户 "${accountName}" 吗？\n\n将删除该账户在 TG Vault 中的文件索引记录，但不会删除云端原文件。`)) return;
         try {
             const result = await fileApi.deleteAccount(accountId);
             alert(result.message);
@@ -746,7 +746,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     <p className="text-xs text-muted-foreground">
                         首次配置？请参阅{" "}
                         <a
-                            href="https://github.com/hicocos/FlClouds#%EF%B8%8F-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E9%85%8D%E7%BD%AE"
+                            href="https://github.com/hicocos/tg-vault#%EF%B8%8F-%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E9%85%8D%E7%BD%AE"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 font-medium hover:underline"
@@ -1746,7 +1746,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             {/* 分隔线 */}
                             <div className="border-t border-border/50" />
 
-                            {/* FlClouds 使用量 */}
+                            {/* TG Vault 使用量 */}
                             <div className="space-y-3">
                                 <div className="flex items-center">
                                     <div className="flex items-center gap-3">
@@ -1754,11 +1754,11 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                             <Cloud className="h-5 w-5" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-medium">FlClouds 存储</p>
+                                            <p className="text-sm font-medium">TG Vault 存储</p>
                                             <div className="flex items-baseline gap-1">
-                                                <span className="text-2xl font-bold tracking-tight">{storageStats.flclouds.used}</span>
+                                                <span className="text-2xl font-bold tracking-tight">{storageStats.tgvault.used}</span>
                                                 <span className="text-sm text-muted-foreground font-medium">
-                                                    ({storageStats.flclouds.fileCount} 个文件)
+                                                    ({storageStats.tgvault.fileCount} 个文件)
                                                 </span>
                                             </div>
                                         </div>

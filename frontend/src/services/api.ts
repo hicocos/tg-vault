@@ -33,7 +33,7 @@ export interface StorageStats {
         freeBytes: number;
         usedPercent: number;
     };
-    flclouds: {
+    tgvault: {
         used: string;
         usedBytes: number;
         fileCount: number;

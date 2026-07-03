@@ -394,7 +394,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
     name = 'onedrive';
     private accessToken: string | null = null;
     private tokenExpiresAt: number = 0;
-    private readonly ONEDRIVE_FOLDER = ''; // 使用第三方存储根目录，不再额外套 FlClouds 目录
+    private readonly ONEDRIVE_FOLDER = ''; // 使用第三方存储根目录，不再额外套 TG Vault 目录
 
     constructor(
         public id: string,
@@ -890,7 +890,7 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     private oauth2Client: any;
     private drive: any;
     private tokenExpiresAt: number = 0;
-    private readonly GOOGLE_DRIVE_FOLDER = 'FlClouds';
+    private readonly GOOGLE_DRIVE_FOLDER = 'TG Vault';
     private folderIdCache = new Map<string, string>();
     private folderEnsureLocks = new Map<string, Promise<string>>();
 
