@@ -14,6 +14,8 @@ import {
     enqueueTelegramDateDownload,
     enqueueTelegramTagDownload,
     listTelegramSubscriptions,
+    type TelegramJobProgressSummary,
+    startTelegramJobRecoveryWorker,
     startTelegramSubscriptionWorker,
     subscribeTelegramChannel,
     unsubscribeTelegramChannel,
@@ -297,6 +299,26 @@ interface TelegramDownloadScanSummary {
     commentsMaxPerPost: number;
 }
 
+async function updateJobProgressMessage(statusMessage: Api.Message, summary: TelegramJobProgressSummary): Promise<void> {
+    const totalDone = summary.completed + summary.failed + summary.skipped;
+    const lines = [
+        summary.status === 'paused' ? `⏸️ **频道下载已暂停**` : summary.status === 'cancelled' ? `🛑 **频道下载已取消**` : totalDone >= summary.totalMediaFound && summary.scanStatus === 'done' ? `✅ **频道任务完成**` : `🔎 **频道任务运行中**`,
+        `🆔 job: ${summary.jobId.slice(0, 8)}`,
+        `📍 频道：${summary.source}`,
+        ``,
+        `🔎 扫描：${summary.scanStatus}`,
+        `📄 频道正文：已扫 ${summary.channelMessagesScanned} 条，发现 ${summary.channelMediaFound} 个文件`,
+        `💬 评论区：已扫 ${summary.commentMessagesScanned} 条，发现 ${summary.commentMediaFound} 个文件`,
+        ``,
+        `⬇️ 下载：${summary.downloadStatus}`,
+        `✅ 成功 ${summary.completed}　⏳ 待下载 ${summary.pending}　🔄 下载中 ${summary.downloading}　❌ 失败 ${summary.failed}　⏭ 跳过 ${summary.skipped}`,
+        summary.cooldownUntil ? `⏳ FloodWait 冷却到：${summary.cooldownUntil}` : '',
+        ``,
+        `控制：/task_pause ${summary.jobId.slice(0, 8)} · /task_resume ${summary.jobId.slice(0, 8)} · /task_cancel ${summary.jobId.slice(0, 8)}`,
+    ].filter(Boolean);
+    await statusMessage.edit({ text: lines.join('\n') }).catch(() => undefined);
+}
+
 async function updateScanStatusMessage(statusMessage: Api.Message, summary: TelegramDownloadScanSummary): Promise<void> {
     const lines = [
         `🔎 **扫描完成，开始下载**`,
@@ -498,6 +520,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                 includeComments: Boolean(state.includeComments),
                 commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
                 onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary),
+                onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
             }), 'tag');
         } catch (error) {
             await message.reply({ message: `❌ 标签下载失败: ${error instanceof Error ? error.message : String(error)}` });
@@ -529,6 +552,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             includeComments: Boolean(state.includeComments),
             commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
             onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary),
+            onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
         }), 'date');
     } catch (error) {
         await message.reply({ message: `❌ 日期下载失败: ${error instanceof Error ? error.message : String(error)}` });
@@ -1087,6 +1111,7 @@ export async function initTelegramBot(): Promise<void> {
         // 启动定期清理（每小时）
         startPeriodicCleanup();
         startTelegramSubscriptionWorker(client);
+        startTelegramJobRecoveryWorker(client);
 
         // Handle Messages
         client.addEventHandler(async (event: NewMessageEvent) => {

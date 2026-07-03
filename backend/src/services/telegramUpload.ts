@@ -1817,6 +1817,7 @@ export async function downloadTelegramChannelRange(
     explicitIds?: number[],
     folderOverride?: string | null,
     explicitRefs?: TelegramDownloadMessageRef[],
+    onItemSettled?: (item: TelegramDownloadMessageRef, status: 'success' | 'failed' | 'skipped', error?: string) => Promise<void> | void,
 ): Promise<{ requested: number; found: number; skipped: number; failed: number; successful: number; successfulMessageIds: number[]; failedMessageIds: number[]; skippedMessageIds: number[]; firstId: number; lastId: number }> {
     const userClient = getTelegramUserClient();
     if (!userClient || !isTelegramUserClientReady()) {
@@ -1860,6 +1861,7 @@ export async function downloadTelegramChannelRange(
             if (!fileInfo) {
                 skipped += 1;
                 skippedMessageIds.push(ref.id);
+                await onItemSettled?.(ref, 'skipped');
                 continue;
             }
             downloadableRefs.push({
@@ -2003,6 +2005,7 @@ export async function downloadTelegramChannelRange(
                 completed += 1;
                 failedMessageIds.push(item.id);
                 await refreshSegmentStatus(false, fileName);
+                await onItemSettled?.(item, 'failed', '消息不存在或无法重新读取');
                 return;
             }
             const uploadItem: FileUploadItem = {
@@ -2033,14 +2036,17 @@ export async function downloadTelegramChannelRange(
                 if (uploadItem.status === 'success') {
                     successful += 1;
                     successfulMessageIds.push(item.id);
+                    await onItemSettled?.(item, 'success');
                 } else {
                     failed += 1;
                     failedMessageIds.push(item.id);
+                    await onItemSettled?.(item, 'failed', uploadItem.error || '下载失败');
                 }
             } catch (err) {
                 console.error(`🤖 频道分段下载任务异常: ${fileName}`, err);
                 failed += 1;
                 failedMessageIds.push(item.id);
+                await onItemSettled?.(item, 'failed', err instanceof Error ? err.message : String(err));
             } finally {
                 completed += 1;
                 found += 1;

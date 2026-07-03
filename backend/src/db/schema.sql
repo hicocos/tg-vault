@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS telegram_background_jobs (
     kind VARCHAR(50) NOT NULL,
     source TEXT NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    scan_status TEXT DEFAULT 'pending',
+    download_status TEXT DEFAULT 'pending',
+    scan_cursor JSONB DEFAULT '{}'::jsonb,
+    cooldown_until TIMESTAMPTZ,
+    paused_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
     params JSONB DEFAULT '{}'::jsonb,
     total_count INT DEFAULT 0,
     enqueued_count INT DEFAULT 0,
@@ -130,6 +136,14 @@ CREATE TABLE IF NOT EXISTS telegram_background_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_user_created ON telegram_background_jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_status ON telegram_background_jobs(status);
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS scan_status TEXT DEFAULT 'pending';
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS download_status TEXT DEFAULT 'pending';
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS scan_cursor JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_pipeline ON telegram_background_jobs(status, scan_status, download_status);
+CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_cooldown ON telegram_background_jobs(cooldown_until);
 
 CREATE OR REPLACE TRIGGER telegram_background_jobs_updated_at
     BEFORE UPDATE ON telegram_background_jobs
@@ -141,16 +155,44 @@ CREATE TABLE IF NOT EXISTS telegram_download_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_id UUID REFERENCES telegram_background_jobs(id) ON DELETE CASCADE,
     source TEXT NOT NULL,
+    source_peer TEXT,
+    origin TEXT DEFAULT 'channel',
     message_id INT NOT NULL,
     grouped_id TEXT,
+    channel_post_id INT,
+    file_name TEXT,
+    mime_type TEXT,
+    total_size BIGINT DEFAULT 0,
+    folder_override TEXT,
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    attempts INT DEFAULT 0,
     error TEXT,
+    last_error TEXT,
+    locked_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(job_id, message_id)
 );
 
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS source_peer TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS origin TEXT DEFAULT 'channel';
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS channel_post_id INT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS file_name TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS total_size BIGINT DEFAULT 0;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS folder_override TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS attempts INT DEFAULT 0;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+UPDATE telegram_download_items SET source_peer = COALESCE(source_peer, source) WHERE source_peer IS NULL;
+ALTER TABLE telegram_download_items DROP CONSTRAINT IF EXISTS telegram_download_items_job_id_message_id_key;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_download_items_job_peer_msg
+    ON telegram_download_items(job_id, source_peer, message_id);
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_job_status ON telegram_download_items(job_id, status);
+CREATE INDEX IF NOT EXISTS idx_tg_download_items_recover ON telegram_download_items(status, locked_at);
 
 CREATE OR REPLACE TRIGGER telegram_download_items_updated_at
     BEFORE UPDATE ON telegram_download_items

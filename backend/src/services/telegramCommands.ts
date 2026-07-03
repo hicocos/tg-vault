@@ -17,7 +17,7 @@ import {
 import { authenticatedUsers, passwordInputState, isAuthenticatedAsync } from './telegramState.js';
 import { forceStopDownloadTasks, getDownloadQueueStats, getTaskStatus, pauseDownloadTasks, resumeDownloadTasks, cancelDownloadTask, retryFailedDownloadTasks, getFileDownloadConcurrency, setFileDownloadConcurrency } from './telegramUpload.js';
 import { storageManager } from './storage.js';
-import { listTelegramBackgroundJobs } from './telegramChannelJobs.js';
+import { cancelTelegramBackgroundJob, listTelegramBackgroundJobs, pauseTelegramBackgroundJob, resumeTelegramBackgroundJob, retryTelegramBackgroundJob } from './telegramChannelJobs.js';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { DuplicateMode, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { startPeriodicCleanup, stopPeriodicCleanup } from './orphanCleanup.js';
@@ -627,23 +627,56 @@ export async function handleStopTasks(message: Api.Message): Promise<void> {
 
 export async function handlePauseTasks(message: Api.Message, args: string[] = []): Promise<void> {
     const taskId = args[0];
+    const senderId = message.senderId?.toJSNumber();
+    if (taskId && senderId) {
+        const job = await pauseTelegramBackgroundJob(senderId, taskId);
+        if (job) {
+            await message.reply({ message: `⏸️ 已暂停频道任务 ${String(job.id).slice(0, 8)}\n来源：${job.source}` });
+            return;
+        }
+    }
     const result = pauseDownloadTasks(taskId);
     await message.reply({ message: `⏸️ 已暂停全局下载队列${taskId ? `\n任务卡: ${taskId}` : ''}\n\n进行中: ${result.active}\n等待中: ${result.pending}\n\n当前正在下载的文件会继续完成，新的等待任务暂不开始。` });
 }
 
 export async function handleResumeTasks(message: Api.Message, args: string[] = []): Promise<void> {
     const taskId = args[0];
+    const senderId = message.senderId?.toJSNumber();
+    if (taskId && senderId) {
+        const job = await resumeTelegramBackgroundJob(senderId, taskId);
+        if (job) {
+            await message.reply({ message: `▶️ 已继续频道任务 ${String(job.id).slice(0, 8)}\n来源：${job.source}` });
+            return;
+        }
+    }
     const result = resumeDownloadTasks(taskId);
     await message.reply({ message: `▶️ 已继续全局下载队列${taskId ? `\n任务卡: ${taskId}` : ''}\n\n进行中: ${result.active}\n等待中: ${result.pending}` });
 }
 
 export async function handleCancelTask(message: Api.Message, args: string[]): Promise<void> {
     const selector = args.join(' ').trim() || 'all';
+    const senderId = message.senderId?.toJSNumber();
+    if (selector !== 'all' && senderId) {
+        const job = await cancelTelegramBackgroundJob(senderId, selector);
+        if (job) {
+            await message.reply({ message: `🛑 已取消频道任务 ${String(job.id).slice(0, 8)}\n来源：${job.source}` });
+            return;
+        }
+    }
     const result = cancelDownloadTask(selector);
     await message.reply({ message: result.total > 0 ? `🛑 已取消匹配任务\n\n匹配: ${selector}\n处理中: ${result.active}\n等待中: ${result.pending}` : `📮 没有找到匹配的任务，未清空全局队列：${selector}` });
 }
 
 export async function handleRetryFailedTasks(message: Api.Message, args: string[]): Promise<void> {
+    const senderId = message.senderId?.toJSNumber();
+    const jobSelector = args.find(arg => /^[0-9a-f-]{4,}$/i.test(arg));
+    if (senderId && jobSelector) {
+        const jobRetry = await retryTelegramBackgroundJob(senderId, jobSelector);
+        if (jobRetry) {
+            await message.reply({ message: jobRetry.retried > 0 ? `🔄 已重新加入频道任务失败项 ${jobRetry.retried} 个\n任务: ${String(jobRetry.id).slice(0, 8)}` : '📮 该频道任务没有可重试失败项' });
+            return;
+        }
+    }
     const taskId = args.find(arg => /^t[a-z0-9]+/i.test(arg));
     const numericArg = args.find(arg => /^\d+$/.test(arg));
     const limit = Math.max(1, Math.min(50, parseInt(numericArg || '10', 10) || 10));
