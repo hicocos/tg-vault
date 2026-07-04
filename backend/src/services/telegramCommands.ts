@@ -18,7 +18,7 @@ import {
 import { authenticatedUsers, passwordInputState, isAuthenticatedAsync } from './telegramState.js';
 import { forceStopDownloadTasks, getDownloadQueueStats, getTaskStatus, pauseDownloadTasks, resumeDownloadTasks, cancelDownloadTask, retryFailedDownloadTasks, getFileDownloadConcurrency, setFileDownloadConcurrency } from './telegramUpload.js';
 import { storageManager } from './storage.js';
-import { cancelTelegramBackgroundJob, listTelegramBackgroundJobs, pauseTelegramBackgroundJob, resumeTelegramBackgroundJob, retryTelegramBackgroundJob } from './telegramChannelJobs.js';
+import { cancelAllTelegramBackgroundJobs, cancelTelegramBackgroundJob, listTelegramActiveTaskQueues, pauseTelegramBackgroundJob, resumeTelegramBackgroundJob, retryTelegramBackgroundJob } from './telegramChannelJobs.js';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { DuplicateMode, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { startPeriodicCleanup, stopPeriodicCleanup } from './orphanCleanup.js';
@@ -744,34 +744,119 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
     }
 }
 
+function formatTaskAge(value: unknown): string | null {
+    if (!value) return null;
+    const ms = new Date(value as string).getTime();
+    if (!Number.isFinite(ms) || ms <= 0) return null;
+    const diffSeconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+    if (diffSeconds < 60) return '刚刚';
+    const diffMinutes = Math.floor(diffSeconds / 60);
+    if (diffMinutes < 60) return `${diffMinutes} 分钟前`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `${diffHours} 小时前`;
+    return `${Math.floor(diffHours / 24)} 天前`;
+}
+
+function buildChannelTaskQueueReport(jobs: any[]): string {
+    const labelStatus = (value: string | undefined) => ({
+        pending: '等待',
+        queued: '排队',
+        scanning: '扫描中',
+        active: '传输中',
+        done: '完成',
+        running: '运行中',
+        paused: '已暂停',
+        failed: '失败',
+        cancelled: '已取消',
+        completed: '完成',
+        completed_with_errors: '部分完成',
+    } as Record<string, string>)[value || ''] || (value || '未知');
+
+    const lines = ['📡 **频道任务队列**'];
+    jobs.forEach((job: any, index: number) => {
+        const total = Number(job.total_count || job.item_count || 0);
+        const pending = Number(job.pending_count || 0);
+        const downloading = Number(job.downloading_count || 0);
+        const success = Number(job.success_count || 0);
+        const failed = Number(job.failed_count || 0);
+        const skipped = Number(job.skipped_count_items || job.skipped_count || 0);
+        const done = success + failed + skipped;
+        const missing = Number(job.missing_metadata_count || 0);
+        const activeNow = Boolean(job.is_actively_running);
+        const paused = job.status === 'paused';
+        const cooldownUntilMs = job.cooldown_until ? new Date(job.cooldown_until).getTime() : 0;
+        const inCooldown = cooldownUntilMs > Date.now();
+        const statusText = paused ? '已暂停' : inCooldown ? '冷却等待中' : activeNow ? '正在运行' : '等待接手';
+        const icon = paused ? '⏸️' : inCooldown ? '🧊' : activeNow ? '🟢' : '⏳';
+        const updatedText = formatTaskAge(job.updated_at);
+        const id = String(job.id).slice(0, 8);
+        lines.push([
+            '',
+            `${index + 1}. ${icon} **${statusText}** · ${job.kind}`,
+            `   来源：${job.source}`,
+            `   阶段：扫描 ${labelStatus(job.scan_status)} · 下载 ${labelStatus(job.download_status)}`,
+            `   队列：下载中 ${downloading} · 待处理 ${pending} · 已完成 ${done}/${total}`,
+            failed > 0 ? `   异常：失败 ${failed} · 跳过 ${skipped}` : (skipped > 0 ? `   跳过：${skipped}` : ''),
+            missing > 0 ? `   提示：${missing} 个待处理条目正在补全文件信息` : '',
+            inCooldown ? `   冷却到：${new Date(job.cooldown_until).toLocaleString('zh-CN', { hour12: false })}` : '',
+            updatedText ? `   最近活动：${updatedText}` : '',
+            `   ID：${id}`,
+        ].filter(Boolean).join('\n'));
+    });
+    return lines.join('\n');
+}
+
+function buildTasksKeyboard(jobs: any[]): Api.ReplyInlineMarkup | undefined {
+    if (jobs.length === 0) return undefined;
+    const rows: Api.KeyboardButtonRow[] = [];
+    for (const job of jobs.slice(0, 8)) {
+        const id = String(job.id).slice(0, 8);
+        const paused = job.status === 'paused';
+        rows.push(new Api.KeyboardButtonRow({
+            buttons: [
+                new Api.KeyboardButtonCallback({
+                    text: `${paused ? '▶️ 继续' : '⏸ 暂停'} ${id}`,
+                    data: Buffer.from(`ctq_${paused ? 'resume' : 'pause'}_${id}`),
+                }),
+                new Api.KeyboardButtonCallback({
+                    text: `🛑 取消 ${id}`,
+                    data: Buffer.from(`ctq_cancel_${id}`),
+                }),
+            ],
+        }));
+    }
+    if (jobs.length > 1) {
+        rows.push(new Api.KeyboardButtonRow({
+            buttons: [new Api.KeyboardButtonCallback({ text: '🛑 取消全部频道任务', data: Buffer.from('ctq_cancel_all') })],
+        }));
+    }
+    return new Api.ReplyInlineMarkup({ rows });
+}
+
 export async function handleTasks(message: Api.Message): Promise<void> {
     try {
         const status = getTaskStatus();
         const activeCount = status.active.length;
         const pendingCount = status.pending.length;
-        const historyCount = status.history.length;
         const senderId = message.senderId?.toJSNumber();
-        const jobs = senderId ? await listTelegramBackgroundJobs(senderId, 5) : [];
+        const jobs = senderId ? await listTelegramActiveTaskQueues(senderId, 10) : [];
 
-        if (activeCount === 0 && pendingCount === 0 && historyCount === 0 && jobs.length === 0) {
+        if (activeCount === 0 && pendingCount === 0 && jobs.length === 0) {
             await message.reply({ message: MSG.EMPTY_TASKS });
             return;
         }
 
-        const sections = [buildTasksReport(status.active, status.pending, status.history)];
-        if (jobs.length > 0) {
-            sections.push([
-                '📡 **频道后台任务**',
-                ...jobs.map((job: any, index: number) => [
-                    `${index + 1}. ${job.kind} · ${job.status}`,
-                    `   来源：${job.source}`,
-                    `   进度：${job.enqueued_count || 0}/${job.total_count || 0}　跳过：${job.skipped_count || 0}`,
-                    job.error ? `   ⚠️ ${job.error}` : '',
-                    `   ID: ${String(job.id).slice(0, 8)}`,
-                ].filter(Boolean).join('\n')),
-            ].join('\n'));
+        const sections: string[] = [];
+        if (activeCount > 0 || pendingCount > 0) {
+            sections.push(buildTasksReport(status.active, status.pending));
         }
-        await message.reply({ message: sections.filter(Boolean).join('\n\n') });
+        if (jobs.length > 0) {
+            sections.push(buildChannelTaskQueueReport(jobs));
+        }
+        await message.reply({
+            message: sections.filter(Boolean).join('\n\n'),
+            buttons: buildTasksKeyboard(jobs),
+        });
 
     } catch (error) {
         console.error('🤖 获取任务列表失败:', error);
@@ -827,15 +912,66 @@ export async function handleResumeTasks(message: Api.Message, args: string[] = [
 export async function handleCancelTask(message: Api.Message, args: string[]): Promise<void> {
     const selector = args.join(' ').trim() || 'all';
     const senderId = message.senderId?.toJSNumber();
-    if (selector !== 'all' && senderId) {
-        const job = await cancelTelegramBackgroundJob(senderId, selector);
-        if (job) {
-            await message.reply({ message: `🛑 已取消频道任务 ${String(job.id).slice(0, 8)}\n来源：${job.source}` });
-            return;
+    if (senderId) {
+        if (selector === 'all') {
+            const jobs = await cancelAllTelegramBackgroundJobs(senderId);
+            const result = cancelDownloadTask(selector);
+            if (jobs.length > 0 || result.total > 0) {
+                await message.reply({ message: `🛑 已取消任务\n\n频道任务: ${jobs.length}\n普通下载: 处理中 ${result.active} / 等待 ${result.pending}` });
+                return;
+            }
+        } else {
+            const job = await cancelTelegramBackgroundJob(senderId, selector);
+            if (job) {
+                await message.reply({ message: `🛑 已取消频道任务 ${String(job.id).slice(0, 8)}\n来源：${job.source}` });
+                return;
+            }
         }
     }
     const result = cancelDownloadTask(selector);
     await message.reply({ message: result.total > 0 ? `🛑 已取消匹配任务\n\n匹配: ${selector}\n处理中: ${result.active}\n等待中: ${result.pending}` : `📮 没有找到匹配的任务，未清空全局队列：${selector}` });
+}
+
+export async function handleChannelTaskQueueCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    try {
+        const match = data.match(/^ctq_(pause|resume|cancel)_([0-9a-f]{4,}|all)$/i);
+        if (!match) return;
+        const [, action, selector] = match;
+        let toast = '';
+        if (selector === 'all' && action === 'cancel') {
+            const jobs = await cancelAllTelegramBackgroundJobs(userId);
+            toast = jobs.length > 0 ? `已取消 ${jobs.length} 个频道任务` : '没有可取消的频道任务';
+        } else if (action === 'pause') {
+            const job = await pauseTelegramBackgroundJob(userId, selector);
+            toast = job ? `已暂停 ${String(job.id).slice(0, 8)}` : '任务不存在或已结束';
+        } else if (action === 'resume') {
+            const job = await resumeTelegramBackgroundJob(userId, selector);
+            toast = job ? `已继续 ${String(job.id).slice(0, 8)}` : '任务不存在或不在暂停状态';
+        } else {
+            const job = await cancelTelegramBackgroundJob(userId, selector);
+            toast = job ? `已取消 ${String(job.id).slice(0, 8)}` : '任务不存在或已结束';
+        }
+
+        const jobs = await listTelegramActiveTaskQueues(userId, 10);
+        const status = getTaskStatus();
+        const sections: string[] = [];
+        if (status.active.length > 0 || status.pending.length > 0) sections.push(buildTasksReport(status.active, status.pending));
+        if (jobs.length > 0) sections.push(buildChannelTaskQueueReport(jobs));
+        await client.editMessage(update.peer, {
+            message: Number(update.msgId),
+            text: sections.length > 0 ? sections.join('\\n\\n') : MSG.EMPTY_TASKS,
+            buttons: buildTasksKeyboard(jobs) || new Api.ReplyInlineMarkup({ rows: [] }),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast }));
+    } catch (error) {
+        console.error('🤖 频道任务按钮操作失败:', error);
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `操作失败: ${(error as Error).message}`, alert: true }));
+    }
 }
 
 export async function handleRetryFailedTasks(message: Api.Message, args: string[]): Promise<void> {

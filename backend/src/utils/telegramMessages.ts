@@ -348,49 +348,37 @@ interface TaskItem {
 export function buildTasksReport(
     active: TaskItem[],
     pending: TaskItem[],
-    history: TaskItem[]
+    _history: TaskItem[] = []
 ): string {
     const lines: string[] = [
-        `📋 **任务队列状态**`,
-        `🔄 ${active.length} 进行中　⏳ ${pending.length} 等待中`,
+        `📋 **实时下载队列**`,
+        `🔄 ${active.length} 正在下载　⏳ ${pending.length} 等待开始`,
         LINE,
     ];
 
     if (active.length > 0) {
         lines.push('');
-        lines.push(`**🔄 正在处理**`);
+        lines.push(`**🔄 正在下载**`);
         active.forEach(task => {
             lines.push(`  ▸ ${task.fileName}`);
             if (task.totalSize && task.downloadedSize) {
                 const bar = generateProgressBar(task.downloadedSize, task.totalSize, 10);
                 lines.push(`    ${bar}  (${formatBytes(task.downloadedSize)}/${formatBytes(task.totalSize)})`);
             } else {
-                lines.push(`    ⏳ 下载中...`);
+                lines.push(`    传输中，请稍候...`);
             }
         });
     }
 
     if (pending.length > 0) {
         lines.push('');
-        lines.push(`**⏳ 等待队列** (前 5 个)`);
+        lines.push(`**⏳ 等待开始** (前 5 个)`);
         pending.slice(0, 5).forEach((task, i) => {
             lines.push(`  ${i + 1}. ${task.fileName}`);
         });
         if (pending.length > 5) {
-            lines.push(`  ... 还有 ${pending.length - 5} 个任务`);
+            lines.push(`  ... 还有 ${pending.length - 5} 个等待任务`);
         }
-    }
-
-    if (history.length > 0) {
-        lines.push('');
-        lines.push(`**🕒 最近完成** (前 5 个)`);
-        history.slice(0, 5).forEach(task => {
-            const icon = task.status === 'success' ? '✅' : task.status === 'cancelled' ? '🛑' : '❌';
-            lines.push(`  ${icon} ${task.fileName}`);
-            if ((task.status === 'failed' || task.status === 'cancelled') && task.error) {
-                lines.push(`      原因: ${task.error}`);
-            }
-        });
     }
 
     return lines.join('\n');

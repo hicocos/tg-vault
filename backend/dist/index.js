@@ -2291,45 +2291,34 @@ function buildStorageReport(data) {
     `  \u{1F504} \u5904\u7406\u4E2D ${data.queueActive}\u3000\u23F3 \u7B49\u5F85\u4E2D ${data.queuePending}`
   ].join("\n");
 }
-function buildTasksReport(active, pending, history) {
+function buildTasksReport(active, pending, _history = []) {
   const lines = [
-    `\u{1F4CB} **\u4EFB\u52A1\u961F\u5217\u72B6\u6001**`,
-    `\u{1F504} ${active.length} \u8FDB\u884C\u4E2D\u3000\u23F3 ${pending.length} \u7B49\u5F85\u4E2D`,
+    `\u{1F4CB} **\u5B9E\u65F6\u4E0B\u8F7D\u961F\u5217**`,
+    `\u{1F504} ${active.length} \u6B63\u5728\u4E0B\u8F7D\u3000\u23F3 ${pending.length} \u7B49\u5F85\u5F00\u59CB`,
     LINE
   ];
   if (active.length > 0) {
     lines.push("");
-    lines.push(`**\u{1F504} \u6B63\u5728\u5904\u7406**`);
+    lines.push(`**\u{1F504} \u6B63\u5728\u4E0B\u8F7D**`);
     active.forEach((task) => {
       lines.push(`  \u25B8 ${task.fileName}`);
       if (task.totalSize && task.downloadedSize) {
         const bar = generateProgressBar(task.downloadedSize, task.totalSize, 10);
         lines.push(`    ${bar}  (${formatBytes(task.downloadedSize)}/${formatBytes(task.totalSize)})`);
       } else {
-        lines.push(`    \u23F3 \u4E0B\u8F7D\u4E2D...`);
+        lines.push(`    \u4F20\u8F93\u4E2D\uFF0C\u8BF7\u7A0D\u5019...`);
       }
     });
   }
   if (pending.length > 0) {
     lines.push("");
-    lines.push(`**\u23F3 \u7B49\u5F85\u961F\u5217** (\u524D 5 \u4E2A)`);
+    lines.push(`**\u23F3 \u7B49\u5F85\u5F00\u59CB** (\u524D 5 \u4E2A)`);
     pending.slice(0, 5).forEach((task, i) => {
       lines.push(`  ${i + 1}. ${task.fileName}`);
     });
     if (pending.length > 5) {
-      lines.push(`  ... \u8FD8\u6709 ${pending.length - 5} \u4E2A\u4EFB\u52A1`);
+      lines.push(`  ... \u8FD8\u6709 ${pending.length - 5} \u4E2A\u7B49\u5F85\u4EFB\u52A1`);
     }
-  }
-  if (history.length > 0) {
-    lines.push("");
-    lines.push(`**\u{1F552} \u6700\u8FD1\u5B8C\u6210** (\u524D 5 \u4E2A)`);
-    history.slice(0, 5).forEach((task) => {
-      const icon = task.status === "success" ? "\u2705" : task.status === "cancelled" ? "\u{1F6D1}" : "\u274C";
-      lines.push(`  ${icon} ${task.fileName}`);
-      if ((task.status === "failed" || task.status === "cancelled") && task.error) {
-        lines.push(`      \u539F\u56E0: ${task.error}`);
-      }
-    });
   }
   return lines.join("\n");
 }
@@ -5539,11 +5528,11 @@ async function markDownloadRefStatus(jobId, ref, status, error) {
   const sourcePeer = sourcePeerKey(ref.source, ref.origin === "comment" ? "comment" : "channel");
   await query(
     `UPDATE telegram_download_items
-         SET status = $3,
+         SET status = $3::varchar,
              error = $4,
              last_error = $4,
-             attempts = CASE WHEN $3 = 'failed' THEN attempts + 1 ELSE attempts END,
-             completed_at = CASE WHEN $3 IN ('success', 'skipped') THEN NOW() ELSE completed_at END,
+             attempts = CASE WHEN $3::text = 'failed' THEN attempts + 1 ELSE attempts END,
+             completed_at = CASE WHEN $3::text IN ('success', 'skipped') THEN NOW() ELSE completed_at END,
              locked_at = NULL,
              updated_at = NOW()
          WHERE job_id = $1 AND source_peer = $2 AND message_id = $5`,
@@ -5589,6 +5578,54 @@ async function updateJob(jobId, updates) {
   if (entries.length === 0) return;
   const setSql = entries.map(([key], index) => `${key} = $${index + 2}`).join(", ");
   await query(`UPDATE telegram_background_jobs SET ${setSql}, updated_at = NOW() WHERE id = $1`, [jobId, ...entries.map(([, value]) => value)]);
+}
+async function hydratePendingDownloadRefs(userClient2, jobId) {
+  const result = await query(
+    `SELECT id, source_peer, message_id
+         FROM telegram_download_items
+         WHERE job_id = $1
+           AND status = 'pending'
+           AND (file_name IS NULL OR mime_type IS NULL)
+         ORDER BY created_at ASC
+         LIMIT 100`,
+    [jobId]
+  );
+  let hydrated = 0;
+  for (const row of result.rows) {
+    try {
+      const messages = await userClient2.getMessages(row.source_peer, { ids: [Number(row.message_id)] });
+      const message = messages?.[0];
+      if (!message) {
+        await query(
+          `UPDATE telegram_download_items
+                     SET status = 'failed', error = $2, last_error = $2, attempts = attempts + 1, updated_at = NOW()
+                     WHERE id = $1`,
+          [row.id, "\u6D88\u606F\u4E0D\u5B58\u5728\uFF0C\u65E0\u6CD5\u8865\u5168\u6587\u4EF6\u5143\u6570\u636E"]
+        );
+        continue;
+      }
+      const fileInfo = extractFileInfo(message);
+      if (!fileInfo) {
+        await query(
+          `UPDATE telegram_download_items
+                     SET status = 'skipped', error = $2, last_error = $2, completed_at = NOW(), updated_at = NOW()
+                     WHERE id = $1`,
+          [row.id, "\u6D88\u606F\u4E0D\u5305\u542B\u53EF\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u65E0\u6CD5\u8865\u5168\u6587\u4EF6\u5143\u6570\u636E"]
+        );
+        continue;
+      }
+      await query(
+        `UPDATE telegram_download_items
+                 SET file_name = $2, mime_type = $3, total_size = $4, updated_at = NOW()
+                 WHERE id = $1`,
+        [row.id, fileInfo.fileName, fileInfo.mimeType, getEstimatedFileSize(message)]
+      );
+      hydrated += 1;
+    } catch (error) {
+      console.warn("\u267B\uFE0F \u8865\u5168 Telegram \u4E0B\u8F7D\u6761\u76EE\u5143\u6570\u636E\u5931\u8D25:", error);
+    }
+  }
+  return hydrated;
 }
 async function subscribeTelegramChannel(userId, chatId, sourceInput, folderOverride) {
   const userClient2 = requireUserClient();
@@ -5713,7 +5750,11 @@ async function claimPendingDownloadRefs(jobId, limit = TG_JOB_DOWNLOAD_BATCH_SIZ
          SET status = 'downloading', locked_at = NOW(), updated_at = NOW()
          WHERE i.id IN (
              SELECT id FROM telegram_download_items
-             WHERE job_id = $1 AND status = 'pending' AND attempts < $2
+             WHERE job_id = $1
+               AND status = 'pending'
+               AND attempts < $2
+               AND file_name IS NOT NULL
+               AND mime_type IS NOT NULL
              ORDER BY created_at ASC
              LIMIT $3
          )
@@ -5752,7 +5793,9 @@ async function downloadClaimedRefs(botClient, requestMessage, jobId, source, ref
 }
 async function downloadPendingForJob(botClient, requestMessage, jobId, source, folderOverride, options, drain = false) {
   let aggregate = { found: 0, skipped: 0, failed: 0, successful: 0 };
+  const userClient2 = getTelegramUserClient();
   while (await waitUntilRunnable(jobId, options)) {
+    if (userClient2) await hydratePendingDownloadRefs(userClient2, jobId);
     const refs = await claimPendingDownloadRefs(jobId);
     if (refs.length === 0) break;
     const result = await downloadClaimedRefs(botClient, requestMessage, jobId, source, refs, folderOverride, options);
@@ -5904,12 +5947,65 @@ async function enqueueTelegramTagDownload(botClient, requestMessage, userId, sou
   const result = await runSegmentedTelegramJob(botClient, requestMessage, jobId, source, folderOverride, options);
   return { ...result, tag };
 }
-async function listTelegramBackgroundJobs(userId, limit = 10) {
+async function listTelegramActiveTaskQueues(userId, limit = 10) {
   const result = await query(
-    `SELECT id, kind, source, status, scan_status, download_status, scan_cursor, cooldown_until, paused_at, cancelled_at, total_count, enqueued_count, skipped_count, duplicate_count, error, created_at, updated_at
-         FROM telegram_background_jobs
-         WHERE user_id = $1
-         ORDER BY created_at DESC
+    `WITH item_stats AS (
+             SELECT
+                 job_id,
+                 COUNT(*)::int AS item_count,
+                 COUNT(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+                 COUNT(*) FILTER (WHERE status = 'downloading')::int AS downloading_count,
+                 COUNT(*) FILTER (WHERE status = 'success')::int AS success_count,
+                 COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_count,
+                 COUNT(*) FILTER (WHERE status = 'skipped')::int AS skipped_count_items,
+                 COUNT(*) FILTER (WHERE status = 'pending' AND (file_name IS NULL OR mime_type IS NULL))::int AS missing_metadata_count,
+                 MAX(updated_at) FILTER (WHERE status IN ('pending', 'downloading')) AS queue_updated_at
+             FROM telegram_download_items
+             GROUP BY job_id
+         )
+         SELECT
+             j.id, j.kind, j.source, j.status, j.scan_status, j.download_status,
+             j.scan_cursor, j.cooldown_until, j.paused_at, j.cancelled_at,
+             j.total_count, j.enqueued_count, j.skipped_count, j.duplicate_count,
+             j.error, j.started_at, j.finished_at, j.created_at, j.updated_at,
+             COALESCE(s.item_count, 0)::int AS item_count,
+             COALESCE(s.pending_count, 0)::int AS pending_count,
+             COALESCE(s.downloading_count, 0)::int AS downloading_count,
+             COALESCE(s.success_count, 0)::int AS success_count,
+             COALESCE(s.failed_count, 0)::int AS failed_count,
+             COALESCE(s.skipped_count_items, 0)::int AS skipped_count_items,
+             COALESCE(s.missing_metadata_count, 0)::int AS missing_metadata_count,
+             s.queue_updated_at,
+             (
+                 j.status = 'running'
+                 AND (
+                     COALESCE(s.downloading_count, 0) > 0
+                     OR j.scan_status = 'scanning'
+                     OR (j.cooldown_until IS NOT NULL AND j.cooldown_until > NOW())
+                 )
+             ) AS is_actively_running
+         FROM telegram_background_jobs j
+         LEFT JOIN item_stats s ON s.job_id = j.id
+         WHERE j.user_id = $1
+           AND j.cancelled_at IS NULL
+           AND j.finished_at IS NULL
+           AND (
+               (
+                   j.status = 'running'
+                   AND (
+                       COALESCE(s.downloading_count, 0) > 0
+                       OR j.scan_status = 'scanning'
+                       OR (j.cooldown_until IS NOT NULL AND j.cooldown_until > NOW())
+                   )
+               )
+               OR (
+                   j.status = 'paused'
+                   AND (COALESCE(s.pending_count, 0) > 0 OR COALESCE(s.downloading_count, 0) > 0 OR j.scan_status = 'scanning')
+               )
+           )
+         ORDER BY
+             CASE WHEN j.status = 'paused' THEN 1 ELSE 0 END,
+             COALESCE(s.queue_updated_at, j.updated_at) DESC
          LIMIT $2`,
     [userId, limit]
   );
@@ -5919,7 +6015,7 @@ async function pauseTelegramBackgroundJob(userId, selector) {
   const result = await query(
     `UPDATE telegram_background_jobs
          SET status = 'paused', paused_at = NOW(), updated_at = NOW()
-         WHERE user_id = $1 AND id::text LIKE $2 AND status NOT IN ('completed', 'cancelled')
+         WHERE user_id = $1 AND id::text LIKE $2 AND finished_at IS NULL AND status NOT IN ('completed', 'completed_with_errors', 'cancelled')
          RETURNING id, source, status`,
     [userId, `${selector}%`]
   );
@@ -5928,8 +6024,8 @@ async function pauseTelegramBackgroundJob(userId, selector) {
 async function resumeTelegramBackgroundJob(userId, selector) {
   const result = await query(
     `UPDATE telegram_background_jobs
-         SET status = 'running', paused_at = NULL, updated_at = NOW()
-         WHERE user_id = $1 AND id::text LIKE $2 AND status = 'paused'
+         SET status = 'running', paused_at = NULL, finished_at = NULL, error = NULL, download_status = 'active', updated_at = NOW()
+         WHERE user_id = $1 AND id::text LIKE $2 AND cancelled_at IS NULL AND status = 'paused'
          RETURNING id, source, status`,
     [userId, `${selector}%`]
   );
@@ -5939,7 +6035,7 @@ async function cancelTelegramBackgroundJob(userId, selector) {
   const result = await query(
     `UPDATE telegram_background_jobs
          SET status = 'cancelled', scan_status = 'cancelled', download_status = 'cancelled', cancelled_at = NOW(), finished_at = NOW(), updated_at = NOW()
-         WHERE user_id = $1 AND id::text LIKE $2 AND status NOT IN ('completed', 'cancelled')
+         WHERE user_id = $1 AND id::text LIKE $2 AND finished_at IS NULL AND status NOT IN ('completed', 'completed_with_errors', 'cancelled')
          RETURNING id, source, status`,
     [userId, `${selector}%`]
   );
@@ -5947,6 +6043,27 @@ async function cancelTelegramBackgroundJob(userId, selector) {
     await query(`UPDATE telegram_download_items SET status = 'skipped', locked_at = NULL, updated_at = NOW() WHERE job_id = $1 AND status IN ('pending', 'downloading')`, [result.rows[0].id]);
   }
   return result.rows[0] || null;
+}
+async function cancelAllTelegramBackgroundJobs(userId) {
+  const result = await query(
+    `UPDATE telegram_background_jobs
+         SET status = 'cancelled', scan_status = 'cancelled', download_status = 'cancelled', cancelled_at = NOW(), finished_at = NOW(), updated_at = NOW()
+         WHERE user_id = $1
+           AND status NOT IN ('completed', 'completed_with_errors', 'cancelled')
+         RETURNING id, source, status`,
+    [userId]
+  );
+  const ids = result.rows.map((row) => row.id);
+  if (ids.length > 0) {
+    await query(
+      `UPDATE telegram_download_items
+             SET status = 'skipped', locked_at = NULL, updated_at = NOW()
+             WHERE job_id = ANY($1::uuid[])
+               AND status IN ('pending', 'downloading')`,
+      [ids]
+    );
+  }
+  return result.rows;
 }
 async function retryTelegramBackgroundJob(userId, selector) {
   const result = await query(
@@ -6018,6 +6135,16 @@ async function recoverTelegramJob(botClient, job) {
     [job.id]
   );
   if (itemResult.rows.length === 0) return;
+  const missingMetadata = itemResult.rows.filter((row) => !row.file_name || !row.mime_type).length;
+  if (missingMetadata > 0) {
+    const userClient2 = getTelegramUserClient();
+    if (userClient2) {
+      await hydratePendingDownloadRefs(userClient2, job.id);
+      return recoverTelegramJob(botClient, job);
+    }
+    await updateJob(job.id, { status: "failed", error: `${missingMetadata} \u4E2A\u5F85\u4E0B\u8F7D\u6761\u76EE\u7F3A\u5C11\u6587\u4EF6\u5143\u6570\u636E\uFF0C\u65E0\u6CD5\u6062\u590D`, finished_at: /* @__PURE__ */ new Date() });
+    return;
+  }
   const refs = itemResult.rows.filter((row) => row.file_name && row.mime_type).map((row) => ({
     id: Number(row.message_id),
     source: row.source_peer || row.source,
@@ -6074,6 +6201,8 @@ async function recoverInterruptedTelegramJobs(botClient) {
              FROM telegram_background_jobs j
              JOIN telegram_download_items i ON i.job_id = j.id
              WHERE j.kind IN ('date_range', 'tag_download')
+               AND j.finished_at IS NULL
+               AND j.cancelled_at IS NULL
                AND j.status IN ('pending', 'running', 'failed', 'completed_with_errors')
                AND i.status = 'pending'
              ORDER BY j.created_at ASC
@@ -6907,32 +7036,113 @@ async function handleDeleteConfirmCallback(client2, update, data) {
     await client2.invoke(new Api5.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u5220\u9664\u5931\u8D25: ${error.message}`, alert: true }));
   }
 }
+function formatTaskAge(value) {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const diffSeconds = Math.max(0, Math.floor((Date.now() - ms) / 1e3));
+  if (diffSeconds < 60) return "\u521A\u521A";
+  const diffMinutes = Math.floor(diffSeconds / 60);
+  if (diffMinutes < 60) return `${diffMinutes} \u5206\u949F\u524D`;
+  const diffHours = Math.floor(diffMinutes / 60);
+  if (diffHours < 24) return `${diffHours} \u5C0F\u65F6\u524D`;
+  return `${Math.floor(diffHours / 24)} \u5929\u524D`;
+}
+function buildChannelTaskQueueReport(jobs) {
+  const labelStatus = (value) => ({
+    pending: "\u7B49\u5F85",
+    queued: "\u6392\u961F",
+    scanning: "\u626B\u63CF\u4E2D",
+    active: "\u4F20\u8F93\u4E2D",
+    done: "\u5B8C\u6210",
+    running: "\u8FD0\u884C\u4E2D",
+    paused: "\u5DF2\u6682\u505C",
+    failed: "\u5931\u8D25",
+    cancelled: "\u5DF2\u53D6\u6D88",
+    completed: "\u5B8C\u6210",
+    completed_with_errors: "\u90E8\u5206\u5B8C\u6210"
+  })[value || ""] || (value || "\u672A\u77E5");
+  const lines = ["\u{1F4E1} **\u9891\u9053\u4EFB\u52A1\u961F\u5217**"];
+  jobs.forEach((job, index) => {
+    const total = Number(job.total_count || job.item_count || 0);
+    const pending = Number(job.pending_count || 0);
+    const downloading = Number(job.downloading_count || 0);
+    const success = Number(job.success_count || 0);
+    const failed = Number(job.failed_count || 0);
+    const skipped = Number(job.skipped_count_items || job.skipped_count || 0);
+    const done = success + failed + skipped;
+    const missing = Number(job.missing_metadata_count || 0);
+    const activeNow = Boolean(job.is_actively_running);
+    const paused = job.status === "paused";
+    const cooldownUntilMs = job.cooldown_until ? new Date(job.cooldown_until).getTime() : 0;
+    const inCooldown = cooldownUntilMs > Date.now();
+    const statusText = paused ? "\u5DF2\u6682\u505C" : inCooldown ? "\u51B7\u5374\u7B49\u5F85\u4E2D" : activeNow ? "\u6B63\u5728\u8FD0\u884C" : "\u7B49\u5F85\u63A5\u624B";
+    const icon = paused ? "\u23F8\uFE0F" : inCooldown ? "\u{1F9CA}" : activeNow ? "\u{1F7E2}" : "\u23F3";
+    const updatedText = formatTaskAge(job.updated_at);
+    const id = String(job.id).slice(0, 8);
+    lines.push([
+      "",
+      `${index + 1}. ${icon} **${statusText}** \xB7 ${job.kind}`,
+      `   \u6765\u6E90\uFF1A${job.source}`,
+      `   \u9636\u6BB5\uFF1A\u626B\u63CF ${labelStatus(job.scan_status)} \xB7 \u4E0B\u8F7D ${labelStatus(job.download_status)}`,
+      `   \u961F\u5217\uFF1A\u4E0B\u8F7D\u4E2D ${downloading} \xB7 \u5F85\u5904\u7406 ${pending} \xB7 \u5DF2\u5B8C\u6210 ${done}/${total}`,
+      failed > 0 ? `   \u5F02\u5E38\uFF1A\u5931\u8D25 ${failed} \xB7 \u8DF3\u8FC7 ${skipped}` : skipped > 0 ? `   \u8DF3\u8FC7\uFF1A${skipped}` : "",
+      missing > 0 ? `   \u63D0\u793A\uFF1A${missing} \u4E2A\u5F85\u5904\u7406\u6761\u76EE\u6B63\u5728\u8865\u5168\u6587\u4EF6\u4FE1\u606F` : "",
+      inCooldown ? `   \u51B7\u5374\u5230\uFF1A${new Date(job.cooldown_until).toLocaleString("zh-CN", { hour12: false })}` : "",
+      updatedText ? `   \u6700\u8FD1\u6D3B\u52A8\uFF1A${updatedText}` : "",
+      `   ID\uFF1A${id}`
+    ].filter(Boolean).join("\n"));
+  });
+  return lines.join("\n");
+}
+function buildTasksKeyboard(jobs) {
+  if (jobs.length === 0) return void 0;
+  const rows = [];
+  for (const job of jobs.slice(0, 8)) {
+    const id = String(job.id).slice(0, 8);
+    const paused = job.status === "paused";
+    rows.push(new Api5.KeyboardButtonRow({
+      buttons: [
+        new Api5.KeyboardButtonCallback({
+          text: `${paused ? "\u25B6\uFE0F \u7EE7\u7EED" : "\u23F8 \u6682\u505C"} ${id}`,
+          data: Buffer.from(`ctq_${paused ? "resume" : "pause"}_${id}`)
+        }),
+        new Api5.KeyboardButtonCallback({
+          text: `\u{1F6D1} \u53D6\u6D88 ${id}`,
+          data: Buffer.from(`ctq_cancel_${id}`)
+        })
+      ]
+    }));
+  }
+  if (jobs.length > 1) {
+    rows.push(new Api5.KeyboardButtonRow({
+      buttons: [new Api5.KeyboardButtonCallback({ text: "\u{1F6D1} \u53D6\u6D88\u5168\u90E8\u9891\u9053\u4EFB\u52A1", data: Buffer.from("ctq_cancel_all") })]
+    }));
+  }
+  return new Api5.ReplyInlineMarkup({ rows });
+}
 async function handleTasks(message) {
   try {
     const status = getTaskStatus();
     const activeCount = status.active.length;
     const pendingCount = status.pending.length;
-    const historyCount = status.history.length;
     const senderId = message.senderId?.toJSNumber();
-    const jobs = senderId ? await listTelegramBackgroundJobs(senderId, 5) : [];
-    if (activeCount === 0 && pendingCount === 0 && historyCount === 0 && jobs.length === 0) {
+    const jobs = senderId ? await listTelegramActiveTaskQueues(senderId, 10) : [];
+    if (activeCount === 0 && pendingCount === 0 && jobs.length === 0) {
       await message.reply({ message: MSG.EMPTY_TASKS });
       return;
     }
-    const sections = [buildTasksReport(status.active, status.pending, status.history)];
-    if (jobs.length > 0) {
-      sections.push([
-        "\u{1F4E1} **\u9891\u9053\u540E\u53F0\u4EFB\u52A1**",
-        ...jobs.map((job, index) => [
-          `${index + 1}. ${job.kind} \xB7 ${job.status}`,
-          `   \u6765\u6E90\uFF1A${job.source}`,
-          `   \u8FDB\u5EA6\uFF1A${job.enqueued_count || 0}/${job.total_count || 0}\u3000\u8DF3\u8FC7\uFF1A${job.skipped_count || 0}`,
-          job.error ? `   \u26A0\uFE0F ${job.error}` : "",
-          `   ID: ${String(job.id).slice(0, 8)}`
-        ].filter(Boolean).join("\n"))
-      ].join("\n"));
+    const sections = [];
+    if (activeCount > 0 || pendingCount > 0) {
+      sections.push(buildTasksReport(status.active, status.pending));
     }
-    await message.reply({ message: sections.filter(Boolean).join("\n\n") });
+    if (jobs.length > 0) {
+      sections.push(buildChannelTaskQueueReport(jobs));
+    }
+    await message.reply({
+      message: sections.filter(Boolean).join("\n\n"),
+      buttons: buildTasksKeyboard(jobs)
+    });
   } catch (error) {
     console.error("\u{1F916} \u83B7\u53D6\u4EFB\u52A1\u5217\u8868\u5931\u8D25:", error);
     await message.reply({ message: MSG.ERR_TASKS });
@@ -6999,12 +7209,24 @@ async function handleResumeTasks(message, args = []) {
 async function handleCancelTask(message, args) {
   const selector = args.join(" ").trim() || "all";
   const senderId = message.senderId?.toJSNumber();
-  if (selector !== "all" && senderId) {
-    const job = await cancelTelegramBackgroundJob(senderId, selector);
-    if (job) {
-      await message.reply({ message: `\u{1F6D1} \u5DF2\u53D6\u6D88\u9891\u9053\u4EFB\u52A1 ${String(job.id).slice(0, 8)}
+  if (senderId) {
+    if (selector === "all") {
+      const jobs = await cancelAllTelegramBackgroundJobs(senderId);
+      const result2 = cancelDownloadTask(selector);
+      if (jobs.length > 0 || result2.total > 0) {
+        await message.reply({ message: `\u{1F6D1} \u5DF2\u53D6\u6D88\u4EFB\u52A1
+
+\u9891\u9053\u4EFB\u52A1: ${jobs.length}
+\u666E\u901A\u4E0B\u8F7D: \u5904\u7406\u4E2D ${result2.active} / \u7B49\u5F85 ${result2.pending}` });
+        return;
+      }
+    } else {
+      const job = await cancelTelegramBackgroundJob(senderId, selector);
+      if (job) {
+        await message.reply({ message: `\u{1F6D1} \u5DF2\u53D6\u6D88\u9891\u9053\u4EFB\u52A1 ${String(job.id).slice(0, 8)}
 \u6765\u6E90\uFF1A${job.source}` });
-      return;
+        return;
+      }
     }
   }
   const result = cancelDownloadTask(selector);
@@ -7013,6 +7235,46 @@ async function handleCancelTask(message, args) {
 \u5339\u914D: ${selector}
 \u5904\u7406\u4E2D: ${result.active}
 \u7B49\u5F85\u4E2D: ${result.pending}` : `\u{1F4EE} \u6CA1\u6709\u627E\u5230\u5339\u914D\u7684\u4EFB\u52A1\uFF0C\u672A\u6E05\u7A7A\u5168\u5C40\u961F\u5217\uFF1A${selector}` });
+}
+async function handleChannelTaskQueueCallback(client2, update, data) {
+  const userId = update.userId.toJSNumber();
+  if (!await isAuthenticatedAsync(userId)) {
+    await client2.invoke(new Api5.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+    return;
+  }
+  try {
+    const match = data.match(/^ctq_(pause|resume|cancel)_([0-9a-f]{4,}|all)$/i);
+    if (!match) return;
+    const [, action, selector] = match;
+    let toast = "";
+    if (selector === "all" && action === "cancel") {
+      const jobs2 = await cancelAllTelegramBackgroundJobs(userId);
+      toast = jobs2.length > 0 ? `\u5DF2\u53D6\u6D88 ${jobs2.length} \u4E2A\u9891\u9053\u4EFB\u52A1` : "\u6CA1\u6709\u53EF\u53D6\u6D88\u7684\u9891\u9053\u4EFB\u52A1";
+    } else if (action === "pause") {
+      const job = await pauseTelegramBackgroundJob(userId, selector);
+      toast = job ? `\u5DF2\u6682\u505C ${String(job.id).slice(0, 8)}` : "\u4EFB\u52A1\u4E0D\u5B58\u5728\u6216\u5DF2\u7ED3\u675F";
+    } else if (action === "resume") {
+      const job = await resumeTelegramBackgroundJob(userId, selector);
+      toast = job ? `\u5DF2\u7EE7\u7EED ${String(job.id).slice(0, 8)}` : "\u4EFB\u52A1\u4E0D\u5B58\u5728\u6216\u4E0D\u5728\u6682\u505C\u72B6\u6001";
+    } else {
+      const job = await cancelTelegramBackgroundJob(userId, selector);
+      toast = job ? `\u5DF2\u53D6\u6D88 ${String(job.id).slice(0, 8)}` : "\u4EFB\u52A1\u4E0D\u5B58\u5728\u6216\u5DF2\u7ED3\u675F";
+    }
+    const jobs = await listTelegramActiveTaskQueues(userId, 10);
+    const status = getTaskStatus();
+    const sections = [];
+    if (status.active.length > 0 || status.pending.length > 0) sections.push(buildTasksReport(status.active, status.pending));
+    if (jobs.length > 0) sections.push(buildChannelTaskQueueReport(jobs));
+    await client2.editMessage(update.peer, {
+      message: Number(update.msgId),
+      text: sections.length > 0 ? sections.join("\\n\\n") : MSG.EMPTY_TASKS,
+      buttons: buildTasksKeyboard(jobs) || new Api5.ReplyInlineMarkup({ rows: [] })
+    });
+    await client2.invoke(new Api5.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: toast }));
+  } catch (error) {
+    console.error("\u{1F916} \u9891\u9053\u4EFB\u52A1\u6309\u94AE\u64CD\u4F5C\u5931\u8D25:", error);
+    await client2.invoke(new Api5.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u64CD\u4F5C\u5931\u8D25: ${error.message}`, alert: true }));
+  }
 }
 async function handleRetryFailedTasks(message, args) {
   const senderId = message.senderId?.toJSNumber();
@@ -9051,6 +9313,10 @@ ${buildPathPreviewLine(appliedPath.folder)}
         }
         if (data.startsWith("tsub_")) {
           await handleTelegramSubscriptionCallback(callbackUpdate, data);
+          return;
+        }
+        if (data.startsWith("ctq_")) {
+          await handleChannelTaskQueueCallback(activeClient, callbackUpdate, data);
           return;
         }
         if (data.startsWith("tq_")) {
