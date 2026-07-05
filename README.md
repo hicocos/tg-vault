@@ -323,23 +323,31 @@ COOKIE_SECURE=true
 
 ## 🔄 维护与更新
 
+如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，默认直接同时更新前端和后端：
+
 ```bash
-cd /root/TG Vault
+cd /www/wwwroot/tg-vault
 
-git pull origin main
+git fetch origin
+git pull --ff-only origin main
 
-set -a
-source .env
-set +a
+docker compose up -d --build
 
-docker build \
-  --build-arg VITE_API_URL="${VITE_API_URL}" \
-  -t tg-vault-frontend:latest \
-  ./frontend
+docker compose ps
+curl -fsS http://127.0.0.1:51947/health
+```
 
-docker build -t tg-vault-backend:latest ./backend
+说明：
 
-docker compose up -d
+- `docker compose up -d --build` 会按最新代码重新构建并启动前后端容器。
+- PostgreSQL 数据、上传文件、Telegram 用户 session 和内部密钥都在 Docker volume 中，正常重建容器不会丢失。
+- 如果你修改了 `.env` 中的 `VITE_API_URL`，也使用同一套更新命令；前端会重新打包新的 API 地址。
+- 如果 `git pull --ff-only` 提示本地有改动，请先用 `git status --short` 查看；确认要临时保存本地改动时可执行：
+
+```bash
+git stash push -u -m "before update"
+git pull --ff-only origin main
+docker compose up -d --build
 ```
 
 清理无用 Docker 资源：
