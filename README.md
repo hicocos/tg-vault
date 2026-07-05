@@ -323,11 +323,9 @@ COOKIE_SECURE=true
 
 ## 🔄 维护与更新
 
-如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，默认直接同时更新前端和后端：
+如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，请先进入你实际部署的项目目录（也就是包含 `docker-compose.yml` 的目录），然后执行下面命令。默认会同时更新前端和后端：
 
 ```bash
-cd /www/wwwroot/tg-vault
-
 git fetch origin
 git pull --ff-only origin main
 
