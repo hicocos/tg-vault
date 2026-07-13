@@ -7,6 +7,7 @@ import { LanguageToggle } from "../ui/LanguageToggle";
 import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
 import { fileApi, type StorageStats } from "../../services/api";
+import { isTrustedOAuthPopupMessage } from "../../services/oauthPopupMessage";
 import { authService } from "../../services/auth";
 
 interface SettingsPageProps {
@@ -243,8 +244,12 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         }
         setIsSaving(true);
         try {
-            const redirectUri = (config as any)?.googleDriveRedirectUri || config?.redirectUri?.replace('onedrive', 'google-drive') || `${window.location.origin}/api/storage/google-drive/callback`;
-            const { authUrl } = await fileApi.getGoogleDriveAuthUrl(gdClientId, gdClientSecret, redirectUri, gdAccountName, gdSharedDriveId.trim());
+            const { authUrl, flowNonce, frontendOrigin } = await fileApi.getGoogleDriveAuthUrl(
+                gdClientId,
+                gdClientSecret,
+                gdAccountName,
+                gdSharedDriveId.trim(),
+            );
 
             const width = 600;
             const height = 700;
@@ -270,7 +275,12 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             };
 
             const messageHandler = async (event: MessageEvent) => {
-                if (event.data === 'google_drive_auth_success') {
+                if (isTrustedOAuthPopupMessage(event, {
+                    frontendOrigin,
+                    popup: authWindow,
+                    provider: 'google_drive',
+                    flowNonce,
+                })) {
                     await finishGoogleDriveAuth(true);
                 }
             };
@@ -308,9 +318,12 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         }
         setIsSaving(true);
         try {
-            await fileApi.updateOneDriveConfig(odClientId, odClientSecret, 'pending', odTenantId || 'common', odAccountName);
-            const redirectUri = config?.redirectUri || `${(window as any)._env_?.VITE_API_URL || import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`;
-            const { authUrl } = await fileApi.getOneDriveAuthUrl(odClientId, odTenantId || 'common', redirectUri, odClientSecret, odAccountName);
+            const { authUrl, flowNonce, frontendOrigin } = await fileApi.getOneDriveAuthUrl(
+                odClientId,
+                odTenantId || 'common',
+                odClientSecret,
+                odAccountName,
+            );
 
             const width = 600;
             const height = 700;
@@ -337,7 +350,12 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             };
 
             const messageHandler = async (event: MessageEvent) => {
-                if (event.data === 'onedrive_auth_success') {
+                if (isTrustedOAuthPopupMessage(event, {
+                    frontendOrigin,
+                    popup: authWindow,
+                    provider: 'onedrive',
+                    flowNonce,
+                })) {
                     await finishOneDriveAuth(true);
                 }
             };

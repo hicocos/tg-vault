@@ -103,10 +103,17 @@ async function initializeDatabase() {
         await ensureFilesPerformanceIndexes();
         await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS preview_path VARCHAR(500)`);
         await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hash VARCHAR(64)`);
+        await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ`);
         await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS source_original TEXT`);
         await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'public'`);
         await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_reason TEXT`);
         await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`);
+        await pool.query(`CREATE TABLE IF NOT EXISTS web_sessions (
+            token_hash VARCHAR(64) PRIMARY KEY,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)`);
         await pool.query(`CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE CASCADE,

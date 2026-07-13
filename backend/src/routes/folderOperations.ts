@@ -1,95 +1,157 @@
 import { Router, Request, Response } from 'express';
-import path from 'path';
 import { query } from '../db/index.js';
-import { safeUnlink } from '../utils/localPath.js';
-import { requireAuth } from './auth.js';
+import { getCurrentStorageScope, nextParam, removePhysicalFile } from '../utils/fileScope.js';
+import { getAuthToken, requireAuth } from './auth.js';
+import { createFileDeletionService, type FileDeletionResult, type IndexedFile } from '../services/fileDeletion.js';
+import { logOperationalEvent } from '../services/operationalEvents.js';
+import {
+    batchDeleteConfirmationStore,
+    type BatchDeleteStorageScope,
+} from '../services/batchDeleteConfirmation.js';
 
 const router = Router({ strict: true });
 
-const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
-const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
-const CLOUD_SOURCES = new Set(['onedrive', 'aliyun_oss', 's3', 'webdav', 'google_drive']);
-
-async function getCurrentStorageScope(): Promise<{ clause: string; params: any[] }> {
+async function getBatchDeleteScope(): Promise<BatchDeleteStorageScope> {
     const { storageManager } = await import('../services/storage.js');
-    const provider = storageManager.getProvider();
-
-    if (provider.name === 'local') {
-        return { clause: "source = 'local'", params: [] };
-    }
-
-    return { clause: 'storage_account_id = $1', params: [storageManager.getActiveAccountId()] };
+    const target = storageManager.getActiveTarget();
+    return { provider: target.provider.name, accountId: target.accountId };
 }
 
-function nextParam(scope: { params: any[] }, offset: number): string {
-    return `$${scope.params.length + offset}`;
+function getAuthenticatedSessionToken(req: Request): string {
+    const token = getAuthToken(req);
+    if (!token) throw new Error('Authenticated session token is missing');
+    return token;
 }
 
-async function removePhysicalFile(file: any) {
-    if (CLOUD_SOURCES.has(file.source)) {
-        const { storageManager } = await import('../services/storage.js');
-        const provider = storageManager.getProvider(`${file.source}:${file.storage_account_id}`);
-        await provider.deleteFile(file.path);
-    } else {
-        const filePath = file.path || path.join(UPLOAD_DIR, file.stored_name);
-        await safeUnlink(filePath, UPLOAD_DIR);
-    }
-
-    if (file.thumbnail_path) {
-        const thumbPath = path.join(THUMBNAIL_DIR, path.basename(file.thumbnail_path));
-        await safeUnlink(thumbPath, THUMBNAIL_DIR);
-    }
+async function deleteFileIndex(id: string): Promise<boolean> {
+    const result = await query('DELETE FROM files WHERE id = $1', [id]);
+    return result.rowCount === 1;
 }
 
-router.post('/batch-delete', requireAuth, async (req: Request, res: Response) => {
+const deletionService = createFileDeletionService({
+    removePhysicalFile,
+    deleteIndex: deleteFileIndex,
+});
+
+function failedFile(file: IndexedFile, result: Extract<FileDeletionResult, { status: 'failed' }>) {
+    return { id: file.id, name: file.name, error: result.error };
+}
+
+router.post('/batch-delete/preview', requireAuth, async (req: Request, res: Response) => {
     try {
         const { fileIds = [], folderNames = [] } = req.body;
-
         if (!Array.isArray(fileIds) || !Array.isArray(folderNames)) {
             return res.status(400).json({ error: '参数格式错误' });
         }
-
         if (fileIds.length === 0 && folderNames.length === 0) {
             return res.status(400).json({ error: '请提供要删除的文件或文件夹' });
         }
 
-        const scope = await getCurrentStorageScope();
-        let filesToDelete: any[] = [];
-
-        if (fileIds.length > 0) {
-            const result = await query(
-                `SELECT * FROM files WHERE ${scope.clause} AND id = ANY(${nextParam(scope, 1)})`,
-                [...scope.params, fileIds]
-            );
-            filesToDelete = [...filesToDelete, ...result.rows];
+        const storageScope = await getCurrentStorageScope();
+        const result = await query(
+            `SELECT COUNT(DISTINCT id)::int AS file_count,
+                    COUNT(DISTINCT id) FILTER (WHERE name <> '.folder')::int AS data_file_count,
+                    COUNT(DISTINCT id) FILTER (WHERE name = '.folder')::int AS placeholder_count,
+                    COUNT(DISTINCT folder) FILTER (WHERE folder = ANY(${nextParam(storageScope, 2)}::text[]))::int AS folder_count,
+                    COALESCE(SUM(size) FILTER (WHERE name <> '.folder'), 0)::bigint AS total_size,
+                    COALESCE(ARRAY_AGG(DISTINCT id), ARRAY[]::uuid[]) AS file_ids
+             FROM files
+             WHERE ${storageScope.clause}
+               AND (id = ANY(${nextParam(storageScope, 1)}::uuid[]) OR folder = ANY(${nextParam(storageScope, 2)}::text[]))`,
+            [...storageScope.params, fileIds, folderNames],
+        );
+        const row = result.rows[0] || {};
+        const immutableFileIds: string[] = row.file_ids || [];
+        if (immutableFileIds.length === 0) {
+            return res.status(404).json({ error: '当前存储范围内没有找到待删除项目' });
         }
 
-        if (folderNames.length > 0) {
-            const result = await query(
-                `SELECT * FROM files WHERE ${scope.clause} AND folder = ANY(${nextParam(scope, 1)})`,
-                [...scope.params, folderNames]
-            );
-            filesToDelete = [...filesToDelete, ...result.rows];
+        const issued = batchDeleteConfirmationStore.issue({
+            authToken: getAuthenticatedSessionToken(req),
+            scope: await getBatchDeleteScope(),
+            fileIds: immutableFileIds,
+        });
+        res.json({
+            confirmationToken: issued.confirmationToken,
+            fileCount: Number(row.file_count || 0),
+            dataFileCount: Number(row.data_file_count || 0),
+            placeholderCount: Number(row.placeholder_count || 0),
+            folderCount: Number(row.folder_count || 0),
+            totalSizeBytes: Number(row.total_size || 0),
+            expiresAt: new Date(issued.expiresAt).toISOString(),
+        });
+    } catch (error) {
+        console.error('获取批量删除影响范围失败:', error);
+        res.status(500).json({ error: '获取删除影响范围失败' });
+    }
+});
+
+router.post('/batch-delete', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const { confirmationToken } = req.body;
+        if (!confirmationToken || typeof confirmationToken !== 'string') {
+            return res.status(400).json({ error: '缺少删除确认令牌', code: 'CONFIRMATION_REQUIRED' });
         }
 
-        const uniqueFiles = Array.from(new Map(filesToDelete.map(file => [file.id, file])).values());
-
-        if (uniqueFiles.length === 0) {
-            return res.json({ success: true, message: '没有发现待删除的项目' });
+        const consumed = batchDeleteConfirmationStore.consume(confirmationToken, {
+            authToken: getAuthenticatedSessionToken(req),
+            scope: await getBatchDeleteScope(),
+        });
+        if (consumed.status === 'expired') {
+            return res.status(410).json({ error: '删除确认已过期，请重新预览', code: 'CONFIRMATION_EXPIRED' });
+        }
+        if (consumed.status === 'mismatch') {
+            return res.status(409).json({ error: '删除确认与当前会话或存储范围不匹配', code: 'CONFIRMATION_MISMATCH' });
+        }
+        if (consumed.status === 'missing' || !consumed.confirmation) {
+            return res.status(409).json({ error: '删除确认不存在或已使用', code: 'CONFIRMATION_REPLAYED' });
         }
 
-        await Promise.all(uniqueFiles.map(async (file) => {
-            try {
-                await removePhysicalFile(file);
-            } catch (err) {
-                console.error(`删除物理文件失败 (ID: ${file.id}):`, err);
+        const fileIds = consumed.confirmation.fileIds;
+        const storageScope = await getCurrentStorageScope();
+        const selected = await query(
+            `SELECT * FROM files WHERE ${storageScope.clause} AND id = ANY(${nextParam(storageScope, 1)}::uuid[])`,
+            [...storageScope.params, fileIds],
+        );
+        const filesById = new Map<string, IndexedFile>(selected.rows.map((file: IndexedFile) => [file.id, file]));
+        const deletedIds: string[] = [];
+        const failedFiles: Array<{ id: string; name: string; error: string }> = [];
+
+        for (const id of fileIds) {
+            const file = filesById.get(id);
+            if (!file) {
+                // The object/index was deleted after preview. Treat that snapshot entry as idempotently complete.
+                deletedIds.push(id);
+                continue;
             }
-        }));
+            const outcome = await deletionService.deleteIndexedFile(file);
+            if (outcome.status === 'failed') {
+                console.error(`删除文件失败，保留数据库索引 (ID: ${file.id}):`, outcome.error);
+                failedFiles.push(failedFile(file, outcome));
+            } else {
+                deletedIds.push(file.id);
+            }
+        }
 
-        const idsToDelete = uniqueFiles.map(file => file.id);
-        await query('DELETE FROM files WHERE id = ANY($1)', [idsToDelete]);
-
-        res.json({ success: true, message: `成功删除 ${uniqueFiles.length} 个文件` });
+        if (failedFiles.length > 0) {
+            logOperationalEvent('files.batch-delete.partial', res.locals.requestId || null, {
+                deletedCount: deletedIds.length,
+                failedCount: failedFiles.length,
+                storageScope: consumed.confirmation.scope,
+            });
+            return res.status(207).json({
+                status: 'partial',
+                deletedIds,
+                failedFiles,
+                message: `已删除 ${deletedIds.length} 个项目，${failedFiles.length} 个项目失败并保留索引`,
+            });
+        }
+        res.json({
+            status: 'complete',
+            deletedIds,
+            failedFiles: [],
+            message: `成功删除 ${deletedIds.length} 个项目`,
+        });
     } catch (error) {
         console.error('批量删除失败:', error);
         res.status(500).json({ error: '批量删除失败' });

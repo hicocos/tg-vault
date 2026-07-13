@@ -1,9 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { TOKEN_EXPIRY } from '../utils/config.js';
+import { query } from '../db/index.js';
+import { createWebSessionStore } from '../services/webSessionStore.js';
 import { generateSignature, type SignedUrlType } from '../middleware/signedUrl.js';
 import { rateLimit } from 'express-rate-limit';
-import { is2FAEnabled, verifyTOTP, generateOTPAuthUrl, activate2FA, disable2FA, getClientIP } from '../utils/security.js';
+import { is2FAEnabled, verifyTOTP, generateOTPAuthUrl, activate2FA, disable2FA, getClientIP, get2FAReadiness } from '../utils/security.js';
 import { UAParser } from 'ua-parser-js';
 import axios from 'axios';
 import { sendSecurityNotification } from '../services/telegramBot.js';
@@ -57,7 +59,7 @@ function normalizeSignedUrlType(value: unknown): SignedUrlType | null {
     return SIGNED_URL_TYPES.has(value as SignedUrlType) ? value as SignedUrlType : null;
 }
 
-function getAuthToken(req: Request): string | undefined {
+export function getAuthToken(req: Request): string | undefined {
     const headerToken = req.headers['authorization']?.replace('Bearer ', '');
     if (headerToken) return headerToken;
     const cookieHeader = req.headers.cookie || '';
@@ -80,35 +82,36 @@ function clearAuthCookie(res: Response) {
 }
 
 
-// 简单的会话存储（生产环境建议用 Redis）
-const sessions = new Map<string, { createdAt: Date; expiresAt: Date }>();
+const sessionStore = createWebSessionStore({
+    insert: async (tokenHash, expiresAt) => {
+        await query(
+            `INSERT INTO web_sessions (token_hash, expires_at) VALUES ($1, $2)
+             ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+            [tokenHash, expiresAt],
+        );
+    },
+    find: async tokenHash => {
+        const result = await query('SELECT expires_at FROM web_sessions WHERE token_hash = $1', [tokenHash]);
+        return result.rows[0] ? { expiresAt: new Date(result.rows[0].expires_at) } : null;
+    },
+    remove: async tokenHash => { await query('DELETE FROM web_sessions WHERE token_hash = $1', [tokenHash]); },
+});
 
 // 清理过期会话
-setInterval(() => {
-    const now = new Date();
-    sessions.forEach((session, token) => {
-        if (now > session.expiresAt) {
-            sessions.delete(token);
-        }
-    });
-}, 60 * 60 * 1000); // 每小时清理一次
+const sessionCleanupTimer = setInterval(() => {
+    void query('DELETE FROM web_sessions WHERE expires_at <= NOW()').catch(error => console.warn('清理过期 Web 会话失败:', error));
+}, 60 * 60 * 1000);
+sessionCleanupTimer.unref?.();
 
 // 生成密码哈希（兼容旧部署文档）
 export function hashPassword(password: string): string {
     return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-// 生成会话 Token
-function generateToken(): string {
-    return crypto.randomBytes(32).toString('hex');
-}
-
-function issueSession(req: Request, res: Response) {
-    const token = generateToken();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY);
-
-    sessions.set(token, { createdAt: now, expiresAt });
+async function issueSession(req: Request, res: Response) {
+    const expiresAt = new Date(Date.now() + TOKEN_EXPIRY);
+    // Hash the session token before persistence/logging so a database leak does not expose live cookies.
+    const { token } = await sessionStore.issue(expiresAt);
     sendLoginNotification(req).catch(error => console.warn('发送登录通知失败:', error));
     setAuthCookie(res, token, expiresAt);
     res.json({
@@ -129,10 +132,6 @@ const loginLimiter = rateLimit({
 
 router.post('/setup', loginLimiter, async (req: Request, res: Response) => {
     try {
-        if (!(await isInitialSetupRequired())) {
-            return res.status(409).json({ error: '管理员密码已创建' });
-        }
-
         const { webPassword, telegramPin } = req.body;
         const webError = validateWebPassword(webPassword);
         if (webError) return res.status(400).json({ error: webError });
@@ -140,9 +139,12 @@ router.post('/setup', loginLimiter, async (req: Request, res: Response) => {
         if (pinError) return res.status(400).json({ error: pinError });
 
         await createInitialAdminCredentials(webPassword, telegramPin);
-        issueSession(req, res);
+        await issueSession(req, res);
     } catch (error) {
         console.error('初始化管理员失败:', error);
+        if (error instanceof Error && error.message.includes('管理员密码已创建')) {
+            return res.status(409).json({ error: '管理员密码已创建' });
+        }
         res.status(500).json({ error: error instanceof Error ? error.message : '初始化管理员失败' });
     }
 });
@@ -163,8 +165,12 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
         return res.status(401).json({ error: '认证失败' });
     }
 
-    // 检查是否启用了 2FA
-    if (await is2FAEnabled()) {
+    // 检查是否启用了 2FA，并在已启用但密钥不可读时拒绝降级登录。
+    const twoFactor = await get2FAReadiness();
+    if (!twoFactor.ready) {
+        return res.status(503).json({ error: '2FA 密钥不可读取，登录已被安全阻止，请恢复 SESSION_SECRET 或 /data/secrets' });
+    }
+    if (twoFactor.enabled) {
         return res.json({
             success: true,
             requiresTOTP: true,
@@ -172,7 +178,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response) => {
         });
     }
 
-    issueSession(req, res);
+    await issueSession(req, res);
 });
 
 // TOTP 验证接口
@@ -193,20 +199,7 @@ router.post('/verify-totp', loginLimiter, async (req: Request, res: Response) =>
         return res.status(401).json({ error: '认证失败' });
     }
 
-    const token = generateToken();
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY);
-
-    sessions.set(token, { createdAt: now, expiresAt });
-
-    // 异步发送通知
-    sendLoginNotification(req);
-
-    setAuthCookie(res, token, expiresAt);
-    res.json({
-        success: true,
-        expiresAt: expiresAt.toISOString(),
-    });
+    await issueSession(req, res);
 });
 
 // 获取 2FA 设置二维码 (需要认证)
@@ -267,9 +260,7 @@ router.get('/verify', async (req: Request, res: Response) => {
         return res.status(401).json({ valid: false, error: '未提供 Token' });
     }
 
-    const session = sessions.get(token);
-    if (!session || new Date() > session.expiresAt) {
-        sessions.delete(token || '');
+    if (!(await sessionStore.verify(token))) {
         return res.status(401).json({ valid: false, error: 'Token 已过期' });
     }
 
@@ -277,10 +268,10 @@ router.get('/verify', async (req: Request, res: Response) => {
 });
 
 // 登出接口
-router.post('/logout', (req: Request, res: Response) => {
+router.post('/logout', async (req: Request, res: Response) => {
     const token = getAuthToken(req);
     if (token) {
-        sessions.delete(token);
+        await sessionStore.revoke(token);
     }
     clearAuthCookie(res);
     res.json({ success: true });
@@ -347,9 +338,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
         return res.status(401).json({ error: '未授权访问' });
     }
 
-    const session = sessions.get(token);
-    if (!session || new Date() > session.expiresAt) {
-        sessions.delete(token);
+    if (!(await sessionStore.verify(token))) {
         return res.status(401).json({ error: 'Token 已过期，请重新登录' });
     }
 

@@ -60,13 +60,28 @@ async function getTOTPSecret(): Promise<string | null> {
     }
 }
 
+export interface TwoFactorReadiness {
+    enabled: boolean;
+    ready: boolean;
+    error?: 'enabled-but-unreadable';
+}
+
+export async function get2FAReadiness(): Promise<TwoFactorReadiness> {
+    const enabled = await getSetting('2fa_enabled', 'false') === 'true';
+    if (!enabled) return { enabled: false, ready: true };
+    const secret = await getTOTPSecret();
+    return secret
+        ? { enabled: true, ready: true }
+        : { enabled: true, ready: false, error: 'enabled-but-unreadable' };
+}
+
 /**
  * 检查是否启用了 2FA
  */
 export async function is2FAEnabled(): Promise<boolean> {
-    const secret = await getTOTPSecret();
-    const enabled = await getSetting('2fa_enabled', 'false');
-    return !!secret && enabled === 'true';
+    const readiness = await get2FAReadiness();
+    if (!readiness.ready) throw new Error('2FA 已启用，但密钥不可读取；为防止认证降级，登录已被阻止');
+    return readiness.enabled;
 }
 
 /**
@@ -87,8 +102,14 @@ export async function disable2FA(): Promise<void> {
  * 验证 TOTP 令牌
  */
 export async function verifyTOTP(token: string): Promise<boolean> {
+    const enabled = await getSetting('2fa_enabled', 'false');
     const secret = await getTOTPSecret();
-    if (!secret) return true; // 如果未启用 2FA，默认验证通过
+    if (enabled !== 'true') {
+        // Verification is only meaningful during setup when a freshly generated secret exists.
+        if (!secret) return false;
+    } else if (!secret) {
+        throw new Error('2FA 已启用，但密钥不可读取；拒绝降级认证');
+    }
 
     try {
         const result = await authenticator.verify(token, {

@@ -4,8 +4,16 @@ import fs from 'fs';
 import path from 'path';
 import { getSignedUrl } from '../middleware/signedUrl.js';
 import { getScopedFileById, removePhysicalFile, updateScopedFileById } from '../utils/fileScope.js';
+import { createFileDeletionService } from '../services/fileDeletion.js';
 import { isPathInside } from '../utils/localPath.js';
 import { generateMediaPreview } from '../utils/thumbnail.js';
+import {
+    buildFilePageQuery,
+    buildFolderAggregationQuery,
+    cursorForFile,
+    normalizeFileQuery,
+    type FileQueryScope,
+} from '../services/fileQuery.js';
 
 const router = Router();
 
@@ -88,29 +96,6 @@ function parseRangeHeader(range: string | undefined, size: number): { start: num
     return { start, end: Math.min(end, size - 1) };
 }
 
-const FILES_LIST_COLUMNS = `
-    id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
-    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at
-`;
-
-type FileCursor = { createdAt: string; id: string };
-
-function encodeFileCursor(file: any): string {
-    return Buffer.from(`${new Date(file.created_at).toISOString()}|${file.id}`, 'utf8').toString('base64url');
-}
-
-function decodeFileCursor(cursor: unknown): FileCursor | null {
-    if (!cursor || typeof cursor !== 'string') return null;
-    try {
-        const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
-        const [createdAt, id] = decoded.split('|');
-        if (!createdAt || !id || Number.isNaN(new Date(createdAt).getTime())) return null;
-        return { createdAt, id };
-    } catch {
-        return null;
-    }
-}
-
 function mapFileForList(file: any) {
     return {
         ...file,
@@ -123,67 +108,94 @@ function mapFileForList(file: any) {
     };
 }
 
-async function queryFilesPage(options: { favoriteOnly?: boolean; cursor?: unknown; limit?: unknown }) {
+async function getFileQueryScope(): Promise<FileQueryScope> {
     const { storageManager } = await import('../services/storage.js');
-    const activeAccountId = storageManager.getActiveAccountId();
     const provider = storageManager.getProvider();
-    const limit = Math.min(500, Math.max(1, parseInt(String(options.limit || '200'), 10) || 200));
-    const cursor = decodeFileCursor(options.cursor);
+    return provider.name === 'local'
+        ? { kind: 'local' }
+        : { kind: 'account', accountId: storageManager.getActiveAccountId() || '' };
+}
 
-    const whereParts: string[] = [];
-    const params: any[] = [];
-
-    if (provider.name === 'local') {
-        whereParts.push(`source = $${params.length + 1}`);
-        params.push('local');
-    } else {
-        whereParts.push(`storage_account_id = $${params.length + 1}`);
-        params.push(activeAccountId);
+async function queryFilesPage(rawOptions: Record<string, unknown>) {
+    const options = normalizeFileQuery(rawOptions);
+    if (options.cursor && !decodeCursorForOptions(options.cursor, options.sort, options.direction)) {
+        throw new Error('invalid cursor');
     }
-
-    if (options.favoriteOnly) {
-        whereParts.push(`is_favorite = $${params.length + 1}`);
-        params.push(true);
-    }
-
-    if (cursor) {
-        whereParts.push(`(created_at, id) < ($${params.length + 1}::timestamptz, $${params.length + 2}::uuid)`);
-        params.push(cursor.createdAt, cursor.id);
-    }
-
-    params.push(limit + 1);
-    const result = await query(
-        `SELECT ${FILES_LIST_COLUMNS}
-         FROM files
-         WHERE ${whereParts.join(' AND ')}
-         ORDER BY created_at DESC, id DESC
-         LIMIT $${params.length}`,
-        params
-    );
-
-    const rows = result.rows.slice(0, limit);
+    const scope = await getFileQueryScope();
+    const built = buildFilePageQuery(scope, options);
+    const result = await query(built.text, built.params);
+    const rows = result.rows.slice(0, options.limit);
     return {
         files: rows.map(mapFileForList),
-        nextCursor: result.rows.length > limit ? encodeFileCursor(rows[rows.length - 1]) : null,
-        hasMore: result.rows.length > limit,
+        nextCursor: result.rows.length > options.limit && rows.length > 0
+            ? cursorForFile(rows[rows.length - 1], options.sort, options.direction)
+            : null,
+        hasMore: result.rows.length > options.limit,
     };
 }
 
-function shouldReturnPagedEnvelope(req: Request): boolean {
-    return req.query.page === 'cursor' || req.query.cursor !== undefined || req.query.limit !== undefined;
+function decodeCursorForOptions(cursor: string, sort: 'date' | 'name', direction: 'asc' | 'desc'): boolean {
+    try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<string, unknown>;
+        return parsed.sort === sort && parsed.direction === direction && typeof parsed.value === 'string' && typeof parsed.id === 'string';
+    } catch {
+        return false;
+    }
 }
 
-// 获取文件列表
+function shouldReturnPagedEnvelope(req: Request): boolean {
+    return req.query.page === 'cursor' || req.query.cursor !== undefined || req.query.limit !== undefined
+        || ['q', 'type', 'folder', 'favorite', 'sort', 'direction'].some(key => req.query[key] !== undefined);
+}
+
+// 获取文件列表（所有过滤/排序在服务端全局执行）
 router.get('/', async (req: Request, res: Response) => {
     try {
-        const page = await queryFilesPage({ cursor: req.query.cursor, limit: req.query.limit });
+        const page = await queryFilesPage(req.query as Record<string, unknown>);
         if (shouldReturnPagedEnvelope(req)) {
             return res.json(page);
         }
         res.json(page.files);
     } catch (error) {
+        if (error instanceof Error && /invalid|too long|singular/.test(error.message)) {
+            return res.status(400).json({ error: error.message });
+        }
         console.error('获取文件列表失败:', error);
         res.status(500).json({ error: '获取文件列表失败' });
+    }
+});
+
+router.get('/folders/aggregation', async (req: Request, res: Response) => {
+    try {
+        const options = normalizeFileQuery(req.query as Record<string, unknown>);
+        const scope = await getFileQueryScope();
+        const built = buildFolderAggregationQuery(scope, options);
+        const result = await query(built.text, built.params);
+        res.json({
+            folders: result.rows.map((row: any) => ({
+                name: row.folder,
+                fileCount: Number(row.file_count || 0),
+                totalSizeBytes: Number(row.total_size_bytes || 0),
+                latestDate: row.latest_at,
+                isFavorite: !!row.is_favorite,
+                coverFile: row.cover_id ? mapFileForList({
+                    id: row.cover_id,
+                    name: row.cover_name,
+                    type: row.cover_type,
+                    mime_type: row.cover_mime_type,
+                    thumbnail_path: row.cover_thumbnail_path,
+                    preview_path: row.cover_preview_path,
+                    created_at: row.cover_created_at,
+                    size: 0,
+                }) : null,
+            })),
+        });
+    } catch (error) {
+        if (error instanceof Error && /invalid|too long|singular/.test(error.message)) {
+            return res.status(400).json({ error: error.message });
+        }
+        console.error('获取文件夹聚合失败:', error);
+        res.status(500).json({ error: '获取文件夹聚合失败' });
     }
 });
 
@@ -590,16 +602,28 @@ router.delete('/:id([0-9a-fA-F-]{36})', async (req: Request, res: Response) => {
             return res.status(404).json({ error: '文件不存在' });
         }
 
-        try {
-            await removePhysicalFile(file);
-        } catch (err) {
-            console.error(`物理文件删除失败 (可能已不存在):`, err);
+        const deletionService = createFileDeletionService({
+            removePhysicalFile,
+            deleteIndex: async (fileId) => {
+                const deleted = await query('DELETE FROM files WHERE id = $1', [fileId]);
+                return deleted.rowCount === 1;
+            },
+        });
+        const outcome = await deletionService.deleteIndexedFile(file);
+        if (outcome.status === 'failed') {
+            console.error(`删除文件失败，保留数据库索引 (ID: ${id}):`, outcome.error);
+            return res.status(502).json({
+                status: 'failed',
+                error: '物理文件或索引删除失败，数据库索引已保留以便重试',
+                details: outcome.error,
+            });
         }
 
-        // 删除数据库记录
-        await query('DELETE FROM files WHERE id = $1', [id]);
-
-        res.json({ success: true, message: '文件已删除' });
+        res.json({
+            status: 'complete',
+            deletedIds: [id],
+            message: outcome.status === 'not_found' ? '物理文件已不存在，索引已清理' : '文件已删除',
+        });
     } catch (error) {
         console.error('删除文件失败:', error);
         res.status(500).json({ error: '删除文件失败' });
@@ -747,7 +771,7 @@ router.post('/:id([0-9a-fA-F-]{36})/share', async (req: Request, res: Response) 
 // 获取收藏的文件
 router.get('/favorites', async (req: Request, res: Response) => {
     try {
-        const page = await queryFilesPage({ favoriteOnly: true, cursor: req.query.cursor, limit: req.query.limit });
+        const page = await queryFilesPage({ ...req.query, favorite: 'true' } as Record<string, unknown>);
         if (shouldReturnPagedEnvelope(req)) {
             return res.json(page);
         }

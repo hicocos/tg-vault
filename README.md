@@ -289,6 +289,8 @@ TG Vault 默认采用“首次初始化”模式保护 Web 和 API：
 
 TG Vault 会在首次启动时自动生成内部密钥，并保存到 Docker 数据卷的 `/data/secrets/` 目录中。正常部署无需手动配置。迁移服务器时请连同 Docker volume 一起备份，否则登录会话、TOTP 密钥和已加密的第三方存储凭证可能需要重新配置。
 
+完整的宿主机 Nginx 部署、健康检查、协调备份与隔离恢复校验流程见 [`deploy/DEPLOY.md`](deploy/DEPLOY.md)。仓库提供 `deploy/backup.sh` 和只读归档检查脚本 `deploy/restore-verify.sh`；备份包含密钥材料，必须加密并异地保存。
+
 ### 双重验证 (TOTP)
 
 TG Vault 内置支持 TOTP 双重验证（如 Google Authenticator）：

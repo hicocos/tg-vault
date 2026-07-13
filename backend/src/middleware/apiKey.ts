@@ -61,6 +61,7 @@ export const validateApiKey = async (req: Request, res: Response, next: NextFunc
         if (!keyInfo.key_hash && keyInfo.key === apiKey) {
             await query('UPDATE api_keys SET key_hash = $1, key = $2 WHERE id = $3', [apiKeyHash, `legacy:${keyInfo.id}`, keyInfo.id]).catch(() => undefined);
         }
+        await query('UPDATE api_keys SET last_used_at = NOW() WHERE id = $1', [keyInfo.id]).catch(() => undefined);
         req.apiKeyInfo = {
             id: keyInfo.id,
             name: keyInfo.name,
@@ -73,6 +74,16 @@ export const validateApiKey = async (req: Request, res: Response, next: NextFunc
         res.status(500).json({ error: '验证 API Key 失败' });
     }
 };
+
+export function requireApiKeyPermission(permission: string) {
+    return (req: Request, res: Response, next: NextFunction) => {
+        const permissions = req.apiKeyInfo?.permissions || [];
+        if (!permissions.includes(permission)) {
+            return res.status(403).json({ error: 'API Key 权限不足', requiredPermission: permission });
+        }
+        next();
+    };
+}
 
 // 生成新的 API Key
 export const generateApiKey = (): string => {

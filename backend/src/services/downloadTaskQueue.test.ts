@@ -153,8 +153,13 @@ async function testImmediatePauseWithoutActiveFileAndSystemPausePrecedence() {
     const userSnapshot = userPausedQueue.getSnapshot({ chatId: 'chat' }).groups.find(group => group.id === 'user-waiting');
     assert.equal(userSnapshot?.reason, '用户已暂停下载队列');
     assert.equal(userPausedQueue.resumeGroup('user-waiting', { chatId: 'chat' }).status, 'ok');
+    assert.equal(userPausedQueue.getStats().userPaused, true);
     userBlocker.resolve();
-    await Promise.all([userActive, userWaiting]);
+    await userActive;
+    await flush();
+    assert.equal(userPausedQueue.getGroup('user-waiting', { chatId: 'chat' })?.state, 'paused');
+    userPausedQueue.resumeAll();
+    await userWaiting;
 
     const groupPausedByUser = new DownloadTaskQueue({ maxConcurrent: 1 });
     const gate = deferred<void>();
@@ -167,6 +172,7 @@ async function testImmediatePauseWithoutActiveFileAndSystemPausePrecedence() {
     assert.equal(groupPausedByUser.getGroup('status-waiting', { chatId: 'chat' })?.state, 'paused');
     gate.resolve();
     groupPausedByUser.resumeGroup('status-waiting', { chatId: 'chat' });
+    groupPausedByUser.resumeAll();
     await Promise.all([active, waiting]);
 
     const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
@@ -355,12 +361,15 @@ async function testUserPausedQueueCanResumeOneGroupAndNewGroupsAreNotPaused() {
     queue.ensureGroup({ id: 'paused', kind: 'single', title: 'paused', chatId: 'chat', userId: 1, expectedTotal: 1 });
     const pausedTask = queue.add('paused', 'paused.bin', async () => undefined);
     await flush();
-    queue.pauseAll();
-    assert.equal(queue.getSnapshot().pauseReason, '用户已暂停下载队列');
+    queue.pauseScope({ chatId: 'chat', userId: 1 });
+    assert.equal(queue.getSnapshot().pauseReason, undefined);
     queue.pauseGroup('paused', { chatId: 'chat', userId: 1 });
     blocker.resolve();
     await first;
     assert.equal(queue.resumeGroup('paused', { chatId: 'chat', userId: 1 }).status, 'ok');
+    await flush();
+    assert.equal(queue.getScopeStatus({ chatId: 'chat', userId: 1 }).userPaused, true);
+    queue.resumeScope({ chatId: 'chat', userId: 1 });
     await pausedTask;
 
     queue.ensureGroup({ id: 'new', kind: 'single', title: 'new', chatId: 'chat', userId: 1, expectedTotal: 1 });
@@ -368,17 +377,19 @@ async function testUserPausedQueueCanResumeOneGroupAndNewGroupsAreNotPaused() {
     await newTask;
 }
 
-async function testCancelWhileUserPausedDoesNotPauseFutureTasks() {
+async function testCancelWhileScopedPausedDoesNotPauseFutureTasks() {
     const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
-    queue.ensureGroup({ id: 'cancel-old', kind: 'single', title: 'old', chatId: 'chat', userId: 1, expectedTotal: 1 });
+    const scope = { chatId: 'chat', userId: 1 };
+    queue.ensureGroup({ id: 'cancel-old', kind: 'single', title: 'old', ...scope, expectedTotal: 1 });
+    queue.pauseScope(scope);
     const oldTask = queue.add('cancel-old', 'old.bin', async () => undefined);
-    queue.pauseAll();
-    assert.equal(queue.cancelGroup('cancel-old', { chatId: 'chat', userId: 1 }).status, 'ok');
+    assert.equal(queue.cancelGroup('cancel-old', scope).status, 'ok');
     await oldTask;
-    assert.equal(queue.getStats().paused, false);
+    assert.equal(queue.getScopeStatus(scope).userPaused, true);
+    queue.resumeScope(scope);
 
     let newStarted = false;
-    queue.ensureGroup({ id: 'after-cancel', kind: 'single', title: 'new', chatId: 'chat', userId: 1, expectedTotal: 1 });
+    queue.ensureGroup({ id: 'after-cancel', kind: 'single', title: 'new', ...scope, expectedTotal: 1 });
     await queue.add('after-cancel', 'new.bin', async () => { newStarted = true; });
     assert.equal(newStarted, true);
 }
@@ -498,6 +509,51 @@ async function testLateAddToPausedGroupDoesNotStart() {
     assert.equal(started, true);
 }
 
+async function testScopedPauseDoesNotBlockOrResumeOtherOwners() {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
+    const started: string[] = [];
+    const scopeA = { chatId: 'chat-a', userId: 1 };
+    const scopeB = { chatId: 'chat-b', userId: 2 };
+    queue.ensureGroup({ id: 'scope-pause-a', kind: 'single', title: 'A', ...scopeA, expectedTotal: 1 });
+    queue.ensureGroup({ id: 'scope-pause-b', kind: 'single', title: 'B', ...scopeB, expectedTotal: 1 });
+
+    assert.equal(queue.pauseScope(scopeA).total, 0);
+    const a = queue.add('scope-pause-a', 'a.bin', async () => { started.push('a'); });
+    const b = queue.add('scope-pause-b', 'b.bin', async () => { started.push('b'); });
+    await b;
+    assert.deepEqual(started, ['b']);
+    assert.equal(queue.getScopeStatus(scopeA).userPaused, true);
+    assert.equal(queue.getScopeStatus(scopeB).userPaused, false);
+
+    queue.resumeScope(scopeB);
+    await flush();
+    assert.deepEqual(started, ['b']);
+    queue.resumeScope(scopeA);
+    await a;
+    assert.deepEqual(started, ['b', 'a']);
+}
+
+async function testGroupControlNeverClearsGlobalPause() {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
+    const scope = { chatId: 'chat', userId: 1 };
+    queue.ensureGroup({ id: 'global-lock-a', kind: 'single', title: 'A', ...scope, expectedTotal: 1 });
+    queue.ensureGroup({ id: 'global-lock-b', kind: 'single', title: 'B', ...scope, expectedTotal: 1 });
+    queue.pauseAll();
+    const a = queue.add('global-lock-a', 'a.bin', async () => undefined);
+    const b = queue.add('global-lock-b', 'b.bin', async () => undefined);
+
+    assert.equal(queue.resumeGroup('global-lock-a', scope).status, 'ok');
+    assert.equal(queue.getStats().userPaused, true);
+    assert.equal(queue.cancelGroup('global-lock-a', scope).status, 'ok');
+    assert.equal(queue.getStats().userPaused, true);
+    await a;
+    await flush();
+    assert.equal(queue.getGroup('global-lock-b', scope)?.state, 'paused');
+
+    queue.resumeAll();
+    await b;
+}
+
 async function main() {
     await testGroupsFilesAndStartsAutomatically();
     await testPrioritizeGroupIsStableAndDoesNotPreemptActiveFile();
@@ -511,16 +567,15 @@ async function main() {
     await testReusingTerminalGroupStartsFreshGeneration();
     await testTerminalGroupsAreBounded();
     await testUserPausedQueueCanResumeOneGroupAndNewGroupsAreNotPaused();
-    await testCancelWhileUserPausedDoesNotPauseFutureTasks();
+    await testCancelWhileScopedPausedDoesNotPauseFutureTasks();
     await testScopeStatusReflectsGroupPauseIndependentlyOfGlobalQueue();
     await testReasonTextCannotMisclassifyUserPauseAsSystemProtection();
     await testMultipleDiskPressureBlockersDoNotResumeEarly();
     await testGlobalUserAndSystemPauseLocksRemainIndependent();
     await testLateAddToPausedGroupDoesNotStart();
+    await testScopedPauseDoesNotBlockOrResumeOtherOwners();
+    await testGroupControlNeverClearsGlobalPause();
     console.log('download task queue ok');
 }
 
-main().catch(error => {
-    console.error(error);
-    process.exit(1);
-});
+await main();

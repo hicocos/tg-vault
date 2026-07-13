@@ -28,6 +28,32 @@ CREATE OR REPLACE TRIGGER storage_accounts_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();
 
+-- 存储账户使用租约：上传等外部副作用在账户删除期间必须持有未释放租约。
+CREATE TABLE IF NOT EXISTS storage_account_leases (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE RESTRICT,
+    purpose VARCHAR(50) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    released_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_storage_account_leases_active
+    ON storage_account_leases(storage_account_id, expires_at)
+    WHERE released_at IS NULL;
+
+-- OAuth pending flow records are hashed/session-bound, encrypted-config, TTL and one-time consumed.
+CREATE TABLE IF NOT EXISTS oauth_pending_flows (
+    state_hash VARCHAR(64) PRIMARY KEY,
+    provider VARCHAR(32) NOT NULL,
+    auth_session_hash VARCHAR(64) NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    pending_config JSONB NOT NULL,
+    flow_nonce VARCHAR(128) NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_pending_flows_expiry ON oauth_pending_flows(expires_at);
+
 -- 存储账户冷却表（如 Google Drive 每日上传限额触发后暂停 24 小时）
 CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -109,6 +135,54 @@ CREATE TABLE IF NOT EXISTS system_settings (
 
 CREATE OR REPLACE TRIGGER system_settings_updated_at
     BEFORE UPDATE ON system_settings
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();
+
+-- 持久 Web 会话（仅存 token SHA-256，不存原始 token）
+CREATE TABLE IF NOT EXISTS web_sessions (
+    token_hash VARCHAR(64) PRIMARY KEY,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at);
+
+-- 持久、可恢复的分块上传会话。owner_id 是认证 token 的 SHA-256，不保存原始凭据。
+CREATE TABLE IF NOT EXISTS chunk_upload_sessions (
+    upload_id UUID PRIMARY KEY,
+    owner_id VARCHAR(64) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(100) NOT NULL,
+    folder VARCHAR(255),
+    total_size BIGINT NOT NULL CHECK (total_size > 0),
+    total_chunks INT NOT NULL CHECK (total_chunks > 0),
+    received_bytes BIGINT NOT NULL DEFAULT 0 CHECK (received_bytes >= 0 AND received_bytes <= total_size),
+    status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'completing', 'completed', 'cancelled', 'failed')),
+    target_provider VARCHAR(50) NOT NULL,
+    target_account_id UUID REFERENCES storage_accounts(id),
+    expires_at TIMESTAMPTZ NOT NULL,
+    completion_token UUID,
+    completion_expires_at TIMESTAMPTZ,
+    completed_file_id UUID REFERENCES files(id) ON DELETE SET NULL,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_owner ON chunk_upload_sessions(owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_budget ON chunk_upload_sessions(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_completion_lease ON chunk_upload_sessions(status, completion_expires_at);
+
+CREATE TABLE IF NOT EXISTS chunk_upload_chunks (
+    upload_id UUID NOT NULL REFERENCES chunk_upload_sessions(upload_id) ON DELETE CASCADE,
+    chunk_index INT NOT NULL CHECK (chunk_index >= 0),
+    size BIGINT NOT NULL CHECK (size > 0),
+    sha256 VARCHAR(64) NOT NULL CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+    path VARCHAR(1000) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (upload_id, chunk_index)
+);
+
+CREATE OR REPLACE TRIGGER chunk_upload_sessions_updated_at
+    BEFORE UPDATE ON chunk_upload_sessions
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();
 
@@ -231,6 +305,8 @@ ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS attempts INT DEFAUL
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS last_error TEXT;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS locked_at TIMESTAMPTZ;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS lease_token UUID;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
 UPDATE telegram_download_items SET source_peer = COALESCE(source_peer, source) WHERE source_peer IS NULL;
 ALTER TABLE telegram_download_items DROP CONSTRAINT IF EXISTS telegram_download_items_job_id_message_id_key;
 
@@ -238,6 +314,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_download_items_job_peer_msg
     ON telegram_download_items(job_id, source_peer, message_id);
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_job_status ON telegram_download_items(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_recover ON telegram_download_items(status, locked_at);
+CREATE INDEX IF NOT EXISTS idx_tg_download_items_lease_expiry ON telegram_download_items(status, lease_expires_at);
 
 CREATE OR REPLACE TRIGGER telegram_download_items_updated_at
     BEFORE UPDATE ON telegram_download_items

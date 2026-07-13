@@ -1,6 +1,8 @@
 import { authService } from './auth';
+import { sha256Hex } from './chunkHash';
 
 import { API_BASE } from './config';
+import { classifyBatchDeleteResponse, type BatchDeleteResult } from './batchDeleteContract';
 
 // 分块大小：50MB（小于 Cloudflare 100MB 限制）
 const CHUNK_SIZE = 50 * 1024 * 1024;
@@ -60,6 +62,46 @@ export interface FilesPage {
     hasMore: boolean;
 }
 
+export interface FileQueryOptions {
+    cursor?: string | null;
+    limit?: number;
+    q?: string;
+    type?: 'image' | 'video' | 'audio' | 'document' | 'other' | 'media';
+    folder?: string | null;
+    favorite?: boolean;
+    sort?: 'name' | 'date';
+    direction?: 'asc' | 'desc';
+    signal?: AbortSignal;
+}
+
+export interface FolderAggregation {
+    name: string;
+    fileCount: number;
+    totalSizeBytes: number;
+    latestDate: string;
+    isFavorite: boolean;
+    coverFile: FileData | null;
+}
+
+export interface BatchDeletePreview {
+    confirmationToken: string;
+    fileCount: number;
+    dataFileCount: number;
+    placeholderCount: number;
+    folderCount: number;
+    totalSizeBytes: number;
+    expiresAt: string;
+}
+
+export type { BatchDeleteResult };
+
+export interface OAuthStartResult {
+    authUrl: string;
+    flowNonce: string;
+    frontendOrigin: string;
+    expiresAt: string;
+}
+
 // 获取带认证的请求头
 function getHeaders(additionalHeaders: Record<string, string> = {}): HeadersInit {
     return {
@@ -69,17 +111,41 @@ function getHeaders(additionalHeaders: Record<string, string> = {}): HeadersInit
 }
 
 class FileAPI {
-    async getFilesPage(options: { cursor?: string | null; limit?: number; favorites?: boolean } = {}): Promise<FilesPage> {
+    async getFilesPage(options: FileQueryOptions = {}): Promise<FilesPage> {
         const params = new URLSearchParams({ page: 'cursor', limit: String(options.limit ?? 200) });
         if (options.cursor) params.set('cursor', options.cursor);
-        const endpoint = options.favorites ? '/api/files/favorites' : '/api/files';
-        const response = await fetch(`${API_BASE}${endpoint}?${params.toString()}`, {
+        if (options.q?.trim()) params.set('q', options.q.trim());
+        if (options.type) params.set('type', options.type);
+        if (options.folder !== undefined) params.set('folder', options.folder || '');
+        if (options.favorite !== undefined) params.set('favorite', String(options.favorite));
+        if (options.sort) params.set('sort', options.sort);
+        if (options.direction) params.set('direction', options.direction);
+        const response = await fetch(`${API_BASE}/api/files?${params.toString()}`, {
             credentials: 'include',
             headers: getHeaders(),
+            signal: options.signal,
         });
-        if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error(options.favorites ? '获取收藏文件失败' : '获取文件列表失败');
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        if (!response.ok) throw new Error('获取文件列表失败');
         return response.json();
+    }
+
+    async getFolderAggregations(options: Omit<FileQueryOptions, 'cursor' | 'folder'> = {}): Promise<FolderAggregation[]> {
+        const params = new URLSearchParams();
+        if (options.q?.trim()) params.set('q', options.q.trim());
+        if (options.type) params.set('type', options.type);
+        if (options.favorite !== undefined) params.set('favorite', String(options.favorite));
+        if (options.sort) params.set('sort', options.sort);
+        if (options.direction) params.set('direction', options.direction);
+        const response = await fetch(`${API_BASE}/api/files/folders/aggregation?${params.toString()}`, {
+            credentials: 'include',
+            headers: getHeaders(),
+            signal: options.signal,
+        });
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        if (!response.ok) throw new Error('获取文件夹统计失败');
+        const payload = await response.json();
+        return payload.folders;
     }
 
     // 获取文件列表
@@ -100,16 +166,16 @@ class FileAPI {
     }
 
     // 智能上传：小文件直传，大文件分块上传
-    async uploadFile(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
-        // 超过 80MB 使用分块上传（留一些余量）
-        if (file.size > 80 * 1024 * 1024) {
-            return this.chunkedUpload(file, folder, onProgress);
+    async uploadFile(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<{ success: boolean; file: FileData }> {
+        // 宿主代理限制为 50MiB；使用 40MiB 阈值保留 multipart/proxy 余量。
+        if (file.size > 40 * 1024 * 1024) {
+            return this.chunkedUpload(file, folder, onProgress, signal);
         }
-        return this.simpleUpload(file, folder, onProgress);
+        return this.simpleUpload(file, folder, onProgress, signal);
     }
 
     // 简单上传（适用于小文件）
-    private simpleUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
+    private simpleUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<{ success: boolean; file: FileData }> {
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             const formData = new FormData();
@@ -154,12 +220,19 @@ class FileAPI {
             xhr.open('POST', `${API_BASE}/api/upload`);
             xhr.withCredentials = true;
 
+            const abortUpload = () => xhr.abort();
+            if (signal?.aborted) {
+                abortUpload();
+                return;
+            }
+            signal?.addEventListener('abort', abortUpload, { once: true });
+            xhr.addEventListener('loadend', () => signal?.removeEventListener('abort', abortUpload), { once: true });
             xhr.send(formData);
         });
     }
 
     // 分块上传（适用于大文件）
-    private async chunkedUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void): Promise<{ success: boolean; file: FileData }> {
+    private async chunkedUpload(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<{ success: boolean; file: FileData }> {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let uploadedBytes = 0;
 
@@ -175,9 +248,10 @@ class FileAPI {
                 totalSize: file.size,
                 folder,
             }),
+            signal,
         });
 
-        if (initResponse.status === 401) throw new Error('UNAUTHORIZED');
+        if (initResponse.status === 401 || initResponse.status === 428) throw new Error('UNAUTHORIZED');
         if (!initResponse.ok) throw new Error('初始化分块上传失败');
 
         const { uploadId } = await initResponse.json();
@@ -188,6 +262,7 @@ class FileAPI {
                 const start = chunkIndex * CHUNK_SIZE;
                 const end = Math.min(start + CHUNK_SIZE, file.size);
                 const chunk = file.slice(start, end);
+                const chunkHash = await sha256Hex(chunk);
 
                 const chunkResponse = await fetch(`${API_BASE}/api/chunked/chunk`, {
                     credentials: 'include',
@@ -196,11 +271,14 @@ class FileAPI {
                         'Content-Type': 'application/octet-stream',
                         'X-Upload-Id': uploadId,
                         'X-Chunk-Index': chunkIndex.toString(),
+                        'X-Chunk-Size': chunk.size.toString(),
+                        'X-Chunk-Sha256': chunkHash,
                     }),
                     body: chunk,
+                    signal,
                 });
 
-                if (chunkResponse.status === 401) throw new Error('UNAUTHORIZED');
+                if (chunkResponse.status === 401 || chunkResponse.status === 428) throw new Error('UNAUTHORIZED');
                 if (!chunkResponse.ok) throw new Error(`上传分块 ${chunkIndex + 1}/${totalChunks} 失败`);
 
                 uploadedBytes += chunk.size;
@@ -220,9 +298,10 @@ class FileAPI {
                 method: 'POST',
                 headers: getHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({ uploadId }),
+                signal,
             });
 
-            if (completeResponse.status === 401) throw new Error('UNAUTHORIZED');
+            if (completeResponse.status === 401 || completeResponse.status === 428) throw new Error('UNAUTHORIZED');
             if (!completeResponse.ok) throw new Error('完成分块上传失败');
 
             return completeResponse.json();
@@ -257,20 +336,20 @@ class FileAPI {
     }
 
     // 删除文件
-    async deleteFile(id: string): Promise<{ success: boolean; message: string }> {
+    async deleteFile(id: string): Promise<{ status: 'complete'; deletedIds: string[]; message: string }> {
         const response = await fetch(`${API_BASE}/api/files/${id}`, {
             credentials: 'include',
             method: 'DELETE',
             headers: getHeaders(),
         });
         if (response.status === 401) throw new Error('UNAUTHORIZED');
-        if (!response.ok) throw new Error('删除文件失败');
-        return response.json();
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || payload.details || '删除文件失败');
+        return payload;
     }
 
-    // 批量删除
-    async batchDelete(fileIds: string[], folderNames: string[]): Promise<{ success: boolean; message: string }> {
-        const response = await fetch(`${API_BASE}/api/files/batch-delete`, {
+    async previewBatchDelete(fileIds: string[], folderNames: string[]): Promise<BatchDeletePreview> {
+        const response = await fetch(`${API_BASE}/api/files/batch-delete/preview`, {
             credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
@@ -279,9 +358,21 @@ class FileAPI {
         if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || error.message || '批量删除失败');
+            throw new Error(error.error || '获取删除影响范围失败');
         }
         return response.json();
+    }
+
+    // 批量删除
+    async batchDelete(confirmationToken: string): Promise<BatchDeleteResult> {
+        const response = await fetch(`${API_BASE}/api/files/batch-delete`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: getHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ confirmationToken }),
+        });
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        return classifyBatchDeleteResponse(response);
     }
 
     // 创建分享链接
@@ -585,7 +676,7 @@ class FileAPI {
     }
     // 获取收藏的文件
     async getFavoriteFiles(): Promise<FileData[]> {
-        const page = await this.getFilesPage({ favorites: true });
+        const page = await this.getFilesPage({ favorite: true });
         return page.files;
     }
 
@@ -621,35 +712,33 @@ class FileAPI {
         return response.json();
     }
 
-    async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, clientSecret?: string, name?: string): Promise<{ authUrl: string }> {
+    async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', clientSecret?: string, name?: string): Promise<OAuthStartResult> {
         const response = await fetch(`${API_BASE}/api/storage/config/onedrive/auth-url`, {
             credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ clientId, tenantId, redirectUri, clientSecret, name }),
+            body: JSON.stringify({ clientId, tenantId, clientSecret, name }),
         });
-
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '获取授权地址失败');
         }
-
         return response.json();
     }
 
-    async getGoogleDriveAuthUrl(clientId: string, clientSecret: string, redirectUri: string, name?: string, sharedDriveId?: string): Promise<{ authUrl: string }> {
+    async getGoogleDriveAuthUrl(clientId: string, clientSecret: string, name?: string, sharedDriveId?: string): Promise<OAuthStartResult> {
         const response = await fetch(`${API_BASE}/api/storage/config/google-drive/auth-url`, {
             credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ clientId, clientSecret, redirectUri, name, sharedDriveId }),
+            body: JSON.stringify({ clientId, clientSecret, name, sharedDriveId }),
         });
-
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.error || '获取授权地址失败');
         }
-
         return response.json();
     }
 }

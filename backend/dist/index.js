@@ -93,10 +93,17 @@ async function initializeDatabase() {
     await ensureFilesPerformanceIndexes();
     await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS preview_path VARCHAR(500)`);
     await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_hash VARCHAR(64)`);
+    await pool.query(`ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ`);
     await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS source_original TEXT`);
     await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'public'`);
     await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_reason TEXT`);
     await pool.query(`ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS web_sessions (
+            token_hash VARCHAR(64) PRIMARY KEY,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+        )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)`);
     await pool.query(`CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE CASCADE,
@@ -228,7 +235,7 @@ var init_secretStore = __esm({
 });
 
 // src/utils/credentialCrypto.ts
-import crypto2 from "crypto";
+import crypto3 from "crypto";
 function getCredentialSecret() {
   const secret = getOrCreatePersistentSecret("STORAGE_CREDENTIALS_SECRET", "storage_credentials_secret");
   if (secret.length < 32) {
@@ -242,15 +249,15 @@ function getCredentialSecret() {
   return secret;
 }
 function getKey() {
-  return crypto2.createHash("sha256").update(getCredentialSecret()).digest();
+  return crypto3.createHash("sha256").update(getCredentialSecret()).digest();
 }
 function isEncryptedCredential(value) {
   return typeof value === "string" && value.startsWith(ENCRYPTION_PREFIX);
 }
 function encryptCredential(value) {
   if (!value || isEncryptedCredential(value)) return value;
-  const iv = crypto2.randomBytes(12);
-  const cipher = crypto2.createCipheriv("aes-256-gcm", getKey(), iv);
+  const iv = crypto3.randomBytes(12);
+  const cipher = crypto3.createCipheriv("aes-256-gcm", getKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${ENCRYPTION_PREFIX}${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
@@ -261,7 +268,7 @@ function decryptCredential(value) {
   if (!ivText || !tagText || !cipherText) {
     throw new Error("Invalid encrypted credential format");
   }
-  const decipher = crypto2.createDecipheriv("aes-256-gcm", getKey(), Buffer.from(ivText, "base64url"));
+  const decipher = crypto3.createDecipheriv("aes-256-gcm", getKey(), Buffer.from(ivText, "base64url"));
   decipher.setAuthTag(Buffer.from(tagText, "base64url"));
   return Buffer.concat([
     decipher.update(Buffer.from(cipherText, "base64url")),
@@ -782,7 +789,7 @@ var init_storage = __esm({
         this.clientSecret = clientSecret;
         this.refreshToken = refreshToken;
         this.tenantId = tenantId;
-        console.log(`[OneDrive] Provider ${id} initialized with clientId:`, clientId.substring(0, 8) + "...", "Tenant:", tenantId);
+        console.log(`[OneDrive] Provider initialized: ${id}`);
       }
       id;
       clientId;
@@ -1398,6 +1405,10 @@ var init_storage = __esm({
        * 创建分享链接
        */
       async createShareLink(storedPath, password, expiration) {
+        if (password || expiration) {
+          const unsupported = [password ? "\u5BC6\u7801" : "", expiration ? "\u8FC7\u671F\u65F6\u95F4" : ""].filter(Boolean).join("\u548C");
+          return { link: "", error: `Google Drive \u666E\u901A\u8D26\u6237\u4E0D\u652F\u6301\u901A\u8FC7 API \u8BBE\u7F6E\u5206\u4EAB${unsupported}\uFF0C\u672A\u521B\u5EFA\u516C\u5F00\u6743\u9650\u3002` };
+        }
         await this.ensureAuthenticated();
         try {
           await this.drive.permissions.create(this.withSharedDriveSupport({
@@ -1416,11 +1427,7 @@ var init_storage = __esm({
             return { link: "", error: "Google Drive \u672A\u8FD4\u56DE\u6709\u6548\u7684\u5206\u4EAB\u94FE\u63A5" };
           }
           console.log("[GoogleDrive] Share link created successfully:", link);
-          let errorMsg = void 0;
-          if (password || expiration) {
-            errorMsg = "Google Drive \u666E\u901A\u8D26\u6237\u6682\u4E0D\u652F\u6301\u901A\u8FC7 API \u8BBE\u7F6E\u5206\u4EAB\u5BC6\u7801\u6216\u8FC7\u671F\u65F6\u95F4\uFF0C\u5DF2\u4E3A\u60A8\u751F\u6210\u516C\u5F00\u5206\u4EAB\u94FE\u63A5\u3002";
-          }
-          return { link, error: errorMsg };
+          return { link };
         } catch (error) {
           console.error("[GoogleDrive] Create share link failed:", error.message);
           return { link: "", error: `\u521B\u5EFA\u5206\u4EAB\u94FE\u63A5\u5931\u8D25: ${error.message}` };
@@ -1560,7 +1567,7 @@ var init_storage = __esm({
           }
         } catch (error) {
           console.error("Failed to init storage manager:", error);
-          this.activeProvider = this.providers.get("local");
+          throw error;
         }
       }
       async migrateLegacyConfig() {
@@ -1640,6 +1647,23 @@ var init_storage = __esm({
       }
       getActiveAccountId() {
         return this.activeAccountId;
+      }
+      getActiveTarget() {
+        const provider = this.activeProvider;
+        const accountId = this.activeAccountId;
+        return {
+          provider,
+          accountId,
+          providerKey: accountId ? `${provider.name}:${accountId}` : provider.name
+        };
+      }
+      getTarget(providerName, accountId) {
+        const providerKey = accountId ? `${providerName}:${accountId}` : providerName;
+        return {
+          provider: this.getProvider(providerKey),
+          accountId: accountId || null,
+          providerKey
+        };
       }
       async getAccounts() {
         const res = await query("SELECT id, name, type, is_active FROM storage_accounts ORDER BY created_at ASC");
@@ -1777,7 +1801,7 @@ import express from "express";
 import cors from "cors";
 import dotenv3 from "dotenv";
 import path22 from "path";
-import fs16 from "fs";
+import fs17 from "fs";
 
 // src/routes/files.ts
 init_db();
@@ -1786,7 +1810,7 @@ import fs12 from "fs";
 import path17 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto9 from "crypto";
+import crypto11 from "crypto";
 
 // src/utils/config.ts
 init_secretStore();
@@ -1809,13 +1833,42 @@ var TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TE
 
 // src/routes/auth.ts
 import { Router } from "express";
-import crypto8 from "crypto";
+init_db();
+
+// src/services/webSessionStore.ts
+import crypto2 from "node:crypto";
+function hashToken(token) {
+  return crypto2.createHash("sha256").update(token).digest("hex");
+}
+function createWebSessionStore(repository) {
+  return {
+    async issue(expiresAt, randomBytes2 = crypto2.randomBytes) {
+      const token = randomBytes2(32).toString("hex");
+      await repository.insert(hashToken(token), expiresAt);
+      return { token, expiresAt };
+    },
+    async verify(token, now = /* @__PURE__ */ new Date()) {
+      const session = await repository.find(hashToken(token));
+      if (!session) return false;
+      if (now >= new Date(session.expiresAt)) {
+        await repository.remove(hashToken(token));
+        return false;
+      }
+      return true;
+    },
+    revoke(token) {
+      return repository.remove(hashToken(token));
+    }
+  };
+}
+
+// src/routes/auth.ts
 import { rateLimit } from "express-rate-limit";
 
 // src/utils/security.ts
 import { TOTP, NobleCryptoPlugin, ScureBase32Plugin } from "otplib";
 import QRCode from "qrcode";
-import crypto3 from "crypto";
+import crypto4 from "crypto";
 
 // src/utils/settings.ts
 init_db();
@@ -1846,11 +1899,11 @@ async function setSetting(key, value) {
 
 // src/utils/security.ts
 function totpEncryptionKey() {
-  return crypto3.createHash("sha256").update(SESSION_SECRET).digest();
+  return crypto4.createHash("sha256").update(SESSION_SECRET).digest();
 }
 function encryptSecret(plain) {
-  const iv = crypto3.randomBytes(12);
-  const cipher = crypto3.createCipheriv("aes-256-gcm", totpEncryptionKey(), iv);
+  const iv = crypto4.randomBytes(12);
+  const cipher = crypto4.createCipheriv("aes-256-gcm", totpEncryptionKey(), iv);
   const ciphertext = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
@@ -1858,7 +1911,7 @@ function encryptSecret(plain) {
 function decryptSecret(value) {
   if (!value.startsWith("enc:v1:")) return value;
   const [, , ivText, tagText, cipherText] = value.split(":");
-  const decipher = crypto3.createDecipheriv("aes-256-gcm", totpEncryptionKey(), Buffer.from(ivText, "base64url"));
+  const decipher = crypto4.createDecipheriv("aes-256-gcm", totpEncryptionKey(), Buffer.from(ivText, "base64url"));
   decipher.setAuthTag(Buffer.from(tagText, "base64url"));
   return Buffer.concat([decipher.update(Buffer.from(cipherText, "base64url")), decipher.final()]).toString("utf8");
 }
@@ -1886,10 +1939,16 @@ async function getTOTPSecret() {
     return null;
   }
 }
-async function is2FAEnabled() {
+async function get2FAReadiness() {
+  const enabled = await getSetting("2fa_enabled", "false") === "true";
+  if (!enabled) return { enabled: false, ready: true };
   const secret = await getTOTPSecret();
-  const enabled = await getSetting("2fa_enabled", "false");
-  return !!secret && enabled === "true";
+  return secret ? { enabled: true, ready: true } : { enabled: true, ready: false, error: "enabled-but-unreadable" };
+}
+async function is2FAEnabled() {
+  const readiness = await get2FAReadiness();
+  if (!readiness.ready) throw new Error("2FA \u5DF2\u542F\u7528\uFF0C\u4F46\u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6\uFF1B\u4E3A\u9632\u6B62\u8BA4\u8BC1\u964D\u7EA7\uFF0C\u767B\u5F55\u5DF2\u88AB\u963B\u6B62");
+  return readiness.enabled;
 }
 async function activate2FA() {
   await setSetting("2fa_enabled", "true");
@@ -1898,8 +1957,13 @@ async function disable2FA() {
   await setSetting("2fa_enabled", "false");
 }
 async function verifyTOTP(token) {
+  const enabled = await getSetting("2fa_enabled", "false");
   const secret = await getTOTPSecret();
-  if (!secret) return true;
+  if (enabled !== "true") {
+    if (!secret) return false;
+  } else if (!secret) {
+    throw new Error("2FA \u5DF2\u542F\u7528\uFF0C\u4F46\u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6\uFF1B\u62D2\u7EDD\u964D\u7EA7\u8BA4\u8BC1");
+  }
   try {
     const result = await authenticator.verify(token, {
       secret
@@ -1946,21 +2010,22 @@ import path16 from "path";
 init_db();
 
 // src/utils/authSettings.ts
-import crypto4 from "crypto";
+init_db();
+import crypto5 from "crypto";
 var WEB_PASSWORD_KEY = "admin_password_hash";
 var TELEGRAM_PIN_KEY = "telegram_pin_hash";
 var TELEGRAM_ALLOWED_USERS_KEY = "telegram_allowed_user_ids";
 var SCRYPT_PREFIX = "scrypt:v1";
 function hashSecret(secret) {
-  const salt = crypto4.randomBytes(16).toString("base64url");
-  const derived = crypto4.scryptSync(secret, salt, 64).toString("base64url");
+  const salt = crypto5.randomBytes(16).toString("base64url");
+  const derived = crypto5.scryptSync(secret, salt, 64).toString("base64url");
   return `${SCRYPT_PREFIX}:${salt}:${derived}`;
 }
 function safeEqualText(a, b) {
   try {
     const left = Buffer.from(a);
     const right = Buffer.from(b);
-    return left.length === right.length && crypto4.timingSafeEqual(left, right);
+    return left.length === right.length && crypto5.timingSafeEqual(left, right);
   } catch {
     return false;
   }
@@ -1970,11 +2035,11 @@ function verifySecret(secret, stored) {
   if (stored.startsWith(`${SCRYPT_PREFIX}:`)) {
     const [, , salt, expected] = stored.split(":");
     if (!salt || !expected) return false;
-    const actual = crypto4.scryptSync(secret, salt, 64).toString("base64url");
+    const actual = crypto5.scryptSync(secret, salt, 64).toString("base64url");
     return safeEqualText(actual, expected);
   }
   if (/^[a-f0-9]{64}$/i.test(stored)) {
-    const actual = crypto4.createHash("sha256").update(secret).digest("hex");
+    const actual = crypto5.createHash("sha256").update(secret).digest("hex");
     return safeEqualText(actual, stored.toLowerCase());
   }
   return false;
@@ -2009,10 +2074,7 @@ function validateTelegramPin(pin) {
   }
   return null;
 }
-async function createInitialAdminCredentials(webPassword, telegramPin) {
-  if (!await isInitialSetupRequired()) {
-    throw new Error("\u7BA1\u7406\u5458\u5BC6\u7801\u5DF2\u521B\u5EFA\uFF0C\u4E0D\u80FD\u91CD\u590D\u521D\u59CB\u5316");
-  }
+async function createInitialAdminCredentialsWithClient(client2, webPassword, telegramPin) {
   const webError = validateWebPassword(webPassword);
   if (webError) throw new Error(webError);
   const pinError = validateTelegramPin(telegramPin);
@@ -2020,8 +2082,32 @@ async function createInitialAdminCredentials(webPassword, telegramPin) {
   if (webPassword === telegramPin) {
     throw new Error("\u7F51\u9875\u5BC6\u7801\u4E0D\u80FD\u4E0E Telegram Bot 4 \u4F4D\u5BC6\u7801\u76F8\u540C");
   }
-  await setSetting(WEB_PASSWORD_KEY, hashSecret(webPassword));
-  await setSetting(TELEGRAM_PIN_KEY, hashSecret(telegramPin));
+  await client2.query(`SELECT pg_advisory_xact_lock(hashtext('tg-vault:initial-admin-setup'))`);
+  const existing = await client2.query("SELECT value FROM system_settings WHERE key = $1 FOR UPDATE", [WEB_PASSWORD_KEY]);
+  if ((existing.rowCount || 0) > 0 && existing.rows[0]?.value) {
+    throw new Error("\u7BA1\u7406\u5458\u5BC6\u7801\u5DF2\u521B\u5EFA\uFF0C\u4E0D\u80FD\u91CD\u590D\u521D\u59CB\u5316");
+  }
+  await client2.query(
+    "INSERT INTO system_settings (key, value) VALUES ($1, $2)",
+    [WEB_PASSWORD_KEY, hashSecret(webPassword)]
+  );
+  await client2.query(
+    "INSERT INTO system_settings (key, value) VALUES ($1, $2)",
+    [TELEGRAM_PIN_KEY, hashSecret(telegramPin)]
+  );
+}
+async function createInitialAdminCredentials(webPassword, telegramPin) {
+  const client2 = await pool.connect();
+  try {
+    await client2.query("BEGIN");
+    await createInitialAdminCredentialsWithClient(client2, webPassword, telegramPin);
+    await client2.query("COMMIT");
+  } catch (error) {
+    await client2.query("ROLLBACK").catch(() => void 0);
+    throw error;
+  } finally {
+    client2.release();
+  }
 }
 function parseUserIds(value) {
   if (!value) return [];
@@ -2765,7 +2851,7 @@ init_db();
 import { Api as Api4 } from "telegram";
 import fs7 from "fs";
 import path11 from "path";
-import crypto7 from "crypto";
+import crypto9 from "crypto";
 import bigInt from "big-integer";
 
 // src/utils/thumbnail.ts
@@ -2773,7 +2859,7 @@ import path6 from "path";
 import sharp from "sharp";
 import ffmpeg from "fluent-ffmpeg";
 import fs5 from "fs";
-import crypto5 from "crypto";
+import crypto6 from "crypto";
 var THUMBNAIL_DIR = path6.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
 if (!fs5.existsSync(THUMBNAIL_DIR)) {
   fs5.mkdirSync(THUMBNAIL_DIR, { recursive: true });
@@ -2796,14 +2882,14 @@ async function generateMediaPreview(filePath, storedName, mimeType) {
   if (!fs5.existsSync(absFilePath)) return null;
   try {
     if (mimeType.startsWith("image/") && mimeType !== "image/gif") {
-      const previewName = `preview_${crypto5.randomUUID()}.webp`;
+      const previewName = `preview_${crypto6.randomUUID()}.webp`;
       const previewPath = path6.join(PREVIEW_DIR, previewName);
       await sharp(absFilePath).rotate().resize(2048, 2048, { fit: "inside", withoutEnlargement: true }).webp({ quality: 86, effort: 4 }).toFile(previewPath);
       console.log(`[Preview] \u2705 Image preview created: ${previewName}`);
       return previewPath;
     }
     if (mimeType.startsWith("video/")) {
-      const previewName = `preview_${crypto5.randomUUID()}.mp4`;
+      const previewName = `preview_${crypto6.randomUUID()}.mp4`;
       const previewPath = path6.join(PREVIEW_DIR, previewName);
       const mp4Like = isMp4Like(mimeType, storedName || absFilePath);
       if (mp4Like) {
@@ -2848,7 +2934,7 @@ async function generateMediaPreview(filePath, storedName, mimeType) {
 }
 async function generateThumbnail(filePath, storedName, mimeType) {
   const absFilePath = path6.resolve(filePath);
-  const thumbName = `thumb_${crypto5.randomUUID()}.webp`;
+  const thumbName = `thumb_${crypto6.randomUUID()}.webp`;
   const thumbPath = path6.join(THUMBNAIL_DIR, thumbName);
   console.log(`[Thumbnail] \u{1F680} Starting generation for: ${storedName}`);
   console.log(`[Thumbnail] Source: ${absFilePath}`);
@@ -2943,6 +3029,37 @@ async function getImageDimensions(filePath, mimeType) {
 // src/services/telegramUpload.ts
 init_storage();
 
+// src/services/taskAbortRegistry.ts
+var TaskAbortRegistry = class {
+  controllers = /* @__PURE__ */ new Map();
+  acquire(taskId) {
+    const current = this.controllers.get(taskId);
+    if (current && !current.controller.signal.aborted) {
+      current.references += 1;
+      return current.controller;
+    }
+    const controller = new AbortController();
+    this.controllers.set(taskId, { controller, references: 1 });
+    return controller;
+  }
+  get(taskId) {
+    return this.controllers.get(taskId)?.controller;
+  }
+  cancel(taskId, reason = "\u4EFB\u52A1\u5DF2\u53D6\u6D88") {
+    const entry = this.controllers.get(taskId);
+    if (!entry || entry.controller.signal.aborted) return false;
+    entry.controller.abort(reason);
+    this.controllers.delete(taskId);
+    return true;
+  }
+  release(taskId, controller) {
+    const entry = this.controllers.get(taskId);
+    if (!entry || entry.controller !== controller) return;
+    entry.references -= 1;
+    if (entry.references <= 0) this.controllers.delete(taskId);
+  }
+};
+
 // src/services/storageCooldownGuard.ts
 init_storage();
 init_storageCooldown();
@@ -2972,14 +3089,12 @@ function sendStorageCooldownHttpError(res, error) {
   const payload = buildStorageCooldownHttpError(error);
   res.status(payload.status).json(payload.body);
 }
-async function getActiveStorageCooldown() {
-  const provider = storageManager.getProvider();
-  const activeAccountId = storageManager.getActiveAccountId();
-  if (provider.name !== "google_drive" || !activeAccountId) return null;
-  return getStorageAccountCooldown(activeAccountId, provider.name, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
+async function getStorageCooldown(target) {
+  if (target.provider.name !== "google_drive" || !target.accountId) return null;
+  return getStorageAccountCooldown(target.accountId, target.provider.name, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
 }
-async function assertActiveStorageWritable() {
-  const cooldown = await getActiveStorageCooldown();
+async function assertStorageTargetWritable(target) {
+  const cooldown = await getStorageCooldown(target);
   if (!cooldown) return;
   throw new StorageQuotaCooldownError("Google Drive \u4ECA\u65E5\u4E0A\u4F20\u989D\u5EA6\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u8BF7\u7B49\u5F85\u81EA\u52A8\u6062\u590D\u540E\u518D\u4E0A\u4F20\uFF0C\u6216\u4E34\u65F6\u5207\u6362\u5176\u5B83\u5B58\u50A8\u6E90\u3002", {
     provider: cooldown.provider,
@@ -2987,6 +3102,9 @@ async function assertActiveStorageWritable() {
     storageAccountId: cooldown.storageAccountId,
     cooldownUntil: cooldown.cooldownUntil
   });
+}
+async function assertActiveStorageWritable() {
+  return assertStorageTargetWritable(storageManager.getActiveTarget());
 }
 function isStorageCooldownError(error) {
   return isStorageQuotaCooldownError(error);
@@ -3169,35 +3287,16 @@ function extractFileInfo(message) {
 }
 
 // src/utils/fileUtils.ts
-init_db();
 import path8 from "path";
-async function getUniqueStoredName(originalName, folder = null, storageAccountId = null) {
+import crypto7 from "crypto";
+async function getUniqueStoredName(originalName, _folder = null, _storageAccountId = null) {
   const sanitizedName = sanitizeFilename(originalName);
   const ext = path8.extname(sanitizedName);
-  const baseName = ext ? sanitizedName.slice(0, -ext.length) : sanitizedName;
-  let currentName = sanitizedName;
-  let counter = 1;
-  let exists = true;
-  while (exists) {
-    let checkQuery = "";
-    let params = [];
-    if (storageAccountId) {
-      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND folder IS NOT DISTINCT FROM $2 AND storage_account_id = $3";
-      params = [currentName, folder, storageAccountId];
-    } else {
-      checkQuery = "SELECT COUNT(*)::int as cnt FROM files WHERE stored_name = $1 AND folder IS NOT DISTINCT FROM $2 AND source = 'local'";
-      params = [currentName, folder];
-    }
-    const result = await query(checkQuery, params);
-    const count = result.rows[0]?.cnt || 0;
-    if (count === 0) {
-      exists = false;
-    } else {
-      currentName = `${baseName} (${counter})${ext}`;
-      counter++;
-    }
-  }
-  return currentName;
+  const rawBaseName = ext ? sanitizedName.slice(0, -ext.length) : sanitizedName;
+  const suffix = `--${crypto7.randomUUID()}`;
+  const maxBaseLength = Math.max(1, 255 - ext.length - suffix.length);
+  const baseName = rawBaseName.slice(0, maxBaseLength) || "file";
+  return `${baseName}${suffix}${ext}`;
 }
 
 // src/utils/storagePath.ts
@@ -3359,7 +3458,7 @@ async function getTelegramBatchFolderName(message, fallback) {
 
 // src/utils/telegramNaming.ts
 import path10 from "path";
-import crypto6 from "crypto";
+import crypto8 from "crypto";
 function normalizeExtension(extension) {
   if (!extension) return "";
   const trimmed = extension.trim();
@@ -3431,7 +3530,7 @@ function buildTelegramGeneratedFileName(options) {
       return appendSequenceNumber(nameWithExtension, options.sequenceNumber);
     }
   }
-  const suffix = sanitizeFilename(options.randomSuffix || crypto6.randomBytes(4).toString("hex")).replace(/\s+/g, "_");
+  const suffix = sanitizeFilename(options.randomSuffix || crypto8.randomBytes(4).toString("hex")).replace(/\s+/g, "_");
   return appendSequenceNumber(`${fallbackPrefix(options.mimeType)}_${suffix}${ext}`, options.sequenceNumber);
 }
 function resolveTelegramGeneratedFileName(options) {
@@ -3778,6 +3877,7 @@ var DownloadTaskQueue = class {
   maxConcurrent;
   idFactory;
   userPaused = false;
+  scopedUserPauses = /* @__PURE__ */ new Map();
   systemPause;
   diskPressureBlockers = /* @__PURE__ */ new Map();
   constructor(options = {}) {
@@ -3930,13 +4030,14 @@ var DownloadTaskQueue = class {
     const systemBlocked = Boolean(this.systemPause);
     const pausing = groups.some((group) => group.state === "pausing");
     const groupPaused = groups.some((group) => group.state === "paused");
-    const paused = systemBlocked || this.userPaused || groupPaused;
+    const scopedPause = this.getScopedUserPause(scope);
+    const paused = systemBlocked || this.userPaused || Boolean(scopedPause) || groupPaused;
     return {
       paused,
       pausing,
       systemBlocked,
-      userPaused: this.userPaused || groupPaused,
-      reason: systemBlocked ? this.systemPause?.reason || "\u7CFB\u7EDF\u4FDD\u62A4\u6682\u505C" : this.userPaused || groupPaused ? "\u7528\u6237\u5DF2\u6682\u505C\u4EFB\u52A1" : pausing ? "\u6B63\u5728\u5B8C\u6210\u5F53\u524D\u6587\u4EF6\uFF0C\u968F\u540E\u6682\u505C" : void 0,
+      userPaused: this.userPaused || Boolean(scopedPause) || groupPaused,
+      reason: systemBlocked ? this.systemPause?.reason || "\u7CFB\u7EDF\u4FDD\u62A4\u6682\u505C" : this.userPaused || scopedPause || groupPaused ? scopedPause?.reason || "\u7528\u6237\u5DF2\u6682\u505C\u4EFB\u52A1" : pausing ? "\u6B63\u5728\u5B8C\u6210\u5F53\u524D\u6587\u4EF6\uFF0C\u968F\u540E\u6682\u505C" : void 0,
       systemPause: this.systemPause
     };
   }
@@ -4013,7 +4114,6 @@ var DownloadTaskQueue = class {
     if (access.status !== "ok" || !access.record) return this.controlResult(access.status, access.record);
     const group = access.record;
     if (this.systemPause) return this.controlResult("blocked", group);
-    if (this.userPaused) this.userPaused = false;
     if (group.stateOverride === "cancelling" || group.stateOverride === "cancelled") {
       return this.controlResult("terminal", group);
     }
@@ -4034,7 +4134,6 @@ var DownloadTaskQueue = class {
     }
     if (this.snapshotGroup(group).state === "completed") return this.controlResult("terminal", group);
     group.stateOverride = "cancelling";
-    if (this.userPaused) this.userPaused = false;
     group.updatedAt = Date.now();
     const removed = [];
     this.queue = this.queue.filter((task) => {
@@ -4075,6 +4174,15 @@ var DownloadTaskQueue = class {
   }
   resume() {
     return this.resumeAll("user");
+  }
+  pauseScope(scope, reason = "\u7528\u6237\u5DF2\u6682\u505C\u5F53\u524D\u804A\u5929\u4E0B\u8F7D\u961F\u5217") {
+    this.scopedUserPauses.set(this.scopePauseKey(scope), { scope: { ...scope }, reason });
+    return this.countsForScope(scope);
+  }
+  resumeScope(scope) {
+    this.scopedUserPauses.delete(this.scopePauseKey(scope));
+    this.processNext();
+    return this.countsForScope(scope);
   }
   acquireDiskPressureBlocker(blockerId, reason, recheckMs) {
     const id = blockerId.trim();
@@ -4149,7 +4257,7 @@ var DownloadTaskQueue = class {
       active += result.active;
       pending += result.pending;
     }
-    if (this.userPaused) this.userPaused = false;
+    this.scopedUserPauses.delete(this.scopePauseKey(scope));
     this.processNext();
     return { active, pending, total: active + pending };
   }
@@ -4175,7 +4283,7 @@ var DownloadTaskQueue = class {
     while (!this.isGloballyPaused() && this.active.length < this.maxConcurrent && this.queue.length > 0) {
       const runnableIndex = this.queue.findIndex((task2) => {
         const group = this.groups.get(task2.groupId);
-        return group && !["pausing", "paused", "cancelling", "cancelled"].includes(group.stateOverride || "");
+        return group && !this.isGroupScopePaused(group) && !["pausing", "paused", "cancelling", "cancelled"].includes(group.stateOverride || "");
       });
       if (runnableIndex < 0) break;
       const [task] = this.queue.splice(runnableIndex, 1);
@@ -4243,6 +4351,12 @@ var DownloadTaskQueue = class {
       total: this.active.length + this.queue.length
     };
   }
+  countsForScope(scope) {
+    const groupIds = new Set(Array.from(this.groups.values()).filter((group) => this.matchesScope(group, scope)).map((group) => group.id));
+    const active = this.active.filter((task) => groupIds.has(task.groupId)).length;
+    const pending = this.queue.filter((task) => groupIds.has(task.groupId)).length;
+    return { active, pending, total: active + pending };
+  }
   refreshDiskPressurePause() {
     if (this.diskPressureBlockers.size === 0) {
       this.systemPause = void 0;
@@ -4269,8 +4383,9 @@ var DownloadTaskQueue = class {
   }
   snapshotForDisplay(group) {
     const snapshot = this.snapshotGroup(group);
-    if (this.isGloballyPaused() && snapshot.state === "waiting") snapshot.state = "paused";
-    snapshot.reason = this.systemPause ? this.systemPause.reason : this.userPaused ? "\u7528\u6237\u5DF2\u6682\u505C\u4E0B\u8F7D\u961F\u5217" : snapshot.reason;
+    const scopedPause = this.getScopedUserPause(group);
+    if ((this.isGloballyPaused() || scopedPause) && snapshot.state === "waiting") snapshot.state = "paused";
+    snapshot.reason = this.systemPause ? this.systemPause.reason : scopedPause?.reason || (this.userPaused ? "\u7528\u6237\u5DF2\u6682\u505C\u4E0B\u8F7D\u961F\u5217" : snapshot.reason);
     snapshot.systemPause = this.systemPause;
     return snapshot;
   }
@@ -4289,7 +4404,8 @@ var DownloadTaskQueue = class {
     } else {
       state = "completed";
     }
-    if (this.isGloballyPaused() && state === "waiting" && pendingTasks.length > 0) {
+    const scopedPause = this.getScopedUserPause(group);
+    if ((this.isGloballyPaused() || scopedPause) && state === "waiting" && pendingTasks.length > 0) {
       state = "paused";
     }
     return {
@@ -4310,7 +4426,7 @@ var DownloadTaskQueue = class {
       failed: group.failed,
       cancelled: group.cancelled,
       currentFileName: activeTasks[0]?.fileName,
-      reason: this.systemPause ? this.systemPause.reason : this.userPaused && state === "paused" ? "\u7528\u6237\u5DF2\u6682\u505C\u4E0B\u8F7D\u961F\u5217" : void 0,
+      reason: this.systemPause ? this.systemPause.reason : state === "paused" && (scopedPause || this.userPaused) ? scopedPause?.reason || "\u7528\u6237\u5DF2\u6682\u505C\u4E0B\u8F7D\u961F\u5217" : void 0,
       systemPause: this.systemPause,
       createdAt: group.createdAt,
       updatedAt: group.updatedAt
@@ -4329,6 +4445,23 @@ var DownloadTaskQueue = class {
     if (scope.chatId !== void 0 && group.chatId !== scope.chatId) return false;
     if (scope.userId !== void 0 && group.userId !== scope.userId) return false;
     return true;
+  }
+  scopePauseKey(scope) {
+    if (scope.chatId === void 0 && scope.userId === void 0) {
+      throw new Error("\u4F5C\u7528\u57DF\u6682\u505C\u5FC5\u987B\u5305\u542B chatId \u6216 userId");
+    }
+    return `${scope.userId ?? "*"}:${scope.chatId ?? "*"}`;
+  }
+  getScopedUserPause(scope) {
+    for (const pause of this.scopedUserPauses.values()) {
+      const chatMatches = pause.scope.chatId === void 0 || pause.scope.chatId === scope.chatId;
+      const userMatches = pause.scope.userId === void 0 || pause.scope.userId === scope.userId;
+      if (chatMatches && userMatches) return pause;
+    }
+    return void 0;
+  }
+  isGroupScopePaused(group) {
+    return Boolean(this.getScopedUserPause(group));
   }
   resolveGroupForControl(groupId, scope, includeHidden = false) {
     const exact = this.groups.get(groupId);
@@ -4354,6 +4487,35 @@ var DownloadTaskQueue = class {
     };
   }
 };
+
+// src/services/storageWrite.ts
+async function compensateIndexedWriteAfterCancel(input) {
+  try {
+    await input.deleteObject(input.savedPath);
+    const indexDeleted = await input.deleteIndex(input.fileId);
+    if (!indexDeleted) throw new Error("\u6570\u636E\u5E93\u7D22\u5F15\u8865\u507F\u5F71\u54CD 0 \u884C");
+    return { status: "compensated" };
+  } catch (error) {
+    return {
+      status: "reconciliation-required",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+async function saveAndIndexWithCompensation(provider, tempPath, storedName, mimeType, folder, indexStoredObject) {
+  const storedPath = await provider.saveFile(tempPath, storedName, mimeType, folder);
+  try {
+    await indexStoredObject(storedPath);
+    return storedPath;
+  } catch (error) {
+    try {
+      await provider.deleteFile(storedPath);
+    } catch (cleanupError) {
+      console.error(`\u5B58\u50A8\u7D22\u5F15\u5931\u8D25\u540E\u56DE\u6EDA\u5BF9\u8C61\u5931\u8D25: ${storedPath}`, cleanupError);
+    }
+    throw error;
+  }
+}
 
 // src/services/telegramUpload.ts
 var UPLOAD_DIR = process.env.UPLOAD_DIR || "./data/uploads";
@@ -4468,7 +4630,7 @@ async function getDiskWatermarkState(requiredBytes = 0) {
 }
 async function waitForDiskWatermark(requiredBytes = 0, signal) {
   const startedAt = Date.now();
-  const blockerId = crypto7.randomUUID();
+  const blockerId = crypto9.randomUUID();
   let announcedPause = false;
   try {
     while (true) {
@@ -4664,6 +4826,7 @@ async function safeReply(message, params) {
 var downloadQueue = new DownloadTaskQueue({
   maxConcurrent: normalizeFileDownloadConcurrency(process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY)
 });
+var channelTaskAbortRegistry = new TaskAbortRegistry();
 var statusActionLocks = /* @__PURE__ */ new Map();
 var lastSilentNotificationTimeMap = /* @__PURE__ */ new Map();
 async function runStatusAction(chatId, action) {
@@ -4705,28 +4868,29 @@ function removeTaskControlScope(taskId) {
   taskIdControlScopes.delete(taskId);
 }
 function canControlTask(taskId, chatId, userId) {
-  if (!taskId || !chatId) return false;
+  if (!taskId || !chatId || userId === void 0) return false;
   const scope = taskIdControlScopes.get(taskId.trim());
-  if (!scope) return false;
+  if (!scope || scope.userId === void 0) return false;
   if (scope.chatId !== chatId) return false;
-  if (scope.userId !== void 0 && userId !== void 0 && scope.userId !== userId) return false;
+  if (scope.userId !== userId) return false;
   return true;
 }
-function getSilentSession(chatIdStr) {
+function getSilentSession(chatIdStr, userId) {
   let s = silentSessionMap.get(chatIdStr);
   if (!s) {
+    if (userId === void 0) throw new Error("\u521B\u5EFA\u9759\u9ED8\u4EFB\u52A1\u7F3A\u5C11\u6240\u6709\u8005");
     const taskId = createSessionTaskId();
     s = { total: 0, completed: 0, failed: 0, taskId, knownTaskKeys: /* @__PURE__ */ new Set(), knownTaskCounts: /* @__PURE__ */ new Map(), folders: /* @__PURE__ */ new Set(), providers: /* @__PURE__ */ new Set() };
     silentSessionMap.set(chatIdStr, s);
-    registerTaskControlScope(taskId, chatIdStr);
+    registerTaskControlScope(taskId, chatIdStr, userId);
   }
   return s;
 }
-function startSilentSession(chatIdStr, total) {
+function startSilentSession(chatIdStr, total, userId) {
   const taskId = createSessionTaskId();
   const s = { total, completed: 0, failed: 0, taskId, knownTaskKeys: /* @__PURE__ */ new Set(), knownTaskCounts: /* @__PURE__ */ new Map(), folders: /* @__PURE__ */ new Set(), providers: /* @__PURE__ */ new Set() };
   silentSessionMap.set(chatIdStr, s);
-  registerTaskControlScope(taskId, chatIdStr);
+  registerTaskControlScope(taskId, chatIdStr, userId);
   return s;
 }
 async function finalizeSilentSessionIfDone(client2, chatId) {
@@ -4788,7 +4952,7 @@ function getBackgroundFileCount(chatIdStr) {
   appendTelegramDebugLog(logLine);
   return count;
 }
-async function trySilentMode(client2, chatId, message) {
+async function trySilentMode(client2, chatId, message, ownerUserId) {
   const chatIdStr = chatId.toString();
   const fileCount = getBackgroundFileCount(chatIdStr);
   const isSilent = silentSessionMap.has(chatIdStr);
@@ -4800,7 +4964,8 @@ async function trySilentMode(client2, chatId, message) {
     if (!isSilent) {
       await deleteLastStatusMessage(client2, chatId);
       const transferSession = syncChatTransferSession(chatIdStr);
-      const silentSession = startSilentSession(chatIdStr, transferSession.total);
+      if (ownerUserId === void 0) throw new Error("\u8FDB\u5165\u9759\u9ED8\u6A21\u5F0F\u7F3A\u5C11\u4EFB\u52A1\u6240\u6709\u8005");
+      const silentSession = startSilentSession(chatIdStr, transferSession.total, ownerUserId);
       silentSession.knownTaskKeys = new Set(transferSession.knownTaskKeys);
       silentSession.knownTaskCounts = new Map(transferSession.knownTaskCounts);
       console.log(`[TG][silent] ACTIVATED chat=${chatIdStr} files=${fileCount}`);
@@ -5069,7 +5234,7 @@ async function refreshConsolidatedMessage(client2, chatId, replyTo) {
 `;
   appendTelegramDebugLog(logLine);
   if (alreadySilent || fileCount > 3) {
-    await trySilentMode(client2, chatId, replyTo);
+    await trySilentMode(client2, chatId, replyTo, replyTo?.senderId?.toJSNumber());
     return;
   }
   const files = getConsolidatedFiles(chatIdStr);
@@ -5145,10 +5310,10 @@ function cancelDownloadTaskGroup(groupId, chatId, userId) {
   return downloadQueue.cancelGroup(groupId, { chatId, userId }, "\u7528\u6237\u901A\u8FC7\u4EFB\u52A1\u4E2D\u5FC3\u53D6\u6D88\u4EFB\u52A1");
 }
 function ordinaryGroupId(prefix, chatId, identity) {
-  return `${prefix}${crypto7.createHash("sha256").update(`${chatId}:${identity}`).digest("base64url").slice(0, 22)}`;
+  return `${prefix}${crypto9.createHash("sha256").update(`${chatId}:${identity}`).digest("base64url").slice(0, 22)}`;
 }
 function channelExecutionGroupId(key) {
-  return `j${crypto7.createHash("sha256").update(key).digest("base64url").slice(0, 22)}`;
+  return `j${crypto9.createHash("sha256").update(key).digest("base64url").slice(0, 22)}`;
 }
 function getChannelExecutionGroup(jobId) {
   return downloadQueue.getGroup(channelExecutionGroupId(jobId), {}, true);
@@ -5162,7 +5327,15 @@ function pauseChannelExecutionGroup(jobId) {
 function resumeChannelExecutionGroup(jobId) {
   return downloadQueue.resumeGroup(channelExecutionGroupId(jobId), {}, true);
 }
+function getChannelTaskAbortSignal(jobId) {
+  return channelTaskAbortRegistry.acquire(jobId).signal;
+}
+function releaseChannelTaskAbortSignal(jobId, signal) {
+  const controller = channelTaskAbortRegistry.get(jobId);
+  if (controller?.signal === signal) channelTaskAbortRegistry.release(jobId, controller);
+}
 function cancelChannelExecutionGroup(jobId) {
+  channelTaskAbortRegistry.cancel(jobId, "\u7528\u6237\u53D6\u6D88\u9891\u9053\u4EFB\u52A1");
   return downloadQueue.cancelGroup(channelExecutionGroupId(jobId), {}, "\u7528\u6237\u53D6\u6D88\u9891\u9053\u4EFB\u52A1", true);
 }
 function resolveTaskChatIdForControl(taskId) {
@@ -5171,48 +5344,23 @@ function resolveTaskChatIdForControl(taskId) {
 function forceStopDownloadTasksForScope(chatId, userId, reason) {
   return downloadQueue.cancelScope({ chatId, userId }, reason);
 }
-function pauseDownloadTasks(taskId) {
+function pauseDownloadTasks(taskId, chatId, userId) {
   if (taskId) {
     const scope = taskIdControlScopes.get(taskId.trim());
     if (!scope) return { active: 0, pending: 0, total: 0 };
-    downloadQueue.resumeAll("user");
-    const groups = downloadQueue.getSnapshot(scope).groups;
-    let active = 0;
-    let pending = 0;
-    for (const group of groups) {
-      const result = downloadQueue.pauseGroup(group.id, scope);
-      if (result.status !== "ok") continue;
-      active += result.active;
-      pending += result.pending;
-    }
-    return { active, pending, total: active + pending };
+    return downloadQueue.pauseScope(scope);
   }
-  return downloadQueue.pause();
+  if (!chatId || userId === void 0) return { active: 0, pending: 0, total: 0 };
+  return downloadQueue.pauseScope({ chatId, userId });
 }
-function resumeDownloadTasks(taskId) {
+function resumeDownloadTasks(taskId, chatId, userId) {
   if (taskId) {
     const scope = taskIdControlScopes.get(taskId.trim());
     if (!scope) return { active: 0, pending: 0, total: 0 };
-    downloadQueue.resumeAll("user");
-    const groups = downloadQueue.getSnapshot(scope).groups;
-    let active = 0;
-    let pending = 0;
-    for (const group of groups) {
-      const result = downloadQueue.resumeGroup(group.id, scope);
-      if (result.status !== "ok") continue;
-      active += result.active;
-      pending += result.pending;
-    }
-    return { active, pending, total: active + pending };
+    return downloadQueue.resumeScope(scope);
   }
-  return downloadQueue.resume();
-}
-function cancelDownloadTask(selector) {
-  const normalized = selector?.trim();
-  if (normalized && resolveTaskChatId(normalized)) {
-    return downloadQueue.cancel("no-such-task-selector", `\u7528\u6237\u901A\u8FC7 /task_cancel ${normalized} \u53D6\u6D88\u4EFB\u52A1`);
-  }
-  return downloadQueue.cancel(normalized, "\u7528\u6237\u901A\u8FC7 /task_cancel \u53D6\u6D88\u4EFB\u52A1");
+  if (!chatId || userId === void 0) return { active: 0, pending: 0, total: 0 };
+  return downloadQueue.resumeScope({ chatId, userId });
 }
 async function cancelSilentTask(client2, chatId, taskId, fallbackMessageId, userId) {
   const mappedChatId = resolveTaskChatId(taskId);
@@ -5223,7 +5371,9 @@ async function cancelSilentTask(client2, chatId, taskId, fallbackMessageId, user
   }
   const session = silentSessionMap.get(chatIdStr);
   const silentMsgId = silentNoticeMessageIdMap.get(chatIdStr) || fallbackMessageId;
-  const result = cancelDownloadTask(taskId);
+  const scope = taskIdControlScopes.get(taskId.trim());
+  if (!scope) throw new Error("\u4EFB\u52A1\u63A7\u5236\u4F5C\u7528\u57DF\u5DF2\u5931\u6548");
+  const result = downloadQueue.cancelScope(scope, "\u7528\u6237\u901A\u8FC7\u9759\u9ED8\u4EFB\u52A1\u5361\u53D6\u6D88\u5F53\u524D\u4E0B\u8F7D\u4EFB\u52A1");
   const total = Math.max(session?.total || 0, result.total);
   const completed = session?.completed || 0;
   const failed = session?.failed || 0;
@@ -5260,7 +5410,7 @@ var mediaGroupDebouncer = createTelegramMediaGroupDebouncer({
 });
 async function downloadAndSaveFile(client2, message, originalFileName, targetDir, onProgress, signal) {
   const ext = path11.extname(originalFileName) || "";
-  const tempStoredName = `${crypto7.randomUUID()}${ext}`;
+  const tempStoredName = `${crypto9.randomUUID()}${ext}`;
   let saveDir = targetDir || UPLOAD_DIR;
   if (!fs7.existsSync(saveDir)) {
     try {
@@ -5355,12 +5505,13 @@ async function downloadAndSaveFile(client2, message, originalFileName, targetDir
     return null;
   }
 }
-async function waitForChannelExecutionPermission(getExecutionControlState, signal) {
+async function waitForChannelExecutionPermission(getExecutionControlState, signal, options = {}) {
   if (!getExecutionControlState) return "run";
   while (true) {
     if (signal.aborted) return "cancelled";
     const state = await getExecutionControlState();
     if (state === "run") return "run";
+    if (state === "paused" && options.allowUserPauseForActiveWorker) return "run";
     if (state === "cancelled") return "cancelled";
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -5403,8 +5554,10 @@ async function processFileUpload(client2, file, queue, groupId, getExecutionCont
     let localFilePath;
     let storedName;
     try {
-      const activeAccountId = storageManager.getActiveAccountId();
-      await assertActiveStorageWritable();
+      const storageTarget = file.storageTarget || queue?.storageTarget || storageManager.getActiveTarget();
+      file.storageTarget = storageTarget;
+      const { provider, accountId: activeAccountId } = storageTarget;
+      await assertStorageTargetWritable(storageTarget);
       const chatName = await getTelegramChatName(file.message);
       file.fileName = await getCanonicalTelegramFileName(file.message, file.fileName, file.mimeType, file.sharedCaption, file.groupIndex, file.generatedName !== false);
       if (queue?.chatId) {
@@ -5449,7 +5602,6 @@ async function processFileUpload(client2, file, queue, groupId, getExecutionCont
         }
       }
       if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
-      const provider = storageManager.getProvider();
       const storageLockKey = `${provider.name}:${activeAccountId || "local"}:${storageFolder || ""}`;
       return await withTelegramStorageWriteLock(storageLockKey, async () => {
         if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
@@ -5465,27 +5617,36 @@ async function processFileUpload(client2, file, queue, groupId, getExecutionCont
           }
         }
         let finalPath = localFilePath;
+        let indexedFileId = null;
         let sourceRef = provider.name;
-        const permissionBeforeStore = await waitForChannelExecutionPermission(getExecutionControlState, signal || new AbortController().signal);
+        const permissionBeforeStore = await waitForChannelExecutionPermission(
+          getExecutionControlState,
+          signal || new AbortController().signal,
+          { allowUserPauseForActiveWorker: true }
+        );
         if (permissionBeforeStore === "cancelled" || signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
-        try {
-          finalPath = await provider.saveFile(localFilePath, storedName, file.mimeType, storageFolder);
-          if (fs7.existsSync(localFilePath)) {
-            fs7.unlinkSync(localFilePath);
-          }
-          localFilePath = void 0;
-        } catch (err) {
-          console.error("\u4FDD\u5B58\u6587\u4EF6\u5230\u5B58\u50A8\u63D0\u4F9B\u5546\u5931\u8D25:", err);
-          throw err;
-        }
+        finalPath = await saveAndIndexWithCompensation(provider, localFilePath, storedName, file.mimeType, storageFolder, async (savedPath) => {
+          const inserted = await query(`
+                        INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        RETURNING id
+                    `, [file.fileName, storedName, fileType, file.mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+          indexedFileId = String(inserted.rows[0].id);
+        });
+        if (fs7.existsSync(localFilePath)) fs7.unlinkSync(localFilePath);
+        localFilePath = void 0;
         if (signal?.aborted) {
-          await provider.deleteFile(finalPath).catch((error) => console.error(`\u{1F916} \u53D6\u6D88\u4EFB\u52A1\u65F6\u56DE\u6EDA\u5DF2\u4FDD\u5B58\u6587\u4EF6\u5931\u8D25: ${finalPath}`, error));
+          const compensation = indexedFileId ? await compensateIndexedWriteAfterCancel({
+            fileId: indexedFileId,
+            savedPath: finalPath,
+            deleteIndex: async (fileId) => (await query("DELETE FROM files WHERE id = $1", [fileId])).rowCount === 1,
+            deleteObject: (savedPath) => provider.deleteFile(savedPath)
+          }) : { status: "reconciliation-required", error: "\u53D6\u6D88\u8865\u507F\u7F3A\u5C11\u6587\u4EF6\u7D22\u5F15 ID" };
+          if (compensation.status !== "compensated") {
+            throw new Error(`\u4E0B\u8F7D\u4EFB\u52A1\u53D6\u6D88\u540E\u9700\u8981\u4EBA\u5DE5\u5BF9\u8D26: ${compensation.error}`);
+          }
           throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
         }
-        await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [file.fileName, storedName, fileType, file.mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
         file.status = "success";
         file.size = actualSize;
         file.fileType = fileType;
@@ -5500,7 +5661,7 @@ async function processFileUpload(client2, file, queue, groupId, getExecutionCont
     } catch (error) {
       console.error("\u{1F916} \u6587\u4EF6\u4E0A\u4F20\u5931\u8D25:", error);
       if (isStorageQuotaCooldownError(error)) {
-        await markStorageAccountCooldown(error.storageAccountId || storageManager.getActiveAccountId(), error.provider, error.reason, error.cooldownUntil, error.message);
+        await markStorageAccountCooldown(error.storageAccountId || file.storageTarget?.accountId, error.provider, error.reason, error.cooldownUntil, error.message);
         file.storageCooldownUntil = error.cooldownUntil;
         file.error = formatStorageCooldownNotice(error.cooldownUntil);
         if (localFilePath && fs7.existsSync(localFilePath)) {
@@ -5777,7 +5938,7 @@ function normalizeTelegramDownloadRefs(refs, defaultSourceEntity) {
   if (!refs) return void 0;
   return refs.filter((ref) => ref.id > 0).map((ref) => ({ ...ref, source: ref.source || defaultSourceEntity }));
 }
-async function downloadTelegramChannelRange(botClient, requestMessage, source, startMessageId, limit = 50, direction = "older", explicitIds, folderOverride, explicitRefs, onItemSettled, executionGroupKey, getExecutionControlState) {
+async function downloadTelegramChannelRange(botClient, requestMessage, source, startMessageId, limit = 50, direction = "older", explicitIds, folderOverride, explicitRefs, onItemSettled, executionGroupKey, getExecutionControlState, taskSignal, ownerUserId, storageTarget = storageManager.getActiveTarget()) {
   const userClient2 = getTelegramUserClient();
   if (!userClient2 || !isTelegramUserClientReady()) {
     throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u4E0B\u8F7D\u5668\u672A\u5C31\u7EEA\uFF1A\u8BF7\u5148\u914D\u7F6E TELEGRAM_API_ID / TELEGRAM_API_HASH \u5E76\u751F\u6210 user session");
@@ -5817,6 +5978,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         id: ref.id,
         sourceKey: sourceKeyForDownloadRef(refSource),
         sourceEntity: refSource,
+        persistentRef: ref,
         origin: ref.origin || "channel",
         channelPostId: ref.channelPostId,
         fileInfo,
@@ -5846,6 +6008,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
           id: sourceMessage.id,
           sourceKey: sourceKeyForDownloadRef(sourceEntity),
           sourceEntity,
+          persistentRef: { id: sourceMessage.id, source: sourceEntity, origin: "channel", fileInfo },
           origin: "channel",
           fileInfo,
           totalSize: getEstimatedFileSize(sourceMessage)
@@ -5865,7 +6028,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
     const controlState = await getExecutionControlState?.();
     if (controlState && controlState !== "run") {
       if (controlState === "cancelled") {
-        for (const ref of downloadableRefs) await onItemSettled?.(ref, "skipped", "\u4EFB\u52A1\u5DF2\u53D6\u6D88");
+        for (const ref of downloadableRefs) await onItemSettled?.(ref.persistentRef, "skipped", "\u4EFB\u52A1\u5DF2\u53D6\u6D88");
       }
       return {
         requested: ids.length,
@@ -5918,7 +6081,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
       providerName: storageManager.getProvider().name,
       queuePending: 0
     });
-    await trySilentMode(botClient, chatId, requestMessage);
+    await trySilentMode(botClient, chatId, requestMessage, ownerUserId ?? requestMessage.senderId?.toJSNumber());
     await refreshConsolidatedMessage(botClient, chatId, requestMessage);
   }
   let completed = 0;
@@ -5946,7 +6109,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
   for (let offset = 0; offset < downloadableRefs.length; offset += TG_LARGE_TASK_SEGMENT_SIZE) {
     const segment = downloadableRefs.slice(offset, offset + TG_LARGE_TASK_SEGMENT_SIZE);
     const segmentBytes = segment.reduce((sum, item) => sum + (item.totalSize || 0), 0);
-    await waitForDiskWatermark(segmentBytes, void 0);
+    await waitForDiskWatermark(segmentBytes, taskSignal);
     const segmentMessagesBySource = /* @__PURE__ */ new Map();
     const refsBySource = /* @__PURE__ */ new Map();
     for (const item of segment) {
@@ -5981,7 +6144,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
             skipped += 1;
             completed += 1;
             skippedMessageIds.push(item.id);
-            await onItemSettled?.(item, "skipped", "\u4EFB\u52A1\u5DF2\u53D6\u6D88");
+            await onItemSettled?.(item.persistentRef, "skipped", "\u4EFB\u52A1\u5DF2\u53D6\u6D88");
           }
           return;
         }
@@ -5994,7 +6157,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         completed += 1;
         failedMessageIds.push(item.id);
         await refreshSegmentStatus(false, fileName);
-        await onItemSettled?.(item, "failed", "\u6D88\u606F\u4E0D\u5B58\u5728\u6216\u65E0\u6CD5\u91CD\u65B0\u8BFB\u53D6");
+        await onItemSettled?.(item.persistentRef, "failed", "\u6D88\u606F\u4E0D\u5B58\u5728\u6216\u65E0\u6CD5\u91CD\u65B0\u8BFB\u53D6");
         return;
       }
       const uploadItem = {
@@ -6005,7 +6168,8 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         status: "pending",
         sharedCaption: item.sharedCaption,
         groupIndex: item.groupIndex,
-        groupSize: item.groupSize
+        groupSize: item.groupSize,
+        storageTarget
       };
       try {
         if (taskResolvedStorageFolder !== void 0) {
@@ -6029,7 +6193,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         if (uploadItem.status === "success") {
           successful += 1;
           successfulMessageIds.push(item.id);
-          await onItemSettled?.(item, "success");
+          await onItemSettled?.(item.persistentRef, "success");
         } else if (uploadItem.storageCooldownUntil) {
           throw new StorageQuotaCooldownError(uploadItem.error || "Google Drive \u4ECA\u65E5\u4E0A\u4F20\u989D\u5EA6\u5DF2\u8FBE\u4E0A\u9650\uFF0C\u4EFB\u52A1\u5C06\u81EA\u52A8\u6682\u505C 24 \u5C0F\u65F6\u540E\u7EE7\u7EED\u3002", {
             provider: "google_drive",
@@ -6040,7 +6204,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         } else {
           failed += 1;
           failedMessageIds.push(item.id);
-          await onItemSettled?.(item, "failed", uploadItem.error || "\u4E0B\u8F7D\u5931\u8D25");
+          await onItemSettled?.(item.persistentRef, "failed", uploadItem.error || "\u4E0B\u8F7D\u5931\u8D25");
         }
       } catch (err) {
         if (isStorageQuotaCooldownError(err)) {
@@ -6060,7 +6224,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         console.error(`\u{1F916} \u9891\u9053\u5206\u6BB5\u4E0B\u8F7D\u4EFB\u52A1\u5F02\u5E38: ${fileName}`, err);
         failed += 1;
         failedMessageIds.push(item.id);
-        await onItemSettled?.(item, "failed", err instanceof Error ? err.message : String(err));
+        await onItemSettled?.(item.persistentRef, "failed", err instanceof Error ? err.message : String(err));
       } finally {
         if (!uploadItem.storageCooldownUntil) {
           completed += 1;
@@ -6123,6 +6287,7 @@ async function handleFileUpload(client2, event) {
         client: client2,
         files: [],
         processingStarted: false,
+        storageTarget: storageManager.getActiveTarget(),
         createdAt: Date.now(),
         lastAddedAt: Date.now()
       };
@@ -6166,7 +6331,7 @@ async function handleFileUpload(client2, event) {
       }
     }
     if (message.chatId) {
-      await trySilentMode(client2, message.chatId, message);
+      await trySilentMode(client2, message.chatId, message, senderId);
       const taskId = getSessionTaskId(message.chatId.toString());
       if (taskId) registerTaskControlScope(taskId, message.chatId.toString(), senderId);
     }
@@ -6185,6 +6350,7 @@ async function handleFileUpload(client2, event) {
       mimeType,
       fileName: finalFileName
     }, previewRules));
+    const singleStorageTarget = storageManager.getActiveTarget();
     const singleGroupId = ordinaryGroupId("s", chatIdStr, String(message.id));
     downloadQueue.ensureGroup({
       id: singleGroupId,
@@ -6206,7 +6372,7 @@ async function handleFileUpload(client2, event) {
     });
     let statusMsg;
     const useConsolidated = () => getActiveUploadCount(chatIdStr) >= 2 || getActiveBatchCount(chatIdStr) > 0;
-    await trySilentMode(client2, chatId, message);
+    await trySilentMode(client2, chatId, message, senderId);
     const silentTaskId = getSessionTaskId(chatIdStr);
     if (silentTaskId) registerTaskControlScope(silentTaskId, chatIdStr, senderId);
     if (!silentSessionMap.has(chatIdStr) && getBackgroundFileCount(chatIdStr) <= 3) {
@@ -6267,10 +6433,11 @@ async function handleFileUpload(client2, event) {
       void onProgress(downloaded, total);
     }) => {
       let localFilePath;
+      const storageTarget = singleStorageTarget;
+      const { provider, accountId: activeAccountId } = storageTarget;
       try {
         if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
-        await assertActiveStorageWritable();
-        const activeAccountId = storageManager.getActiveAccountId();
+        await assertStorageTargetWritable(storageTarget);
         finalFileName = await getCanonicalTelegramFileName(message, finalFileName, mimeType, void 0, void 0, generatedName);
         updateUploadPhase(chatIdStr, uploadId, { fileName: finalFileName });
         const storageRules = await getStoragePathRules();
@@ -6307,8 +6474,8 @@ async function handleFileUpload(client2, event) {
           if (duplicate) {
             if (fs7.existsSync(localFilePath)) fs7.unlinkSync(localFilePath);
             lastLocalPath = void 0;
-            updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: storageManager.getProvider().name, fileType, folder: storageFolder });
-            rememberTransferDestination(chatIdStr, storageFolder, storageManager.getProvider().name);
+            updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType, folder: storageFolder });
+            rememberTransferDestination(chatIdStr, storageFolder, provider.name);
             if (statusMsg && !silentSessionMap.has(chatIdStr)) {
               await runStatusAction(chatId, async () => {
                 await client2.editMessage(chatId, {
@@ -6338,7 +6505,6 @@ async function handleFileUpload(client2, event) {
           });
         }
         if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
-        const provider = storageManager.getProvider();
         let thumbnailPath = null;
         let dimensions = {};
         if (provider.name === "local" && (mimeType.startsWith("image/") || mimeType.startsWith("video/"))) {
@@ -6349,13 +6515,19 @@ async function handleFileUpload(client2, event) {
           }
         }
         let finalPath = localFilePath;
+        let indexedFileId = null;
         let sourceRef = provider.name;
         if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
         try {
-          finalPath = await provider.saveFile(localFilePath, storedName, mimeType, storageFolder);
-          if (fs7.existsSync(localFilePath)) {
-            fs7.unlinkSync(localFilePath);
-          }
+          finalPath = await saveAndIndexWithCompensation(provider, localFilePath, storedName, mimeType, storageFolder, async (savedPath) => {
+            const inserted = await query(`
+                            INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                            RETURNING id
+                        `, [finalFileName, storedName, fileType, mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+            indexedFileId = String(inserted.rows[0].id);
+          });
+          if (fs7.existsSync(localFilePath)) fs7.unlinkSync(localFilePath);
           lastLocalPath = void 0;
           localFilePath = void 0;
         } catch (err) {
@@ -6363,13 +6535,17 @@ async function handleFileUpload(client2, event) {
           throw err;
         }
         if (signal?.aborted) {
-          await provider.deleteFile(finalPath).catch((error) => console.error(`\u{1F916} \u53D6\u6D88\u4EFB\u52A1\u65F6\u56DE\u6EDA\u5DF2\u4FDD\u5B58\u6587\u4EF6\u5931\u8D25: ${finalPath}`, error));
+          const compensation = indexedFileId ? await compensateIndexedWriteAfterCancel({
+            fileId: indexedFileId,
+            savedPath: finalPath,
+            deleteIndex: async (fileId) => (await query("DELETE FROM files WHERE id = $1", [fileId])).rowCount === 1,
+            deleteObject: (savedPath) => provider.deleteFile(savedPath)
+          }) : { status: "reconciliation-required", error: "\u53D6\u6D88\u8865\u507F\u7F3A\u5C11\u6587\u4EF6\u7D22\u5F15 ID" };
+          if (compensation.status !== "compensated") {
+            throw new Error(`\u4E0B\u8F7D\u4EFB\u52A1\u53D6\u6D88\u540E\u9700\u8981\u4EBA\u5DE5\u5BF9\u8D26: ${compensation.error}`);
+          }
           throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
         }
-        await query(`
-                    INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                `, [finalFileName, storedName, fileType, mimeType, actualSize, finalPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
         updateUploadPhase(chatIdStr, uploadId, { phase: "success", size: actualSize, providerName: provider.name, fileType, folder: storageFolder });
         rememberTransferDestination(chatIdStr, storageFolder, provider.name);
         if (useConsolidated()) {
@@ -6387,7 +6563,7 @@ async function handleFileUpload(client2, event) {
         return true;
       } catch (error) {
         if (isStorageQuotaCooldownError(error)) {
-          await markStorageAccountCooldown(error.storageAccountId || storageManager.getActiveAccountId(), error.provider, error.reason, error.cooldownUntil, error.message);
+          await markStorageAccountCooldown(error.storageAccountId || singleStorageTarget.accountId, error.provider, error.reason, error.cooldownUntil, error.message);
           storageCooldownUntil = error.cooldownUntil;
           lastError = formatStorageCooldownNotice(error.cooldownUntil);
         } else {
@@ -6550,6 +6726,7 @@ var TG_JOB_DOWNLOAD_BATCH_SIZE = Math.max(1, parseInt(process.env.TG_JOB_DOWNLOA
 var TG_JOB_MAX_ATTEMPTS = Math.max(1, parseInt(process.env.TG_JOB_MAX_ATTEMPTS || "3", 10) || 3);
 var TELEGRAM_COMMENTS_MAX_PER_POST = Math.max(1, parseInt(process.env.TELEGRAM_COMMENTS_MAX_PER_POST || "200", 10) || 200);
 var subscriptionTimer = null;
+var subscriptionScanRunning = false;
 var recoveryStarted = false;
 var recoveryRunning = false;
 function parseTelegramSourceAllowlist(raw) {
@@ -6575,8 +6752,12 @@ async function assertTelegramSourceAllowed(source, extraSources = []) {
     throw new Error(`\u6765\u6E90 ${source} \u4E0D\u5728 Telegram \u4E0B\u8F7D\u767D\u540D\u5355\u4E2D`);
   }
 }
-function maxProcessedMessageId(result) {
-  return Math.max(0, ...result.successfulMessageIds, ...result.skippedMessageIds);
+function contiguousProcessedMessageId(startId, successfulMessageIds, skippedMessageIds, failedMessageIds) {
+  const processed = /* @__PURE__ */ new Set([...successfulMessageIds, ...skippedMessageIds]);
+  const failed = new Set(failedMessageIds);
+  let cursor = startId;
+  while (!failed.has(cursor + 1) && processed.has(cursor + 1)) cursor += 1;
+  return cursor;
 }
 function requireUserClient() {
   const userClient2 = getTelegramUserClient();
@@ -6845,39 +7026,34 @@ async function buildDownloadScanResult(userClient2, source, messages, options = 
     commentMediaFound: commentScan.mediaFound
   };
 }
-async function markDownloadRefsDownloading(jobId, refs) {
-  for (const ref of refs) {
-    const sourcePeer = sourcePeerKey(ref.source, ref.origin === "comment" ? "comment" : "channel");
-    await query(
-      `UPDATE telegram_download_items
-             SET status = 'downloading', locked_at = NOW(), updated_at = NOW()
-             WHERE job_id = $1 AND source_peer = $2 AND message_id = $3
-               AND status IN ('pending', 'failed')`,
-      [jobId, sourcePeer, ref.id]
-    );
+async function settleTelegramDownloadRefWithQuery(runQuery, jobId, ref, status, error) {
+  const sourcePeer = sourcePeerKey(ref.source, ref.origin === "comment" ? "comment" : "channel");
+  const leaseToken = ref.leaseToken || null;
+  const result = await runQuery(
+    `UPDATE telegram_download_items i
+         SET status = CASE WHEN i.status = 'downloading' THEN $3::varchar ELSE i.status END,
+             error = CASE WHEN i.status = 'downloading' THEN $4 ELSE i.error END,
+             last_error = CASE WHEN i.status = 'downloading' THEN $4 ELSE i.last_error END,
+             attempts = CASE WHEN i.status = 'downloading' AND $3::text = 'failed' THEN i.attempts + 1 ELSE i.attempts END,
+             completed_at = CASE WHEN i.status = 'downloading' AND $3::text IN ('success', 'skipped') THEN NOW() ELSE i.completed_at END,
+             locked_at = CASE WHEN i.status = 'downloading' THEN NULL ELSE i.locked_at END,
+             lease_token = CASE WHEN i.status = 'downloading' THEN NULL ELSE i.lease_token END,
+             lease_expires_at = CASE WHEN i.status = 'downloading' THEN NULL ELSE i.lease_expires_at END,
+             updated_at = CASE WHEN i.status = 'downloading' THEN NOW() ELSE i.updated_at END
+         WHERE i.job_id = $1 AND i.source_peer = $2 AND i.message_id = $5
+           AND ($6::uuid IS NULL OR i.lease_token = $6::uuid)
+           AND i.status IN ('downloading', 'success', 'failed', 'skipped')
+         RETURNING i.status`,
+    [jobId, sourcePeer, status, error || null, ref.id, leaseToken]
+  );
+  if ((result.rowCount || 0) === 0) {
+    if (leaseToken) return "lease-lost";
+    throw new Error(`Telegram \u4E0B\u8F7D\u6761\u76EE\u7ED3\u7B97\u5F71\u54CD 0 \u884C: job=${jobId} peer=${sourcePeer} message=${ref.id}`);
   }
+  return result.rows[0]?.status === status ? "settled" : "already-terminal";
 }
 async function markDownloadRefStatus(jobId, ref, status, error) {
-  const sourcePeer = sourcePeerKey(ref.source, ref.origin === "comment" ? "comment" : "channel");
-  await query(
-    `UPDATE telegram_download_items
-         SET status = $3::varchar,
-             error = $4,
-             last_error = $4,
-             attempts = CASE WHEN $3::text = 'failed' THEN attempts + 1 ELSE attempts END,
-             completed_at = CASE WHEN $3::text IN ('success', 'skipped') THEN NOW() ELSE completed_at END,
-             locked_at = NULL,
-             updated_at = NOW()
-         WHERE job_id = $1 AND source_peer = $2 AND message_id = $5
-           AND EXISTS (
-               SELECT 1 FROM telegram_background_jobs j
-               WHERE j.id = $1
-                 AND j.cancelled_at IS NULL
-                 AND j.paused_at IS NULL
-                 AND j.status NOT IN ('cancelled', 'paused', 'cooling')
-           )`,
-    [jobId, sourcePeer, status, error || null, ref.id]
-  );
+  return settleTelegramDownloadRefWithQuery(query, jobId, ref, status, error);
 }
 async function persistDownloadMessages(jobId, source, messages, folderOverride) {
   const refs = messages.map((message) => toChannelDownloadRef(source, message)).filter((ref) => Boolean(ref));
@@ -6902,11 +7078,17 @@ function parseDateOnly(value, endOfDay = false) {
   ));
 }
 async function createJob(userId, chatId, kind, source, params) {
+  const target = storageManager.getActiveTarget();
+  const persistedParams = {
+    ...params,
+    storageProvider: target.provider.name,
+    storageAccountId: target.accountId
+  };
   const result = await query(
     `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor)
          VALUES ($1, $2, $3, $4, $5, 'queued', 'pending', 'pending', '{}'::jsonb)
          RETURNING id`,
-    [userId, chatId || null, kind, source, JSON.stringify(params)]
+    [userId, chatId || null, kind, source, JSON.stringify(persistedParams)]
   );
   return result.rows[0].id;
 }
@@ -7006,26 +7188,51 @@ async function listTelegramSubscriptions(userId, includeDisabled = false) {
   );
   return result.rows;
 }
+async function resolveUniqueTelegramSubscriptionId(userId, selector) {
+  const normalized = selector.trim().toLowerCase();
+  if (!/^[0-9a-f-]{4,36}$/.test(normalized)) return null;
+  const result = await query(
+    `SELECT id FROM telegram_channel_subscriptions
+         WHERE user_id = $1 AND id::text LIKE $2
+         ORDER BY updated_at DESC
+         LIMIT 2`,
+    [userId, `${normalized}%`]
+  );
+  return result.rows.length === 1 ? String(result.rows[0].id) : null;
+}
 async function updateTelegramSubscriptionFolder(userId, selector, folderOverride) {
-  const trimmed = selector.trim();
+  const subscriptionId = await resolveUniqueTelegramSubscriptionId(userId, selector);
+  if (!subscriptionId) return null;
   const result = await query(
     `UPDATE telegram_channel_subscriptions
-         SET folder_override = $2, updated_at = NOW()
-         WHERE user_id = $1 AND id::text LIKE $3
+         SET folder_override = $3, updated_at = NOW()
+         WHERE user_id = $1 AND id = $2::uuid
          RETURNING id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at`,
-    [userId, folderOverride || null, `${trimmed}%`]
+    [userId, subscriptionId, folderOverride || null]
   );
   return result.rows[0] || null;
 }
 async function unsubscribeTelegramChannel(userId, selector) {
   const trimmed = selector.trim();
+  if (/^[0-9a-f-]{4,36}$/i.test(trimmed)) {
+    const subscriptionId = await resolveUniqueTelegramSubscriptionId(userId, trimmed);
+    if (!subscriptionId) return null;
+    const result2 = await query(
+      `UPDATE telegram_channel_subscriptions
+             SET enabled = false, disabled_reason = COALESCE(disabled_reason, '\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
+             WHERE user_id = $1 AND id = $2::uuid
+             RETURNING source, source_original, title`,
+      [userId, subscriptionId]
+    );
+    return result2.rows[0] || null;
+  }
   const normalizedSelector = /^@|^https?:\/\//i.test(trimmed) || /^-?\d+$/.test(trimmed) ? normalizeSource(trimmed) : trimmed;
   const result = await query(
     `UPDATE telegram_channel_subscriptions
          SET enabled = false, disabled_reason = COALESCE(disabled_reason, '\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
-         WHERE user_id = $1 AND (source = $2 OR source_original = $2 OR id::text LIKE $3)
+         WHERE user_id = $1 AND (source = $2 OR source_original = $2)
          RETURNING source, source_original, title`,
-    [userId, normalizedSelector, `${trimmed}%`]
+    [userId, normalizedSelector]
   );
   return result.rows[0] || null;
 }
@@ -7198,12 +7405,13 @@ async function claimPendingDownloadRefs(jobId, limit = TG_JOB_DOWNLOAD_BATCH_SIZ
              LIMIT $3
          )
          UPDATE telegram_download_items i
-         SET status = 'downloading', locked_at = NOW(), updated_at = NOW()
+         SET status = 'downloading', locked_at = NOW(), lease_token = gen_random_uuid(),
+             lease_expires_at = NOW() + INTERVAL '10 minutes', updated_at = NOW()
          FROM candidates c
          WHERE i.id = c.id AND i.status = 'pending'
          RETURNING i.source, i.source_peer, i.origin, i.message_id, i.grouped_id, i.channel_post_id,
                    i.file_name, i.mime_type, i.generated_name, i.total_size, i.folder_override,
-                   i.shared_caption, i.group_index, i.group_size`,
+                   i.shared_caption, i.group_index, i.group_size, i.lease_token`,
     [jobId, TG_JOB_MAX_ATTEMPTS, limit]
   );
   return result.rows.filter((row) => row.file_name && row.mime_type).map((row) => ({
@@ -7216,7 +7424,8 @@ async function claimPendingDownloadRefs(jobId, limit = TG_JOB_DOWNLOAD_BATCH_SIZ
     groupedId: row.grouped_id || void 0,
     sharedCaption: row.shared_caption || null,
     groupIndex: row.group_index ? Number(row.group_index) : void 0,
-    groupSize: row.group_size ? Number(row.group_size) : void 0
+    groupSize: row.group_size ? Number(row.group_size) : void 0,
+    leaseToken: row.lease_token ? String(row.lease_token) : void 0
   }));
 }
 async function restoreClaimedRefs(jobId, refs, status) {
@@ -7233,24 +7442,69 @@ async function restoreClaimedRefs(jobId, refs, status) {
     [jobId, sourcePeerKey(ref.source, ""), ref.id, status]
   )));
 }
-async function restoreUnfinishedClaimedRefs(jobId, refs, reason) {
+function chooseUnfinishedClaimStatus(state) {
+  return state === "cancelled" ? "skipped" : "pending";
+}
+async function restoreUnfinishedClaimedRefs(jobId, refs, reason, status = "pending") {
   if (refs.length === 0) return;
   const messageIds = refs.map((ref) => ref.id);
   await query(
     `UPDATE telegram_download_items
-         SET status = 'pending', locked_at = NULL, last_error = $3, updated_at = NOW()
+         SET status = $4::varchar,
+             locked_at = NULL,
+             lease_token = NULL,
+             lease_expires_at = NULL,
+             last_error = $3,
+             error = CASE WHEN $4::text = 'skipped' THEN COALESCE(error, $3) ELSE error END,
+             completed_at = CASE WHEN $4::text = 'skipped' THEN NOW() ELSE completed_at END,
+             updated_at = NOW()
          WHERE job_id = $1
            AND message_id = ANY($2::bigint[])
-           AND status IN ('downloading', 'failed')`,
-    [jobId, messageIds, reason]
+           AND status = 'downloading'`,
+    [jobId, messageIds, reason, status]
   );
 }
+async function heartbeatClaimedRefs(jobId, refs) {
+  const leased = refs.filter((ref) => ref.leaseToken);
+  if (leased.length === 0) return;
+  await Promise.all(leased.map((ref) => query(
+    `UPDATE telegram_download_items
+         SET locked_at = NOW(), lease_expires_at = NOW() + INTERVAL '10 minutes', updated_at = NOW()
+         WHERE job_id = $1 AND source_peer = $2 AND message_id = $3
+           AND status = 'downloading' AND lease_token = $4::uuid`,
+    [jobId, sourcePeerKey(ref.source, ref.origin === "comment" ? "comment" : "channel"), ref.id, ref.leaseToken]
+  )));
+}
+function startClaimHeartbeat(jobId, refs) {
+  void heartbeatClaimedRefs(jobId, refs).catch((error) => console.error("Telegram \u4E0B\u8F7D lease heartbeat \u5931\u8D25:", error));
+  const timer = setInterval(() => {
+    void heartbeatClaimedRefs(jobId, refs).catch((error) => console.error("Telegram \u4E0B\u8F7D lease heartbeat \u5931\u8D25:", error));
+  }, 2 * 60 * 1e3);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
 async function downloadClaimedRefs(botClient, requestMessage, jobId, source, refs, folderOverride, options) {
-  if (refs.length === 0) return { found: 0, skipped: 0, failed: 0, successful: 0 };
+  if (refs.length === 0) return {
+    found: 0,
+    skipped: 0,
+    failed: 0,
+    successful: 0,
+    successfulMessageIds: [],
+    failedMessageIds: [],
+    skippedMessageIds: []
+  };
   const controlState = await ensureJobCanRun(jobId);
   if (controlState !== "run") {
     await restoreClaimedRefs(jobId, refs, controlState === "cancelled" ? "skipped" : "pending");
-    return { found: 0, skipped: controlState === "cancelled" ? refs.length : 0, failed: 0, successful: 0 };
+    return {
+      found: 0,
+      skipped: controlState === "cancelled" ? refs.length : 0,
+      failed: 0,
+      successful: 0,
+      successfulMessageIds: [],
+      failedMessageIds: [],
+      skippedMessageIds: controlState === "cancelled" ? refs.map((ref) => ref.id) : []
+    };
   }
   const started = await query(
     `UPDATE telegram_background_jobs
@@ -7267,16 +7521,35 @@ async function downloadClaimedRefs(botClient, requestMessage, jobId, source, ref
   if ((started.rowCount || 0) === 0) {
     const latestState = await ensureJobCanRun(jobId);
     await restoreClaimedRefs(jobId, refs, latestState === "cancelled" ? "skipped" : "pending");
-    return { found: 0, skipped: latestState === "cancelled" ? refs.length : 0, failed: 0, successful: 0 };
+    return {
+      found: 0,
+      skipped: latestState === "cancelled" ? refs.length : 0,
+      failed: 0,
+      successful: 0,
+      successfulMessageIds: [],
+      failedMessageIds: [],
+      skippedMessageIds: latestState === "cancelled" ? refs.map((ref) => ref.id) : []
+    };
   }
+  const taskSignal = getChannelTaskAbortSignal(jobId);
+  const stopHeartbeat = startClaimHeartbeat(jobId, refs);
+  const ownerJob = await getJob(jobId);
+  const ownerUserId = Number(ownerJob?.user_id || 0) || void 0;
   try {
+    const jobParams = typeof ownerJob?.params === "string" ? JSON.parse(ownerJob.params) : ownerJob?.params || {};
+    const storageTarget = jobParams.storageProvider ? storageManager.getTarget(jobParams.storageProvider, jobParams.storageAccountId) : storageManager.getActiveTarget();
     const result = await downloadTelegramChannelRange(botClient, requestMessage, source, 0, refs.length, "older", refs.map((ref) => ref.id), folderOverride, refs, async (ref, status, error) => {
       await markDownloadRefStatus(jobId, ref, status, error);
       await notifyProgress(jobId, options);
-    }, jobId, () => ensureJobCanRun(jobId));
+    }, jobId, () => ensureJobCanRun(jobId), taskSignal, ownerUserId, storageTarget);
     const latestState = await ensureJobCanRun(jobId);
     if (latestState !== "run") {
-      await restoreUnfinishedClaimedRefs(jobId, refs, latestState === "cancelled" ? "\u4EFB\u52A1\u5DF2\u53D6\u6D88" : "\u4EFB\u52A1\u5DF2\u6682\u505C");
+      await restoreUnfinishedClaimedRefs(
+        jobId,
+        refs,
+        latestState === "cancelled" ? "\u4EFB\u52A1\u5DF2\u53D6\u6D88" : "\u4EFB\u52A1\u5DF2\u6682\u505C",
+        chooseUnfinishedClaimStatus(latestState)
+      );
     }
     return result;
   } catch (error) {
@@ -7290,18 +7563,29 @@ async function downloadClaimedRefs(botClient, requestMessage, jobId, source, ref
         error: `Telegram FloodWait\uFF0C\u51B7\u5374\u5230 ${cooldownUntil.toISOString()}`
       });
       await restoreUnfinishedClaimedRefs(jobId, refs, `FloodWait ${flood.seconds}s`);
-      return { found: 0, skipped: 0, failed: 0, successful: 0 };
+      return { found: 0, skipped: 0, failed: 0, successful: 0, successfulMessageIds: [], failedMessageIds: [], skippedMessageIds: [] };
     }
     if (await handleStorageQuotaCooldownError(botClient, jobId, error)) {
       await restoreUnfinishedClaimedRefs(jobId, refs, error instanceof Error ? error.message : String(error));
-      return { found: 0, skipped: 0, failed: 0, successful: 0 };
+      return { found: 0, skipped: 0, failed: 0, successful: 0, successfulMessageIds: [], failedMessageIds: [], skippedMessageIds: [] };
     }
     for (const ref of refs) await markDownloadRefStatus(jobId, ref, "failed", error instanceof Error ? error.message : String(error));
     throw error;
+  } finally {
+    stopHeartbeat();
+    releaseChannelTaskAbortSignal(jobId, taskSignal);
   }
 }
 async function downloadPendingForJob(botClient, requestMessage, jobId, source, folderOverride, options, drain = false) {
-  let aggregate = { found: 0, skipped: 0, failed: 0, successful: 0 };
+  let aggregate = {
+    found: 0,
+    skipped: 0,
+    failed: 0,
+    successful: 0,
+    successfulMessageIds: [],
+    failedMessageIds: [],
+    skippedMessageIds: []
+  };
   const userClient2 = getTelegramUserClient();
   while (await waitUntilRunnable(jobId, options)) {
     if (userClient2) await hydratePendingDownloadRefs(userClient2, jobId);
@@ -7312,7 +7596,10 @@ async function downloadPendingForJob(botClient, requestMessage, jobId, source, f
       found: aggregate.found + (result.found || 0),
       skipped: aggregate.skipped + (result.skipped || 0),
       failed: aggregate.failed + (result.failed || 0),
-      successful: aggregate.successful + (result.successful || 0)
+      successful: aggregate.successful + (result.successful || 0),
+      successfulMessageIds: [...aggregate.successfulMessageIds, ...result.successfulMessageIds || []],
+      failedMessageIds: [...aggregate.failedMessageIds, ...result.failedMessageIds || []],
+      skippedMessageIds: [...aggregate.skippedMessageIds, ...result.skippedMessageIds || []]
     };
     if (!drain) break;
   }
@@ -7645,102 +7932,182 @@ async function cancelTelegramBackgroundJob(userId, selector, chatId) {
     [userId, jobId, chatId || null]
   );
   if (result.rows[0]) {
-    await query(`UPDATE telegram_download_items SET status = 'skipped', locked_at = NULL, updated_at = NOW() WHERE job_id = $1 AND status IN ('pending', 'downloading')`, [result.rows[0].id]);
+    await query(`UPDATE telegram_download_items SET status = 'skipped', locked_at = NULL, updated_at = NOW() WHERE job_id = $1 AND status = 'pending'`, [result.rows[0].id]);
   }
   return result.rows[0] || null;
 }
+async function retryTelegramBackgroundJobWithQuery(runQuery, userId, selector, chatId) {
+  const normalized = selector.trim().toLowerCase();
+  if (!/^[0-9a-f-]{4,36}$/.test(normalized)) return null;
+  const result = await runQuery(
+    `WITH matched_job AS (
+             SELECT id
+             FROM telegram_background_jobs
+             WHERE user_id = $1
+               AND id::text LIKE $2
+               AND ($3::bigint IS NULL OR chat_id = $3::bigint)
+               AND cancelled_at IS NULL
+               AND paused_at IS NULL
+               AND status IN ('failed', 'completed_with_errors')
+               AND (cooldown_until IS NULL OR cooldown_until <= NOW())
+             GROUP BY id
+             HAVING COUNT(*) = 1
+             LIMIT 2
+         ), unique_job AS (
+             SELECT MIN(id::text)::uuid AS id FROM matched_job HAVING COUNT(*) = 1
+         ), locked_job AS (
+             SELECT j.id
+             FROM telegram_background_jobs j
+             JOIN unique_job u ON u.id = j.id
+             WHERE j.cancelled_at IS NULL
+               AND j.paused_at IS NULL
+               AND j.status IN ('failed', 'completed_with_errors')
+               AND (j.cooldown_until IS NULL OR j.cooldown_until <= NOW())
+             FOR UPDATE OF j
+         ), retried AS (
+             UPDATE telegram_download_items i
+             SET status = 'pending', attempts = 0, locked_at = NULL,
+                 completed_at = NULL, last_error = NULL, error = NULL, updated_at = NOW()
+             FROM locked_job u
+             WHERE i.job_id = u.id AND i.status = 'failed'
+             RETURNING i.job_id
+         ), updated_job AS (
+             UPDATE telegram_background_jobs j
+             SET status = 'running', download_status = 'active', error = NULL,
+                 finished_at = NULL, cooldown_until = NULL, updated_at = NOW()
+             FROM locked_job u
+             WHERE j.id = u.id
+               AND j.cancelled_at IS NULL
+               AND j.paused_at IS NULL
+               AND j.status IN ('failed', 'completed_with_errors')
+               AND (j.cooldown_until IS NULL OR j.cooldown_until <= NOW())
+               AND EXISTS (SELECT 1 FROM retried)
+             RETURNING j.id
+         )
+         SELECT updated_job.id, COUNT(retried.*)::int AS retried
+         FROM updated_job JOIN retried ON retried.job_id = updated_job.id
+         GROUP BY updated_job.id`,
+    [userId, `${normalized}%`, chatId || null]
+  );
+  return result.rows[0] || null;
+}
 async function retryTelegramBackgroundJob(userId, selector, chatId) {
-  const jobId = await resolveUniqueTelegramBackgroundJobId(userId, selector, chatId);
-  if (!jobId) return null;
-  const jobResult = await query(
+  return retryTelegramBackgroundJobWithQuery(query, userId, selector, chatId);
+}
+async function finalizeSubscriptionJobWithQuery(runQuery, input) {
+  const finalized = await runQuery(
     `UPDATE telegram_background_jobs
-         SET status = 'running', download_status = 'active', error = NULL, finished_at = NULL, updated_at = NOW()
+         SET status = $2, enqueued_count = $3, skipped_count = $4, error = $5,
+             finished_at = NOW(), updated_at = NOW()
          WHERE id = $1
-           AND user_id = $2
-           AND ($3::bigint IS NULL OR chat_id = $3::bigint)
            AND cancelled_at IS NULL
+           AND paused_at IS NULL
+           AND finished_at IS NULL
+           AND status NOT IN ('cancelled', 'paused', 'cooling')
          RETURNING id`,
-    [jobId, userId, chatId || null]
+    [input.jobId, input.status, input.enqueuedCount, input.skippedCount, input.error]
   );
-  if ((jobResult.rowCount || 0) === 0) return null;
-  const retryResult = await query(
-    `UPDATE telegram_download_items
-         SET status = 'pending', locked_at = NULL, last_error = NULL, error = NULL, updated_at = NOW()
-         WHERE job_id = $1 AND status = 'failed'
-         RETURNING id`,
-    [jobId]
+  if ((finalized.rowCount || 0) !== 1) return false;
+  await runQuery(
+    "UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2",
+    [input.safeAdvanceId, input.subscriptionId]
   );
-  return { id: jobResult.rows[0].id, retried: retryResult.rowCount || 0 };
+  return true;
 }
 async function runSubscriptionScan(botClient) {
-  const userClient2 = getTelegramUserClient();
-  if (!userClient2 || !isTelegramUserClientReady()) return;
-  const result = await query(
-    `SELECT id, user_id, chat_id, source, source_original, source_type, last_message_id, folder_override
+  if (subscriptionScanRunning) return;
+  subscriptionScanRunning = true;
+  let lockClient = null;
+  let lockHeld = false;
+  try {
+    lockClient = await pool.connect();
+    const lockResult = await lockClient.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-subscription-scan')) AS locked`);
+    lockHeld = Boolean(lockResult.rows[0]?.locked);
+    if (!lockHeld) return;
+    const userClient2 = getTelegramUserClient();
+    if (!userClient2 || !isTelegramUserClientReady()) return;
+    const result = await query(
+      `SELECT id, user_id, chat_id, source, source_original, source_type, last_message_id, folder_override
          FROM telegram_channel_subscriptions
          WHERE enabled = true
          ORDER BY updated_at ASC`
-  );
-  for (const row of result.rows) {
-    try {
-      await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : row.source_type === "private_invite" ? ["private_invite"] : []);
-      const latestMessageId = await getLatestMessageId(userClient2, row.source);
-      const lastMessageId = Number(row.last_message_id || 0);
-      if (!latestMessageId || latestMessageId <= lastMessageId) continue;
-      const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
-      const ids = Array.from({ length: count }, (_, index) => lastMessageId + index + 1);
-      const jobId = await createJob(Number(row.user_id), row.chat_id?.toString(), "subscription_sync", row.source, { fromId: lastMessageId + 1, toId: latestMessageId });
-      const candidateMessages = await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean));
-      await persistDownloadMessages(jobId, row.source, candidateMessages, row.folder_override || null);
-      await updateJob(jobId, { status: "running", started_at: /* @__PURE__ */ new Date(), total_count: ids.length });
-      const targetChat = row.chat_id || row.user_id;
-      const requestMessage = { chatId: targetChat, id: latestMessageId };
-      const subscriptionRefs = candidateMessages.map((message) => toChannelDownloadRef(row.source, message)).filter((ref) => Boolean(ref));
-      propagateTelegramDownloadGroupContext(subscriptionRefs);
-      await markDownloadRefsDownloading(jobId, subscriptionRefs);
-      const downloadResult = await downloadTelegramChannelRange(botClient, requestMessage, row.source, 0, ids.length, "newer", ids, row.folder_override || null, subscriptionRefs, (ref, status, error) => markDownloadRefStatus(jobId, ref, status, error), jobId, () => ensureJobCanRun(jobId));
-      const cooledJob = await getJob(jobId);
-      if (cooledJob?.status === "cooling") {
-        await notifyStorageCooldownOnce(botClient, cooledJob, new Date(cooledJob.cooldown_until));
-        continue;
-      }
-      const latestJob = await getJob(jobId);
-      if (latestJob?.cancelled_at || latestJob?.status === "cancelled") continue;
-      if (latestJob?.paused_at || latestJob?.status === "paused") continue;
-      const remainingStats = await getJobItemStats(jobId);
-      if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) continue;
-      await updateJob(jobId, {
-        status: downloadResult.failed > 0 ? "completed_with_errors" : "completed",
-        enqueued_count: downloadResult.found,
-        skipped_count: downloadResult.skipped,
-        error: downloadResult.failed > 0 ? `${downloadResult.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null,
-        finished_at: /* @__PURE__ */ new Date()
-      });
-      const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
-      const safeAdvanceId = downloadResult.failed > 0 ? Math.max(lastMessageId, maxProcessedMessageId(downloadResult)) : scannedMaxId;
-      await query("UPDATE telegram_channel_subscriptions SET last_message_id = $1, updated_at = NOW() WHERE id = $2", [safeAdvanceId, row.id]);
-      if (downloadResult.found > 0) {
-        await botClient.sendMessage(targetChat, { message: `\u2705 \u8BA2\u9605 ${row.source} \u5DF2\u540C\u6B65 ${downloadResult.found} \u4E2A\u65B0\u6587\u4EF6\uFF0C\u8DF3\u8FC7 ${downloadResult.skipped} \u6761${downloadResult.failed ? `\uFF0C\u5931\u8D25 ${downloadResult.failed} \u6761` : ""}${safeAdvanceId < latestMessageId ? "\u3002\u672C\u8F6E\u8FBE\u5230\u626B\u63CF\u4E0A\u9650\u6216\u5B58\u5728\u5931\u8D25\u9879\uFF0C\u5269\u4F59\u5C06\u5728\u540E\u7EED\u7EE7\u7EED\u5904\u7406\u3002" : "\u3002"}` }).catch(() => void 0);
-      }
-    } catch (error) {
-      console.error("\u{1F916} Telegram \u8BA2\u9605\u540C\u6B65\u5931\u8D25:", error);
-      if (isTelegramSourceInaccessibleError(error)) {
-        const reason = subscriptionDisabledReason(error);
-        await pauseTelegramSubscriptionForError(row.id, reason).catch((updateError) => console.error("\u{1F916} \u6682\u505C\u4E0D\u53EF\u8BBF\u95EE\u7684 Telegram \u8BA2\u9605\u5931\u8D25:", updateError));
+    );
+    for (const row of result.rows) {
+      try {
+        await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : row.source_type === "private_invite" ? ["private_invite"] : []);
+        const latestMessageId = await getLatestMessageId(userClient2, row.source);
+        const lastMessageId = Number(row.last_message_id || 0);
+        if (!latestMessageId || latestMessageId <= lastMessageId) continue;
+        const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
+        const ids = Array.from({ length: count }, (_, index) => lastMessageId + index + 1);
+        const jobId = await createJob(Number(row.user_id), row.chat_id?.toString(), "subscription_sync", row.source, { fromId: lastMessageId + 1, toId: latestMessageId });
+        const candidateMessages = await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean));
+        await persistDownloadMessages(jobId, row.source, candidateMessages, row.folder_override || null);
+        await updateJob(jobId, { status: "running", started_at: /* @__PURE__ */ new Date(), total_count: ids.length });
         const targetChat = row.chat_id || row.user_id;
-        await botClient.sendMessage(targetChat, {
-          message: `\u26A0\uFE0F \u5DF2\u6682\u505C\u8BA2\u9605 ${row.source_original || row.source}
+        const requestMessage = { chatId: targetChat, id: latestMessageId };
+        const subscriptionRefs = candidateMessages.map((message) => toChannelDownloadRef(row.source, message)).filter((ref) => Boolean(ref));
+        propagateTelegramDownloadGroupContext(subscriptionRefs);
+        const downloadableMessageIds = new Set(subscriptionRefs.map((ref) => ref.id));
+        const nonDownloadableMessageIds = ids.filter((id) => !downloadableMessageIds.has(id));
+        const downloadResult = await downloadPendingForJob(
+          botClient,
+          requestMessage,
+          jobId,
+          row.source,
+          row.folder_override || null,
+          {},
+          true
+        );
+        const cooledJob = await getJob(jobId);
+        if (cooledJob?.status === "cooling") {
+          await notifyStorageCooldownOnce(botClient, cooledJob, new Date(cooledJob.cooldown_until));
+          continue;
+        }
+        const latestJob = await getJob(jobId);
+        if (latestJob?.cancelled_at || latestJob?.status === "cancelled") continue;
+        if (latestJob?.paused_at || latestJob?.status === "paused") continue;
+        const remainingStats = await getJobItemStats(jobId);
+        if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) continue;
+        const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
+        const safeAdvanceId = downloadResult.failed > 0 ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds], downloadResult.failedMessageIds) : scannedMaxId;
+        const finalized = await finalizeSubscriptionJobWithQuery(query, {
+          jobId,
+          subscriptionId: String(row.id),
+          status: downloadResult.failed > 0 ? "completed_with_errors" : "completed",
+          safeAdvanceId,
+          enqueuedCount: downloadResult.found,
+          skippedCount: downloadResult.skipped,
+          error: downloadResult.failed > 0 ? `${downloadResult.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null
+        });
+        if (!finalized) continue;
+        if (downloadResult.found > 0) {
+          await botClient.sendMessage(targetChat, { message: `\u2705 \u8BA2\u9605 ${row.source} \u5DF2\u540C\u6B65 ${downloadResult.found} \u4E2A\u65B0\u6587\u4EF6\uFF0C\u8DF3\u8FC7 ${downloadResult.skipped} \u6761${downloadResult.failed ? `\uFF0C\u5931\u8D25 ${downloadResult.failed} \u6761` : ""}${safeAdvanceId < latestMessageId ? "\u3002\u672C\u8F6E\u8FBE\u5230\u626B\u63CF\u4E0A\u9650\u6216\u5B58\u5728\u5931\u8D25\u9879\uFF0C\u5269\u4F59\u5C06\u5728\u540E\u7EED\u7EE7\u7EED\u5904\u7406\u3002" : "\u3002"}` }).catch(() => void 0);
+        }
+      } catch (error) {
+        console.error("\u{1F916} Telegram \u8BA2\u9605\u540C\u6B65\u5931\u8D25:", error);
+        if (isTelegramSourceInaccessibleError(error)) {
+          const reason = subscriptionDisabledReason(error);
+          await pauseTelegramSubscriptionForError(row.id, reason).catch((updateError) => console.error("\u{1F916} \u6682\u505C\u4E0D\u53EF\u8BBF\u95EE\u7684 Telegram \u8BA2\u9605\u5931\u8D25:", updateError));
+          const targetChat = row.chat_id || row.user_id;
+          await botClient.sendMessage(targetChat, {
+            message: `\u26A0\uFE0F \u5DF2\u6682\u505C\u8BA2\u9605 ${row.source_original || row.source}
 ${reason}
 
 \u4F60\u53EF\u4EE5\u5728 /tg_subs \u6216 /tg_sub \u8BA2\u9605\u5217\u8868\u4E2D\u67E5\u770B\u63D0\u9192\uFF1B\u786E\u8BA4\u8D26\u53F7\u53EF\u8BBF\u95EE\u540E\u91CD\u65B0\u6DFB\u52A0\u8BA2\u9605\u5373\u53EF\u3002`
-        }).catch(() => void 0);
+          }).catch(() => void 0);
+        }
       }
     }
+  } finally {
+    if (lockHeld && lockClient) await lockClient.query(`SELECT pg_advisory_unlock(hashtext('tg-vault:telegram-subscription-scan'))`).catch(() => void 0);
+    lockClient?.release();
+    subscriptionScanRunning = false;
   }
 }
 async function recoverTelegramJob(botClient, job) {
   const itemResult = await query(
-    `SELECT id, source, source_peer, origin, message_id, grouped_id, channel_post_id, file_name, mime_type, generated_name, total_size, folder_override, shared_caption, group_index, group_size
+    `SELECT file_name, mime_type, folder_override
          FROM telegram_download_items
          WHERE job_id = $1 AND status = 'pending'
          ORDER BY created_at ASC`,
@@ -7757,40 +8124,22 @@ async function recoverTelegramJob(botClient, job) {
     await updateJob(job.id, { status: "failed", error: `${missingMetadata} \u4E2A\u5F85\u4E0B\u8F7D\u6761\u76EE\u7F3A\u5C11\u6587\u4EF6\u5143\u6570\u636E\uFF0C\u65E0\u6CD5\u6062\u590D`, finished_at: /* @__PURE__ */ new Date() });
     return;
   }
-  const refs = propagateTelegramDownloadGroupContext(itemResult.rows.filter((row) => row.file_name && row.mime_type).map((row) => ({
-    id: Number(row.message_id),
-    source: row.source_peer || row.source,
-    origin: row.origin === "comment" ? "comment" : "channel",
-    channelPostId: row.channel_post_id || void 0,
-    fileInfo: persistedTelegramFileInfo(row),
-    totalSize: Number(row.total_size || 0),
-    groupedId: row.grouped_id || void 0,
-    sharedCaption: row.shared_caption || null,
-    groupIndex: row.group_index ? Number(row.group_index) : void 0,
-    groupSize: row.group_size ? Number(row.group_size) : void 0
-  })));
-  if (refs.length === 0) return;
   const targetChat = job.chat_id || job.user_id;
   const requestMessage = { chatId: targetChat, id: 0 };
   try {
     const latest = await getJob(job.id);
     if (!latest || latest.cancelled_at || latest.status === "cancelled") return;
     if (latest.paused_at || latest.status === "paused") return;
-    console.log(`\u267B\uFE0F \u6062\u590D Telegram \u4E0B\u8F7D\u4EFB\u52A1 ${String(job.id).slice(0, 12)}\uFF0C\u5F85\u5904\u7406 ${refs.length} \u4E2A\u6587\u4EF6`);
+    console.log(`\u267B\uFE0F \u6062\u590D Telegram \u4E0B\u8F7D\u4EFB\u52A1 ${String(job.id).slice(0, 12)}\uFF0C\u5F85\u5904\u7406 ${itemResult.rows.length} \u4E2A\u6587\u4EF6`);
     await updateJob(job.id, { status: "running", started_at: job.started_at || /* @__PURE__ */ new Date(), error: null });
-    const result = await downloadTelegramChannelRange(
+    const result = await downloadPendingForJob(
       botClient,
       requestMessage,
+      String(job.id),
       job.source,
-      0,
-      refs.length,
-      "older",
-      refs.map((ref) => ref.id),
       itemResult.rows[0]?.folder_override || null,
-      refs,
-      (ref, status, error) => markDownloadRefStatus(job.id, ref, status, error),
-      job.id,
-      () => ensureJobCanRun(job.id)
+      {},
+      true
     );
     const cooledJob = await getJob(job.id);
     if (cooledJob?.status === "cooling") {
@@ -7830,10 +8179,60 @@ async function recoverTelegramJob(botClient, job) {
     throw error;
   }
 }
+async function repairTelegramJobInvariantsWithQuery(runQuery = query) {
+  const result = await runQuery(
+    `WITH inconsistent AS (
+             SELECT j.id,
+                    COUNT(*) FILTER (WHERE i.status IN ('pending', 'downloading'))::int AS unfinished_count
+             FROM telegram_background_jobs j
+             JOIN telegram_download_items i ON i.job_id = j.id
+             WHERE j.cancelled_at IS NULL
+               AND j.paused_at IS NULL
+               AND j.status IN ('completed', 'completed_with_errors', 'failed', 'running')
+             GROUP BY j.id, j.finished_at, j.status
+             HAVING COUNT(*) FILTER (WHERE i.status = 'pending') > 0
+                AND (j.finished_at IS NOT NULL OR j.status IN ('completed', 'completed_with_errors', 'failed'))
+         ), reset_items AS (
+             UPDATE telegram_download_items i
+             SET status = 'pending', locked_at = NULL, completed_at = NULL, updated_at = NOW()
+             FROM inconsistent x
+             WHERE i.job_id = x.id
+               AND i.status = 'downloading'
+               AND (i.locked_at IS NULL OR i.locked_at < NOW() - INTERVAL '30 minutes')
+             RETURNING i.job_id
+         ), repaired AS (
+             UPDATE telegram_background_jobs j
+             SET status = 'running',
+                 finished_at = NULL,
+                 cancelled_at = NULL,
+                 download_status = 'active',
+                 scan_status = CASE
+                     WHEN j.params ? 'mode' AND COALESCE(j.scan_status, 'pending') <> 'done' THEN j.scan_status
+                     ELSE 'done'
+                 END,
+                 error = CASE WHEN j.error IS NULL THEN '\u68C0\u6D4B\u5230\u672A\u5B8C\u6210\u4E0B\u8F7D\u6761\u76EE\uFF0C\u5DF2\u81EA\u52A8\u6062\u590D' ELSE j.error END,
+                 updated_at = NOW()
+             FROM inconsistent x
+             WHERE j.id = x.id
+             RETURNING j.id
+         )
+         SELECT COUNT(*)::int AS repaired_jobs FROM repaired`
+  );
+  return Number(result.rows[0]?.repaired_jobs || 0);
+}
 async function recoverInterruptedTelegramJobs(botClient) {
   if (recoveryRunning) return;
   recoveryRunning = true;
+  let lockClient = null;
+  let lockHeld = false;
   try {
+    const client2 = await pool.connect();
+    lockClient = client2;
+    const lockResult = await client2.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-job-recovery')) AS locked`);
+    lockHeld = Boolean(lockResult.rows[0]?.locked);
+    if (!lockHeld) return;
+    const repaired = await repairTelegramJobInvariantsWithQuery();
+    if (repaired > 0) console.warn(`\u267B\uFE0F \u5DF2\u4FEE\u590D ${repaired} \u4E2A Telegram \u7236\u5B50\u4EFB\u52A1\u72B6\u6001\u4E0D\u4E00\u81F4`);
     await clearExpiredStorageCooldowns();
     await query(
       `UPDATE telegram_background_jobs
@@ -7849,14 +8248,14 @@ async function recoverInterruptedTelegramJobs(botClient) {
       `UPDATE telegram_download_items
              SET status = 'pending', locked_at = NULL, updated_at = NOW()
              WHERE status = 'downloading'
-               AND (locked_at IS NULL OR locked_at < NOW() - INTERVAL '30 minutes')
-               AND NOT EXISTS (
+               AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+               AND EXISTS (
                    SELECT 1 FROM telegram_background_jobs j
                    WHERE j.id = telegram_download_items.job_id
-                     AND j.status = 'running'
                      AND j.finished_at IS NULL
                      AND j.cancelled_at IS NULL
                      AND j.paused_at IS NULL
+                     AND j.status NOT IN ('cancelled', 'paused')
                )`
     );
     const jobs = await query(
@@ -7881,6 +8280,11 @@ async function recoverInterruptedTelegramJobs(botClient) {
       }
     }
   } finally {
+    const client2 = lockClient;
+    if (lockHeld && client2) {
+      await client2.query(`SELECT pg_advisory_unlock(hashtext('tg-vault:telegram-job-recovery'))`).catch(() => void 0);
+    }
+    client2?.release();
     recoveryRunning = false;
   }
 }
@@ -8092,6 +8496,7 @@ async function removePhysicalFile(file) {
     await provider.deleteFile(file.path);
   } else {
     const filePath = file.path || path13.join(UPLOAD_DIR3, file.stored_name);
+    if (!isPathInside(UPLOAD_DIR3, filePath)) throw new Error("\u62D2\u7EDD\u5220\u9664\u5B58\u50A8\u76EE\u5F55\u4E4B\u5916\u7684\u6587\u4EF6");
     await safeUnlink(filePath, UPLOAD_DIR3);
   }
   if (file.thumbnail_path) {
@@ -8414,6 +8819,50 @@ function channelTaskCenterItem(row) {
   };
 }
 
+// src/services/destructiveConfirmation.ts
+import crypto10 from "crypto";
+var DestructiveConfirmationStore = class {
+  confirmations = /* @__PURE__ */ new Map();
+  ttlMs;
+  now;
+  tokenFactory;
+  constructor(options = {}) {
+    this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
+    this.now = options.now ?? (() => Date.now());
+    this.tokenFactory = options.tokenFactory ?? (() => crypto10.randomBytes(18).toString("base64url"));
+  }
+  issue(binding) {
+    const token = this.tokenFactory();
+    this.confirmations.set(token, { ...binding, expiresAt: this.now() + this.ttlMs });
+    return token;
+  }
+  consume(token, binding) {
+    const confirmation = this.confirmations.get(token);
+    if (!confirmation) return { status: "missing" };
+    if (confirmation.expiresAt < this.now()) {
+      this.confirmations.delete(token);
+      return { status: "expired" };
+    }
+    if (!this.matches(confirmation, binding)) return { status: "mismatch" };
+    this.confirmations.delete(token);
+    return { status: "ok", confirmation };
+  }
+  cancel(token, binding) {
+    const confirmation = this.confirmations.get(token);
+    if (!confirmation) return false;
+    if (confirmation.expiresAt < this.now()) {
+      this.confirmations.delete(token);
+      return false;
+    }
+    if (!this.matches(confirmation, binding)) return false;
+    this.confirmations.delete(token);
+    return true;
+  }
+  matches(left, right) {
+    return left.actorId === right.actorId && left.chatId === right.chatId && left.messageId === right.messageId && left.action === right.action && left.objectId === right.objectId;
+  }
+};
+
 // src/services/telegramCommands.ts
 var checkDiskSpace = checkDiskSpaceModule.default || checkDiskSpaceModule;
 var DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
@@ -8423,7 +8872,8 @@ var ON_VALUES = /* @__PURE__ */ new Set(["1", "true", "yes", "on"]);
 var UPLOAD_DIR4 = process.env.UPLOAD_DIR || "./data/uploads";
 var THUMBNAIL_DIR4 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var pendingDeleteConfirmations = /* @__PURE__ */ new Map();
-var DELETE_CONFIRM_TTL_MS = 5 * 60 * 1e3;
+var pendingStorageClearSnapshots = /* @__PURE__ */ new Map();
+var destructiveConfirmations = new DestructiveConfirmationStore();
 function buildDeleteConfirmKeyboard(confirmId) {
   return new Api6.ReplyInlineMarkup({
     rows: [new Api6.KeyboardButtonRow({
@@ -8472,14 +8922,14 @@ function buildDownloadWorkersKeyboard(current, confirmValue) {
     ]
   });
 }
-function buildStorageMaintenanceKeyboard(localFileCount, confirm = false) {
+function buildStorageMaintenanceKeyboard(localFileCount, confirmationToken) {
   if (localFileCount <= 0) return void 0;
   return new Api6.ReplyInlineMarkup({
     rows: [
       new Api6.KeyboardButtonRow({
-        buttons: confirm ? [
-          new Api6.KeyboardButtonCallback({ text: "\u26A0\uFE0F \u786E\u8BA4\u5220\u9664\u672C\u5730\u5168\u90E8\u4E0B\u8F7D\u6587\u4EF6", data: Buffer.from("storage_clear_confirm") }),
-          new Api6.KeyboardButtonCallback({ text: "\u53D6\u6D88", data: Buffer.from("storage_clear_cancel") })
+        buttons: confirmationToken ? [
+          new Api6.KeyboardButtonCallback({ text: "\u26A0\uFE0F \u786E\u8BA4\u5220\u9664\u672C\u5730\u5168\u90E8\u4E0B\u8F7D\u6587\u4EF6", data: Buffer.from(`storage_clear_confirm_${confirmationToken}`) }),
+          new Api6.KeyboardButtonCallback({ text: "\u53D6\u6D88", data: Buffer.from(`storage_clear_cancel_${confirmationToken}`) })
         ] : [
           new Api6.KeyboardButtonCallback({ text: `\u{1F9F9} \u5220\u9664\u672C\u5730\u5168\u90E8\u4E0B\u8F7D\u6587\u4EF6 (${localFileCount})`, data: Buffer.from("storage_clear_ask") })
         ]
@@ -8857,9 +9307,23 @@ async function handleStorageCleanupCallback(client2, update, data) {
   }
   try {
     const stats = await scanLocalDownloadFiles();
-    if (data === "storage_clear_cancel") {
+    const chatId = getCallbackChatKey(update);
+    const messageId = Number(update.msgId);
+    const tokenMatch = data.match(/^storage_clear_(confirm|cancel)_([A-Za-z0-9_-]+)$/);
+    if (tokenMatch?.[1] === "cancel") {
+      const cancelled = destructiveConfirmations.cancel(tokenMatch[2], {
+        actorId: userId,
+        chatId,
+        messageId,
+        action: "clear_local_storage"
+      });
+      if (!cancelled) {
+        await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6E05\u7406\u786E\u8BA4\u65E0\u6548\u6216\u5DF2\u8FC7\u671F", alert: true }));
+        return;
+      }
+      pendingStorageClearSnapshots.delete(tokenMatch[2]);
       await client2.editMessage(update.peer, {
-        message: Number(update.msgId),
+        message: messageId,
         text: stats.count > 0 ? `\u5DF2\u53D6\u6D88\u6E05\u7406\u3002\u5F53\u524D\u672C\u5730\u4E0B\u8F7D\u6587\u4EF6\uFF1A${stats.count} \u4E2A\uFF0C\u5360\u7528 ${formatBytes(stats.totalSize)}\u3002` : "\u5DF2\u53D6\u6D88\u6E05\u7406\u3002\u5F53\u524D\u6CA1\u6709\u672C\u5730\u4E0B\u8F7D\u6587\u4EF6\u3002",
         buttons: buildStorageMaintenanceKeyboard(stats.count)
       });
@@ -8867,6 +9331,18 @@ async function handleStorageCleanupCallback(client2, update, data) {
       return;
     }
     if (data === "storage_clear_ask") {
+      const indexed = await query(`SELECT id, path, stored_name FROM files WHERE source = 'local'`);
+      const indexedPaths = new Set(indexed.rows.map((file) => path14.resolve(file.path || path14.join(UPLOAD_DIR4, file.stored_name))));
+      const confirmationToken = destructiveConfirmations.issue({
+        actorId: userId,
+        chatId,
+        messageId,
+        action: "clear_local_storage"
+      });
+      pendingStorageClearSnapshots.set(confirmationToken, {
+        indexedIds: indexed.rows.map((file) => String(file.id)),
+        orphanPaths: stats.paths.map((filePath) => path14.resolve(filePath)).filter((filePath) => !indexedPaths.has(filePath))
+      });
       await client2.editMessage(update.peer, {
         message: Number(update.msgId),
         text: [
@@ -8877,25 +9353,51 @@ async function handleStorageCleanupCallback(client2, update, data) {
           "",
           "\u5982\u786E\u8BA4\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u7EA2\u8272\u786E\u8BA4\u6309\u94AE\u3002"
         ].join("\n"),
-        buttons: buildStorageMaintenanceKeyboard(stats.count, true)
+        buttons: buildStorageMaintenanceKeyboard(stats.count, confirmationToken)
       });
       await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u9700\u8981\u4E8C\u6B21\u786E\u8BA4" }));
       return;
     }
-    if (data === "storage_clear_confirm") {
+    if (tokenMatch?.[1] === "confirm") {
+      const consumed = destructiveConfirmations.consume(tokenMatch[2], {
+        actorId: userId,
+        chatId,
+        messageId,
+        action: "clear_local_storage"
+      });
+      const snapshot = pendingStorageClearSnapshots.get(tokenMatch[2]);
+      pendingStorageClearSnapshots.delete(tokenMatch[2]);
+      if (consumed.status !== "ok" || !snapshot) {
+        await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6E05\u7406\u786E\u8BA4\u65E0\u6548\u3001\u5DF2\u8FC7\u671F\u6216\u5DF2\u4F7F\u7528", alert: true }));
+        return;
+      }
       let deletedCount = 0;
       let deletedBytes = 0;
-      for (const filePath of stats.paths) {
-        const size = fs9.existsSync(filePath) ? fs9.statSync(filePath).size : 0;
-        if (await safeUnlink(filePath, UPLOAD_DIR4)) {
+      const indexed = snapshot.indexedIds.length > 0 ? await query(`SELECT * FROM files WHERE source = 'local' AND id = ANY($1::uuid[])`, [snapshot.indexedIds]) : { rows: [] };
+      for (const file of indexed.rows) {
+        const filePath = path14.resolve(file.path || path14.join(UPLOAD_DIR4, file.stored_name));
+        const size = fs9.existsSync(filePath) ? fs9.statSync(filePath).size : Number(file.size || 0);
+        try {
+          await removePhysicalFile(file);
+          await query("DELETE FROM files WHERE id = $1", [file.id]);
           deletedCount += 1;
           deletedBytes += size;
           await pruneEmptyDirs(path14.dirname(filePath));
+        } catch (error) {
+          console.warn(`\u{1F916} \u672C\u5730\u6587\u4EF6\u5220\u9664\u5931\u8D25\uFF0C\u4FDD\u7559\u7D22\u5F15\u7B49\u5F85\u91CD\u8BD5: ${file.id}`, error);
+        }
+      }
+      for (const resolved of snapshot.orphanPaths) {
+        const size = fs9.existsSync(resolved) ? fs9.statSync(resolved).size : 0;
+        if (await safeUnlink(resolved, UPLOAD_DIR4)) {
+          deletedCount += 1;
+          deletedBytes += size;
+          await pruneEmptyDirs(path14.dirname(resolved));
         }
       }
       const after = await scanLocalDownloadFiles();
       await client2.editMessage(update.peer, {
-        message: Number(update.msgId),
+        message: messageId,
         text: [
           "\u2705 **\u672C\u5730\u670D\u52A1\u5668\u4E0B\u8F7D\u6587\u4EF6\u5DF2\u6E05\u7406**",
           "",
@@ -8906,6 +9408,10 @@ async function handleStorageCleanupCallback(client2, update, data) {
         buttons: buildStorageMaintenanceKeyboard(after.count)
       });
       await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `\u5DF2\u5220\u9664 ${deletedCount} \u4E2A\u6587\u4EF6` }));
+      return;
+    }
+    if (data.startsWith("storage_clear_confirm") || data.startsWith("storage_clear_cancel")) {
+      await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u65E7\u6E05\u7406\u6309\u94AE\u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u53D1\u9001 /storage", alert: true }));
     }
   } catch (error) {
     console.error("\u{1F916} \u6E05\u7406\u672C\u5730\u4E0B\u8F7D\u6587\u4EF6\u5931\u8D25:", error);
@@ -8946,9 +9452,7 @@ async function handleDelete(message, args) {
       return;
     }
     const file = result.rows[0];
-    const confirmId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    pendingDeleteConfirmations.set(confirmId, { fileId: file.id, name: file.name, size: Number(file.size || 0), selector, createdAt: Date.now() });
-    await message.reply({
+    const sent = await message.reply({
       message: [
         "\u26A0\uFE0F **\u786E\u8BA4\u5220\u9664\u8FD9\u4E2A\u6587\u4EF6\uFF1F**",
         "",
@@ -8958,7 +9462,28 @@ async function handleDelete(message, args) {
         file.folder ? `\u{1F4C1} ${file.folder}` : "",
         "",
         "\u5220\u9664\u4F1A\u79FB\u9664\u6570\u636E\u5E93\u8BB0\u5F55\u5E76\u5C1D\u8BD5\u5220\u9664\u5B9E\u9645\u6587\u4EF6\u3002\u8BF7\u786E\u8BA4\u65E0\u8BEF\u540E\u70B9\u51FB\u6309\u94AE\u3002"
-      ].filter(Boolean).join("\n"),
+      ].filter(Boolean).join("\n")
+    });
+    const chatId = canonicalTelegramChatKey(message.chatId?.toString());
+    if (!chatId || !sent?.id) throw new Error("\u65E0\u6CD5\u7ED1\u5B9A\u5220\u9664\u786E\u8BA4\u6D88\u606F");
+    const confirmId = destructiveConfirmations.issue({
+      actorId: message.senderId.toJSNumber(),
+      chatId,
+      messageId: sent.id,
+      action: "delete_file",
+      objectId: String(file.id)
+    });
+    pendingDeleteConfirmations.set(confirmId, {
+      fileId: file.id,
+      name: file.name,
+      size: Number(file.size || 0),
+      selector,
+      actorId: message.senderId.toJSNumber(),
+      chatId,
+      messageId: sent.id
+    });
+    await sent.edit({
+      text: sent.message,
       buttons: buildDeleteConfirmKeyboard(confirmId)
     });
   } catch (error) {
@@ -8976,17 +9501,33 @@ async function handleDeleteConfirmCallback(client2, update, data) {
   if (!match) return;
   const [, action, confirmId] = match;
   const pending = pendingDeleteConfirmations.get(confirmId);
-  if (!pending || Date.now() - pending.createdAt > DELETE_CONFIRM_TTL_MS) {
-    pendingDeleteConfirmations.delete(confirmId);
-    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5220\u9664\u786E\u8BA4\u5DF2\u8FC7\u671F", alert: true }));
+  if (!pending) {
+    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5220\u9664\u786E\u8BA4\u65E0\u6548\u6216\u5DF2\u8FC7\u671F", alert: true }));
     return;
   }
+  const binding = {
+    actorId: userId,
+    chatId: getCallbackChatKey(update),
+    messageId: Number(update.msgId),
+    action: "delete_file",
+    objectId: pending.fileId
+  };
   if (action === "cancel") {
+    if (!destructiveConfirmations.cancel(confirmId, binding)) {
+      await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5220\u9664\u786E\u8BA4\u4E0D\u5C5E\u4E8E\u4F60\u6216\u5DF2\u8FC7\u671F", alert: true }));
+      return;
+    }
     pendingDeleteConfirmations.delete(confirmId);
     await client2.editMessage(update.peer, { message: Number(update.msgId), text: `\u5DF2\u53D6\u6D88\u5220\u9664\uFF1A${pending.name}`, buttons: new Api6.ReplyInlineMarkup({ rows: [] }) });
     await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88" }));
     return;
   }
+  const consumed = destructiveConfirmations.consume(confirmId, binding);
+  if (consumed.status !== "ok") {
+    await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5220\u9664\u786E\u8BA4\u4E0D\u5C5E\u4E8E\u4F60\u3001\u5DF2\u8FC7\u671F\u6216\u5DF2\u4F7F\u7528", alert: true }));
+    return;
+  }
+  pendingDeleteConfirmations.delete(confirmId);
   try {
     const scope = await getCurrentStorageScope();
     const result = await query(`SELECT * FROM files WHERE ${scope.clause} AND id = ${nextParam(scope, 1)} LIMIT 1`, [...scope.params, pending.fileId]);
@@ -8997,13 +9538,8 @@ async function handleDeleteConfirmCallback(client2, update, data) {
       await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u6587\u4EF6\u4E0D\u5B58\u5728", alert: true }));
       return;
     }
-    try {
-      await removePhysicalFile(file);
-    } catch (err) {
-      console.warn("\u{1F916} \u6587\u4EF6\u7269\u7406\u5220\u9664\u5931\u8D25\u6216\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728:", err);
-    }
+    await removePhysicalFile(file);
     await query("DELETE FROM files WHERE id = $1", [file.id]);
-    pendingDeleteConfirmations.delete(confirmId);
     await client2.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id), buttons: new Api6.ReplyInlineMarkup({ rows: [] }) });
     await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u5220\u9664" }));
   } catch (error) {
@@ -9301,8 +9837,10 @@ async function handlePauseTasks(message, args = []) {
 \u6765\u6E90\uFF1A${job.source}` });
       return;
     }
+    await message.reply({ message: `\u{1F4EE} \u6CA1\u6709\u627E\u5230\u4EFB\u52A1\uFF1A${taskId}\u3002\u672A\u6682\u505C\u5F53\u524D\u804A\u5929\u4E0B\u8F7D\u961F\u5217\u3002` });
+    return;
   }
-  const result = pauseDownloadTasks();
+  const result = pauseDownloadTasks(void 0, chatId, senderId);
   if (senderId && chatId && message.client) {
     const scopeStatus = getDownloadTaskScopeStatus(chatId, senderId);
     if (scopeStatus.paused || scopeStatus.pausing) {
@@ -9340,8 +9878,10 @@ async function handleResumeTasks(message, args = []) {
 \u6765\u6E90\uFF1A${job.source}` });
       return;
     }
+    await message.reply({ message: `\u{1F4EE} \u6CA1\u6709\u627E\u5230\u4EFB\u52A1\uFF1A${taskId}\u3002\u672A\u7EE7\u7EED\u5F53\u524D\u804A\u5929\u4E0B\u8F7D\u961F\u5217\u3002` });
+    return;
   }
-  const result = resumeDownloadTasks();
+  const result = resumeDownloadTasks(void 0, chatId, senderId);
   if (senderId && message.client && message.chatId) {
     await refreshSilentProgress(message.client, message.chatId, senderId).catch((error) => {
       console.error("\u{1F916} \u7EE7\u7EED\u547D\u4EE4\u5237\u65B0\u4EFB\u52A1\u5361\u5931\u8D25:", error);
@@ -9402,10 +9942,10 @@ async function handleChannelTaskQueueCallback(client2, update, data) {
   if (!match) return;
   const [, action, selector] = match;
   try {
-    if (selector === "all" && action === "cancel") {
+    if (action === "cancel") {
       await client2.invoke(new Api6.messages.SetBotCallbackAnswer({
         queryId: update.queryId,
-        message: "\u65E7\u7248\u201C\u53D6\u6D88\u5168\u90E8\u201D\u6309\u94AE\u5DF2\u5931\u6548\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 /tasks",
+        message: "\u65E7\u7248\u53D6\u6D88\u6309\u94AE\u5DF2\u5931\u6548\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 /tasks \u91CD\u65B0\u8FDB\u5165\u4EFB\u52A1\u8BE6\u60C5\u5E76\u786E\u8BA4",
         alert: true
       }));
       return;
@@ -9417,7 +9957,7 @@ async function handleChannelTaskQueueCallback(client2, update, data) {
       await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: matches.length > 1 ? "\u4EFB\u52A1 ID \u524D\u7F00\u4E0D\u552F\u4E00\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 /tasks \u5237\u65B0" : "\u4EFB\u52A1\u5DF2\u7ED3\u675F\u6216\u5DF2\u5931\u6548", alert: true }));
       return;
     }
-    const legacyAction = action === "cancel" ? "cancel_confirm" : action;
+    const legacyAction = action;
     const result = await operateChannelTaskCenterItem(legacyAction, userId, callbackChatId, selector);
     await client2.invoke(new Api6.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.toast, alert: !result.ok }));
   } catch (error) {
@@ -9903,15 +10443,16 @@ async function uploadDownloadedFile(localFilePath, originalFileName) {
     } catch {
     }
   }
-  let finalPath = await provider.saveFile(localFilePath, storedName, mimeType, folder);
+  const finalPath = await saveAndIndexWithCompensation(provider, localFilePath, storedName, mimeType, folder, async (savedPath) => {
+    await query(`
+            INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        `, [safeName, storedName, fileType, mimeType, size, savedPath, thumbnailPath, dimensions.width, dimensions.height, provider.name, folder, activeAccountId]);
+  });
   try {
     if (fs10.existsSync(localFilePath)) await fs10.promises.unlink(localFilePath);
   } catch {
   }
-  await query(`
-        INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-    `, [safeName, storedName, fileType, mimeType, size, finalPath, thumbnailPath, dimensions.width, dimensions.height, provider.name, folder, activeAccountId]);
   return { finalPath, providerName: provider.name, size, storedName, folder };
 }
 async function handleYtDlpCommand(message, url) {
@@ -10231,24 +10772,28 @@ function buildTelegramWizardPrompt(state) {
 function isDateOnly(text) {
   return /^\d{4}-\d{2}-\d{2}$/.test(text.trim());
 }
-async function updateJobProgressMessage(statusMessage, summary) {
+function buildLegacyJobProgressPresentation(summary) {
   const totalDone = summary.completed + summary.failed + summary.skipped;
-  const lines = [
-    summary.status === "paused" ? `\u23F8\uFE0F **\u9891\u9053\u4E0B\u8F7D\u5DF2\u6682\u505C**` : summary.status === "cooling" ? `\u23F8\uFE0F **Google Drive \u9650\u989D\u51B7\u5374\u4E2D**` : summary.status === "cancelled" ? `\u{1F6D1} **\u9891\u9053\u4E0B\u8F7D\u5DF2\u53D6\u6D88**` : totalDone >= summary.totalMediaFound && summary.scanStatus === "done" ? `\u2705 **\u9891\u9053\u4EFB\u52A1\u5B8C\u6210**` : `\u{1F50E} **\u9891\u9053\u4EFB\u52A1\u8FD0\u884C\u4E2D**`,
+  const cooldownIsFloodWait = summary.status === "cooling" && /floodwait/i.test(summary.error || "");
+  const title = summary.status === "paused" ? "\u23F8\uFE0F **\u9891\u9053\u4E0B\u8F7D\u5DF2\u6682\u505C**" : summary.status === "cooling" ? cooldownIsFloodWait ? "\u23F3 **Telegram FloodWait \u51B7\u5374\u4E2D**" : "\u23F8\uFE0F **\u5B58\u50A8\u670D\u52A1\u4FDD\u62A4\u51B7\u5374\u4E2D**" : summary.status === "cancelled" ? "\u{1F6D1} **\u9891\u9053\u4E0B\u8F7D\u5DF2\u53D6\u6D88**" : totalDone >= summary.totalMediaFound && summary.scanStatus === "done" ? "\u2705 **\u9891\u9053\u4EFB\u52A1\u5B8C\u6210**" : "\u{1F50E} **\u9891\u9053\u4EFB\u52A1\u8FD0\u884C\u4E2D**";
+  const controls = summary.status === "paused" ? `\u63A7\u5236\uFF1A/task_resume ${summary.jobId.slice(0, 12)} \xB7 /task_cancel ${summary.jobId.slice(0, 12)}` : summary.status === "cooling" || summary.status === "cancelled" ? "" : `\u63A7\u5236\uFF1A/task_pause ${summary.jobId.slice(0, 12)} \xB7 /task_cancel ${summary.jobId.slice(0, 12)}`;
+  return [
+    title,
     `\u{1F194} job: ${summary.jobId.slice(0, 12)}`,
-    `\u{1F4CD} \u9891\u9053\uFF1A${summary.source}`,
+    `\u{1F4CD} \u9891\u9053\uFF1A${summary.source || "\u672A\u77E5"}`,
     ``,
-    `\u{1F50E} \u626B\u63CF\uFF1A${summary.scanStatus}`,
-    `\u{1F4C4} \u9891\u9053\u6B63\u6587\uFF1A\u5DF2\u626B ${summary.channelMessagesScanned} \u6761\uFF0C\u53D1\u73B0 ${summary.channelMediaFound} \u4E2A\u6587\u4EF6`,
-    `\u{1F4AC} \u8BC4\u8BBA\u533A\uFF1A\u5DF2\u626B ${summary.commentMessagesScanned} \u6761\uFF0C\u53D1\u73B0 ${summary.commentMediaFound} \u4E2A\u6587\u4EF6`,
+    `\u{1F50E} \u626B\u63CF\uFF1A${summary.scanStatus || "pending"}`,
+    `\u{1F4C4} \u9891\u9053\u6B63\u6587\uFF1A\u5DF2\u626B ${summary.channelMessagesScanned || 0} \u6761\uFF0C\u53D1\u73B0 ${summary.channelMediaFound || 0} \u4E2A\u6587\u4EF6`,
+    `\u{1F4AC} \u8BC4\u8BBA\u533A\uFF1A\u5DF2\u626B ${summary.commentMessagesScanned || 0} \u6761\uFF0C\u53D1\u73B0 ${summary.commentMediaFound || 0} \u4E2A\u6587\u4EF6`,
     ``,
     `\u2B07\uFE0F \u4E0B\u8F7D\uFF1A${summary.downloadStatus}`,
-    `\u2705 \u6210\u529F ${summary.completed}\u3000\u23F3 \u5F85\u4E0B\u8F7D ${summary.pending}\u3000\u{1F504} \u4E0B\u8F7D\u4E2D ${summary.downloading}\u3000\u274C \u5931\u8D25 ${summary.failed}\u3000\u23ED \u8DF3\u8FC7 ${summary.skipped}`,
-    summary.cooldownUntil ? summary.status === "cooling" ? `\u23F8\uFE0F Google Drive \u9650\u989D\u51B7\u5374\u5230\uFF1A${summary.cooldownUntil}` : `\u23F3 FloodWait \u51B7\u5374\u5230\uFF1A${summary.cooldownUntil}` : "",
-    ``,
-    `\u63A7\u5236\uFF1A/task_pause ${summary.jobId.slice(0, 12)} \xB7 /task_resume ${summary.jobId.slice(0, 12)} \xB7 /task_cancel ${summary.jobId.slice(0, 12)}`
-  ].filter(Boolean);
-  await statusMessage.edit({ text: lines.join("\n") }).catch(() => void 0);
+    `\u2705 \u6210\u529F ${summary.completed || 0}\u3000\u23F3 \u5F85\u4E0B\u8F7D ${summary.pending || 0}\u3000\u{1F504} \u4E0B\u8F7D\u4E2D ${summary.downloading || 0}\u3000\u274C \u5931\u8D25 ${summary.failed || 0}\u3000\u23ED \u8DF3\u8FC7 ${summary.skipped || 0}`,
+    summary.cooldownUntil ? `${cooldownIsFloodWait ? "\u23F3 Telegram FloodWait" : "\u23F8\uFE0F \u5B58\u50A8\u670D\u52A1\u4FDD\u62A4"}\u51B7\u5374\u5230\uFF1A${summary.cooldownUntil}` : "",
+    controls
+  ].filter(Boolean).join("\n");
+}
+async function updateJobProgressMessage(statusMessage, summary) {
+  await statusMessage.edit({ text: buildLegacyJobProgressPresentation(summary) }).catch(() => void 0);
 }
 async function updateScanStatusMessage(statusMessage, summary) {
   const lines = [
@@ -10578,6 +11123,9 @@ function generatePasswordKeyboard(currentLength) {
     ]
   });
 }
+function canTelegramUserAuthenticate(userId, allowedUsers) {
+  return allowedUsers.length > 0 && allowedUsers.includes(userId);
+}
 async function handlePasswordCallback(update) {
   if (!client) return;
   const userId = update.userId.toJSNumber();
@@ -10636,7 +11184,7 @@ async function handlePasswordCallback(update) {
             return;
           }
           const allowedUsers = await getConfiguredTelegramAllowedUsers();
-          if (allowedUsers.length > 0 && !allowedUsers.includes(userId)) {
+          if (!canTelegramUserAuthenticate(userId, allowedUsers)) {
             state.password = "";
             await client.editMessage(update.peer, {
               message: update.msgId,
@@ -10731,7 +11279,14 @@ async function handleTaskQueueCallback(update, data) {
   if (!match) return;
   const [, action, taskId] = match;
   const controlChatId = resolveTaskChatIdForControl(taskId);
-  if (!controlChatId || !canControlTask(taskId, controlChatId, userId)) {
+  const callbackChatId = (() => {
+    const peer = update.peer;
+    const value = peer?.userId || peer?.chatId || peer?.channelId;
+    if (value && typeof value.toString === "function") return value.toString().replace(/^-100/, "").replace(/^-/, "");
+    return String(value || "");
+  })();
+  const canonicalControlChatId = String(controlChatId || "").replace(/^-100/, "").replace(/^-/, "");
+  if (!controlChatId || callbackChatId !== canonicalControlChatId || !canControlTask(taskId, controlChatId, userId)) {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({
       queryId: update.queryId,
       message: "\u4EFB\u52A1\u5DF2\u5B8C\u6210\u3001\u5DF2\u5931\u6548\u6216\u4E0D\u5C5E\u4E8E\u5F53\u524D\u804A\u5929",
@@ -11007,7 +11562,8 @@ async function initTelegramBot() {
           await message.reply({ message: `\u23F3 \u64CD\u4F5C\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7 ${rateLimit4.retryAfterSeconds} \u79D2\u540E\u518D\u8BD5\u3002` });
           return;
         }
-        console.log(`\u{1F916} Received text from ${senderId}: ${text}`);
+        const commandName = text.trim().split(/\s+/, 1)[0].replace(/@\w+$/, "") || "text";
+        console.log(`\u{1F916} Received Telegram message from ${senderId}: command=${commandName} messageId=${message.id}`);
         if (text === "/start") {
           await handleStart(message, senderId);
           if (!await isAuthenticatedAsync(senderId)) {
@@ -11051,7 +11607,7 @@ async function initTelegramBot() {
         {
           const match = text.match(/^\s*\/ytdlp(?:@\w+)?(?:\s+([\s\S]*))?\s*$/i);
           if (match) {
-            console.log(`\u{1F916} /ytdlp command received from ${senderId}: ${text}`);
+            console.log(`\u{1F916} /ytdlp command received from ${senderId}: messageId=${message.id}`);
             if (!await isAuthenticatedAsync(senderId)) {
               await message.reply({ message: MSG.AUTH_REQUIRED });
               return;
@@ -11600,23 +12156,29 @@ function setAuthCookie(res, token, expiresAt) {
 function clearAuthCookie(res) {
   res.clearCookie("tg_vault_token", { path: "/" });
 }
-var sessions = /* @__PURE__ */ new Map();
-setInterval(() => {
-  const now = /* @__PURE__ */ new Date();
-  sessions.forEach((session, token) => {
-    if (now > session.expiresAt) {
-      sessions.delete(token);
-    }
-  });
+var sessionStore = createWebSessionStore({
+  insert: async (tokenHash, expiresAt) => {
+    await query(
+      `INSERT INTO web_sessions (token_hash, expires_at) VALUES ($1, $2)
+             ON CONFLICT (token_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
+      [tokenHash, expiresAt]
+    );
+  },
+  find: async (tokenHash) => {
+    const result = await query("SELECT expires_at FROM web_sessions WHERE token_hash = $1", [tokenHash]);
+    return result.rows[0] ? { expiresAt: new Date(result.rows[0].expires_at) } : null;
+  },
+  remove: async (tokenHash) => {
+    await query("DELETE FROM web_sessions WHERE token_hash = $1", [tokenHash]);
+  }
+});
+var sessionCleanupTimer = setInterval(() => {
+  void query("DELETE FROM web_sessions WHERE expires_at <= NOW()").catch((error) => console.warn("\u6E05\u7406\u8FC7\u671F Web \u4F1A\u8BDD\u5931\u8D25:", error));
 }, 60 * 60 * 1e3);
-function generateToken() {
-  return crypto8.randomBytes(32).toString("hex");
-}
-function issueSession(req, res) {
-  const token = generateToken();
-  const now = /* @__PURE__ */ new Date();
-  const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY);
-  sessions.set(token, { createdAt: now, expiresAt });
+sessionCleanupTimer.unref?.();
+async function issueSession(req, res) {
+  const expiresAt = new Date(Date.now() + TOKEN_EXPIRY);
+  const { token } = await sessionStore.issue(expiresAt);
   sendLoginNotification(req).catch((error) => console.warn("\u53D1\u9001\u767B\u5F55\u901A\u77E5\u5931\u8D25:", error));
   setAuthCookie(res, token, expiresAt);
   res.json({
@@ -11634,18 +12196,18 @@ var loginLimiter = rateLimit({
 });
 router.post("/setup", loginLimiter, async (req, res) => {
   try {
-    if (!await isInitialSetupRequired()) {
-      return res.status(409).json({ error: "\u7BA1\u7406\u5458\u5BC6\u7801\u5DF2\u521B\u5EFA" });
-    }
     const { webPassword, telegramPin } = req.body;
     const webError = validateWebPassword(webPassword);
     if (webError) return res.status(400).json({ error: webError });
     const pinError = validateTelegramPin(telegramPin);
     if (pinError) return res.status(400).json({ error: pinError });
     await createInitialAdminCredentials(webPassword, telegramPin);
-    issueSession(req, res);
+    await issueSession(req, res);
   } catch (error) {
     console.error("\u521D\u59CB\u5316\u7BA1\u7406\u5458\u5931\u8D25:", error);
+    if (error instanceof Error && error.message.includes("\u7BA1\u7406\u5458\u5BC6\u7801\u5DF2\u521B\u5EFA")) {
+      return res.status(409).json({ error: "\u7BA1\u7406\u5458\u5BC6\u7801\u5DF2\u521B\u5EFA" });
+    }
     res.status(500).json({ error: error instanceof Error ? error.message : "\u521D\u59CB\u5316\u7BA1\u7406\u5458\u5931\u8D25" });
   }
 });
@@ -11660,14 +12222,18 @@ router.post("/login", loginLimiter, async (req, res) => {
   if (!await verifyWebPassword(password)) {
     return res.status(401).json({ error: "\u8BA4\u8BC1\u5931\u8D25" });
   }
-  if (await is2FAEnabled()) {
+  const twoFactor = await get2FAReadiness();
+  if (!twoFactor.ready) {
+    return res.status(503).json({ error: "2FA \u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6\uFF0C\u767B\u5F55\u5DF2\u88AB\u5B89\u5168\u963B\u6B62\uFF0C\u8BF7\u6062\u590D SESSION_SECRET \u6216 /data/secrets" });
+  }
+  if (twoFactor.enabled) {
     return res.json({
       success: true,
       requiresTOTP: true,
       message: "\u8BF7\u8F93\u5165\u4E8C\u6B21\u9A8C\u8BC1\u7801"
     });
   }
-  issueSession(req, res);
+  await issueSession(req, res);
 });
 router.post("/verify-totp", loginLimiter, async (req, res) => {
   const { password, totpToken } = req.body;
@@ -11680,16 +12246,7 @@ router.post("/verify-totp", loginLimiter, async (req, res) => {
   if (!await verifyTOTP(totpToken)) {
     return res.status(401).json({ error: "\u8BA4\u8BC1\u5931\u8D25" });
   }
-  const token = generateToken();
-  const now = /* @__PURE__ */ new Date();
-  const expiresAt = new Date(now.getTime() + TOKEN_EXPIRY);
-  sessions.set(token, { createdAt: now, expiresAt });
-  sendLoginNotification(req);
-  setAuthCookie(res, token, expiresAt);
-  res.json({
-    success: true,
-    expiresAt: expiresAt.toISOString()
-  });
+  await issueSession(req, res);
 });
 router.get("/2fa-setup", requireAuth, async (req, res) => {
   try {
@@ -11737,17 +12294,15 @@ router.get("/verify", async (req, res) => {
   if (!token) {
     return res.status(401).json({ valid: false, error: "\u672A\u63D0\u4F9B Token" });
   }
-  const session = sessions.get(token);
-  if (!session || /* @__PURE__ */ new Date() > session.expiresAt) {
-    sessions.delete(token || "");
+  if (!await sessionStore.verify(token)) {
     return res.status(401).json({ valid: false, error: "Token \u5DF2\u8FC7\u671F" });
   }
   res.json({ valid: true });
 });
-router.post("/logout", (req, res) => {
+router.post("/logout", async (req, res) => {
   const token = getAuthToken(req);
   if (token) {
-    sessions.delete(token);
+    await sessionStore.revoke(token);
   }
   clearAuthCookie(res);
   res.json({ success: true });
@@ -11796,9 +12351,7 @@ async function requireAuth(req, res, next) {
   if (!token) {
     return res.status(401).json({ error: "\u672A\u6388\u6743\u8BBF\u95EE" });
   }
-  const session = sessions.get(token);
-  if (!session || /* @__PURE__ */ new Date() > session.expiresAt) {
-    sessions.delete(token);
+  if (!await sessionStore.verify(token)) {
     return res.status(401).json({ error: "Token \u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55" });
   }
   next();
@@ -11828,7 +12381,7 @@ function generateSignature(fileId, typeOrExpires, expires) {
     throw new Error("Missing signed URL expiration timestamp");
   }
   const data = `${fileId}:${type}:${expiresTimestamp}`;
-  return crypto9.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
+  return crypto11.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -11856,7 +12409,7 @@ function verifySignedUrl(req) {
   try {
     const received = Buffer.from(sign, "hex");
     const expected = Buffer.from(expectedSign, "hex");
-    if (received.length !== expected.length || !crypto9.timingSafeEqual(received, expected)) {
+    if (received.length !== expected.length || !crypto11.timingSafeEqual(received, expected)) {
       console.log("[SignedURL] Signature mismatch:", { id, type });
       return false;
     }
@@ -11874,8 +12427,212 @@ function requireAuthOrSignedUrl(req, res, next) {
   return requireAuth(req, res, next);
 }
 
+// src/services/fileDeletion.ts
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function isPhysicalFileNotFound(error) {
+  const candidate = error;
+  const status = Number(candidate?.status ?? candidate?.statusCode ?? candidate?.code ?? candidate?.response?.status);
+  if (status === 404) return true;
+  const code = String(candidate?.code || "").toUpperCase();
+  return code === "ENOENT" || code === "NOT_FOUND" || code === "NOSUCHKEY";
+}
+function createFileDeletionService(dependencies) {
+  return {
+    async deleteIndexedFile(file) {
+      let physicalNotFound = false;
+      try {
+        await dependencies.removePhysicalFile(file);
+      } catch (error) {
+        if (!isPhysicalFileNotFound(error)) {
+          return { status: "failed", error: errorMessage(error) };
+        }
+        physicalNotFound = true;
+      }
+      try {
+        const deleted = await dependencies.deleteIndex(file.id);
+        if (!deleted) {
+          return { status: "failed", error: "\u6587\u4EF6\u7D22\u5F15\u5220\u9664\u5931\u8D25\u6216\u5DF2\u53D1\u751F\u5E76\u53D1\u53D8\u66F4" };
+        }
+      } catch (error) {
+        return { status: "failed", error: errorMessage(error) };
+      }
+      return { status: physicalNotFound ? "not_found" : "deleted" };
+    }
+  };
+}
+
 // src/routes/files.ts
 init_localPath();
+
+// src/services/fileQuery.ts
+var FILE_TYPES = /* @__PURE__ */ new Set(["image", "video", "audio", "document", "other", "media"]);
+var SORTS = /* @__PURE__ */ new Set(["date", "name"]);
+var DIRECTIONS = /* @__PURE__ */ new Set(["asc", "desc"]);
+var UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function single(value) {
+  if (Array.isArray(value)) throw new Error("query parameter must be singular");
+  return typeof value === "string" ? value : void 0;
+}
+function normalizeFileQuery(input) {
+  const rawQ = single(input.q)?.trim() || null;
+  if (rawQ && rawQ.length > 200) throw new Error("q is too long");
+  const rawType = single(input.type)?.trim() || null;
+  if (rawType && !FILE_TYPES.has(rawType)) throw new Error("invalid type");
+  const rawFavorite = single(input.favorite);
+  let favorite = null;
+  if (rawFavorite !== void 0 && rawFavorite !== "") {
+    if (rawFavorite !== "true" && rawFavorite !== "false") throw new Error("invalid favorite");
+    favorite = rawFavorite === "true";
+  }
+  const rawSort = single(input.sort) || "date";
+  if (!SORTS.has(rawSort)) throw new Error("invalid sort");
+  const rawDirection = single(input.direction) || "desc";
+  if (!DIRECTIONS.has(rawDirection)) throw new Error("invalid direction");
+  const rawFolder = single(input.folder);
+  const folder = rawFolder === void 0 ? void 0 : rawFolder.trim() || null;
+  if (folder && folder.length > 500) throw new Error("folder is too long");
+  const parsedLimit = Number.parseInt(single(input.limit) || "200", 10);
+  const limit = Math.min(500, Math.max(1, Number.isFinite(parsedLimit) ? parsedLimit : 200));
+  return {
+    q: rawQ,
+    type: rawType,
+    folder,
+    favorite,
+    sort: rawSort,
+    direction: rawDirection,
+    limit,
+    cursor: single(input.cursor) || null
+  };
+}
+function encodeFileQueryCursor(cursor) {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+function decodeFileQueryCursor(encoded, sort, direction) {
+  if (!encoded) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (parsed.sort !== sort || parsed.direction !== direction || typeof parsed.value !== "string" || !UUID_PATTERN.test(parsed.id || "")) {
+      return null;
+    }
+    if (sort === "date" && Number.isNaN(Date.parse(parsed.value))) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+function addScope(scope, where, params, alias = "") {
+  const prefix = alias ? `${alias}.` : "";
+  if (scope.kind === "local") {
+    params.push("local");
+    where.push(`${prefix}source = $${params.length}`);
+  } else {
+    params.push(scope.accountId);
+    where.push(`${prefix}storage_account_id = $${params.length}`);
+  }
+}
+function addFilters(options, where, params, alias = "", includeFolder = true) {
+  const prefix = alias ? `${alias}.` : "";
+  if (options.q) {
+    params.push(`%${escapeLike(options.q)}%`);
+    where.push(`(${prefix}name ILIKE $${params.length} ESCAPE '\\' OR ${prefix}folder ILIKE $${params.length} ESCAPE '\\')`);
+  }
+  if (options.type === "media") {
+    where.push(`${prefix}type IN ('image', 'video', 'audio')`);
+  } else if (options.type === "document") {
+    where.push(`${prefix}type NOT IN ('image', 'video', 'audio')`);
+  } else if (options.type) {
+    params.push(options.type);
+    where.push(`${prefix}type = $${params.length}`);
+  }
+  if (includeFolder && options.folder !== void 0) {
+    if (options.folder === null) {
+      where.push(`${prefix}folder IS NULL`);
+    } else {
+      params.push(options.folder);
+      where.push(`${prefix}folder = $${params.length}`);
+    }
+  }
+  if (options.favorite !== null) {
+    params.push(options.favorite);
+    where.push(`${prefix}is_favorite = $${params.length}`);
+  }
+}
+function buildFilePageQuery(scope, options) {
+  const where = [];
+  const params = [];
+  addScope(scope, where, params);
+  addFilters(options, where, params);
+  const cursor = decodeFileQueryCursor(options.cursor, options.sort, options.direction);
+  const comparator = options.direction === "asc" ? ">" : "<";
+  const direction = options.direction.toUpperCase();
+  if (cursor) {
+    if (options.sort === "name") {
+      params.push(cursor.value.toLocaleLowerCase(), cursor.id);
+      where.push(`(LOWER(name), id) ${comparator} ($${params.length - 1}, $${params.length}::uuid)`);
+    } else {
+      params.push(cursor.value, cursor.id);
+      where.push(`(created_at, id) ${comparator} ($${params.length - 1}::timestamptz, $${params.length}::uuid)`);
+    }
+  }
+  params.push(options.limit + 1);
+  const sortColumn = options.sort === "name" ? "LOWER(name)" : "created_at";
+  return {
+    text: `SELECT
+    id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
+    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at
+FROM files
+WHERE ${where.join(" AND ")}
+ORDER BY ${sortColumn} ${direction}, id ${direction}
+LIMIT $${params.length}`,
+    params
+  };
+}
+function buildFolderAggregationQuery(scope, options) {
+  const where = ["folder IS NOT NULL"];
+  const params = [];
+  addScope(scope, where, params);
+  addFilters({ ...options, folder: void 0 }, where, params, "", false);
+  const direction = options.direction.toUpperCase();
+  const order = options.sort === "name" ? `folder ${direction}` : `latest_at ${direction}, folder ${direction}`;
+  return {
+    text: `WITH filtered AS (
+    SELECT * FROM files WHERE ${where.join(" AND ")}
+), grouped AS (
+    SELECT
+        folder,
+        COUNT(*) FILTER (WHERE name <> '.folder')::int AS file_count,
+        COALESCE(SUM(size) FILTER (WHERE name <> '.folder'), 0)::bigint AS total_size_bytes,
+        MAX(created_at) AS latest_at,
+        BOOL_AND(is_favorite)::boolean AS is_favorite
+    FROM filtered
+    GROUP BY folder
+)
+SELECT grouped.*, cover.id AS cover_id, cover.name AS cover_name, cover.type AS cover_type,
+       cover.mime_type AS cover_mime_type, cover.thumbnail_path AS cover_thumbnail_path,
+       cover.preview_path AS cover_preview_path, cover.created_at AS cover_created_at
+FROM grouped
+LEFT JOIN LATERAL (
+    SELECT id, name, type, mime_type, thumbnail_path, preview_path, created_at
+    FROM filtered candidate
+    WHERE candidate.folder = grouped.folder AND candidate.name <> '.folder'
+    ORDER BY candidate.created_at DESC, candidate.id DESC
+    LIMIT 1
+) cover ON TRUE
+ORDER BY ${order}`,
+    params
+  };
+}
+function cursorForFile(file, sort, direction) {
+  const value = sort === "name" ? String(file.name || "").toLocaleLowerCase() : new Date(String(file.created_at)).toISOString();
+  return encodeFileQueryCursor({ sort, direction, value, id: String(file.id) });
+}
+
+// src/routes/files.ts
 var router2 = Router2();
 var UPLOAD_DIR5 = path17.resolve(process.env.UPLOAD_DIR || "./data/uploads");
 var THUMBNAIL_DIR5 = path17.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
@@ -11949,24 +12706,6 @@ function parseRangeHeader(range, size) {
   }
   return { start, end: Math.min(end, size - 1) };
 }
-var FILES_LIST_COLUMNS = `
-    id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
-    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at
-`;
-function encodeFileCursor(file) {
-  return Buffer.from(`${new Date(file.created_at).toISOString()}|${file.id}`, "utf8").toString("base64url");
-}
-function decodeFileCursor(cursor) {
-  if (!cursor || typeof cursor !== "string") return null;
-  try {
-    const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-    const [createdAt, id] = decoded.split("|");
-    if (!createdAt || !id || Number.isNaN(new Date(createdAt).getTime())) return null;
-    return { createdAt, id };
-  } catch {
-    return null;
-  }
-}
 function mapFileForList(file) {
   return {
     ...file,
@@ -11976,58 +12715,83 @@ function mapFileForList(file) {
     previewUrl: getSignedUrl(file.id, "preview")
   };
 }
-async function queryFilesPage(options) {
+async function getFileQueryScope() {
   const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-  const activeAccountId = storageManager2.getActiveAccountId();
   const provider = storageManager2.getProvider();
-  const limit = Math.min(500, Math.max(1, parseInt(String(options.limit || "200"), 10) || 200));
-  const cursor = decodeFileCursor(options.cursor);
-  const whereParts = [];
-  const params = [];
-  if (provider.name === "local") {
-    whereParts.push(`source = $${params.length + 1}`);
-    params.push("local");
-  } else {
-    whereParts.push(`storage_account_id = $${params.length + 1}`);
-    params.push(activeAccountId);
+  return provider.name === "local" ? { kind: "local" } : { kind: "account", accountId: storageManager2.getActiveAccountId() || "" };
+}
+async function queryFilesPage(rawOptions) {
+  const options = normalizeFileQuery(rawOptions);
+  if (options.cursor && !decodeCursorForOptions(options.cursor, options.sort, options.direction)) {
+    throw new Error("invalid cursor");
   }
-  if (options.favoriteOnly) {
-    whereParts.push(`is_favorite = $${params.length + 1}`);
-    params.push(true);
-  }
-  if (cursor) {
-    whereParts.push(`(created_at, id) < ($${params.length + 1}::timestamptz, $${params.length + 2}::uuid)`);
-    params.push(cursor.createdAt, cursor.id);
-  }
-  params.push(limit + 1);
-  const result = await query(
-    `SELECT ${FILES_LIST_COLUMNS}
-         FROM files
-         WHERE ${whereParts.join(" AND ")}
-         ORDER BY created_at DESC, id DESC
-         LIMIT $${params.length}`,
-    params
-  );
-  const rows = result.rows.slice(0, limit);
+  const scope = await getFileQueryScope();
+  const built = buildFilePageQuery(scope, options);
+  const result = await query(built.text, built.params);
+  const rows = result.rows.slice(0, options.limit);
   return {
     files: rows.map(mapFileForList),
-    nextCursor: result.rows.length > limit ? encodeFileCursor(rows[rows.length - 1]) : null,
-    hasMore: result.rows.length > limit
+    nextCursor: result.rows.length > options.limit && rows.length > 0 ? cursorForFile(rows[rows.length - 1], options.sort, options.direction) : null,
+    hasMore: result.rows.length > options.limit
   };
 }
+function decodeCursorForOptions(cursor, sort, direction) {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    return parsed.sort === sort && parsed.direction === direction && typeof parsed.value === "string" && typeof parsed.id === "string";
+  } catch {
+    return false;
+  }
+}
 function shouldReturnPagedEnvelope(req) {
-  return req.query.page === "cursor" || req.query.cursor !== void 0 || req.query.limit !== void 0;
+  return req.query.page === "cursor" || req.query.cursor !== void 0 || req.query.limit !== void 0 || ["q", "type", "folder", "favorite", "sort", "direction"].some((key) => req.query[key] !== void 0);
 }
 router2.get("/", async (req, res) => {
   try {
-    const page = await queryFilesPage({ cursor: req.query.cursor, limit: req.query.limit });
+    const page = await queryFilesPage(req.query);
     if (shouldReturnPagedEnvelope(req)) {
       return res.json(page);
     }
     res.json(page.files);
   } catch (error) {
+    if (error instanceof Error && /invalid|too long|singular/.test(error.message)) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u6587\u4EF6\u5217\u8868\u5931\u8D25" });
+  }
+});
+router2.get("/folders/aggregation", async (req, res) => {
+  try {
+    const options = normalizeFileQuery(req.query);
+    const scope = await getFileQueryScope();
+    const built = buildFolderAggregationQuery(scope, options);
+    const result = await query(built.text, built.params);
+    res.json({
+      folders: result.rows.map((row) => ({
+        name: row.folder,
+        fileCount: Number(row.file_count || 0),
+        totalSizeBytes: Number(row.total_size_bytes || 0),
+        latestDate: row.latest_at,
+        isFavorite: !!row.is_favorite,
+        coverFile: row.cover_id ? mapFileForList({
+          id: row.cover_id,
+          name: row.cover_name,
+          type: row.cover_type,
+          mime_type: row.cover_mime_type,
+          thumbnail_path: row.cover_thumbnail_path,
+          preview_path: row.cover_preview_path,
+          created_at: row.cover_created_at,
+          size: 0
+        }) : null
+      }))
+    });
+  } catch (error) {
+    if (error instanceof Error && /invalid|too long|singular/.test(error.message)) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error("\u83B7\u53D6\u6587\u4EF6\u5939\u805A\u5408\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u83B7\u53D6\u6587\u4EF6\u5939\u805A\u5408\u5931\u8D25" });
   }
 });
 router2.post("/folders", async (req, res) => {
@@ -12352,13 +13116,27 @@ router2.delete("/:id([0-9a-fA-F-]{36})", async (req, res) => {
     if (!file) {
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728" });
     }
-    try {
-      await removePhysicalFile(file);
-    } catch (err) {
-      console.error(`\u7269\u7406\u6587\u4EF6\u5220\u9664\u5931\u8D25 (\u53EF\u80FD\u5DF2\u4E0D\u5B58\u5728):`, err);
+    const deletionService2 = createFileDeletionService({
+      removePhysicalFile,
+      deleteIndex: async (fileId) => {
+        const deleted = await query("DELETE FROM files WHERE id = $1", [fileId]);
+        return deleted.rowCount === 1;
+      }
+    });
+    const outcome = await deletionService2.deleteIndexedFile(file);
+    if (outcome.status === "failed") {
+      console.error(`\u5220\u9664\u6587\u4EF6\u5931\u8D25\uFF0C\u4FDD\u7559\u6570\u636E\u5E93\u7D22\u5F15 (ID: ${id}):`, outcome.error);
+      return res.status(502).json({
+        status: "failed",
+        error: "\u7269\u7406\u6587\u4EF6\u6216\u7D22\u5F15\u5220\u9664\u5931\u8D25\uFF0C\u6570\u636E\u5E93\u7D22\u5F15\u5DF2\u4FDD\u7559\u4EE5\u4FBF\u91CD\u8BD5",
+        details: outcome.error
+      });
     }
-    await query("DELETE FROM files WHERE id = $1", [id]);
-    res.json({ success: true, message: "\u6587\u4EF6\u5DF2\u5220\u9664" });
+    res.json({
+      status: "complete",
+      deletedIds: [id],
+      message: outcome.status === "not_found" ? "\u7269\u7406\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728\uFF0C\u7D22\u5F15\u5DF2\u6E05\u7406" : "\u6587\u4EF6\u5DF2\u5220\u9664"
+    });
   } catch (error) {
     console.error("\u5220\u9664\u6587\u4EF6\u5931\u8D25:", error);
     res.status(500).json({ error: "\u5220\u9664\u6587\u4EF6\u5931\u8D25" });
@@ -12466,7 +13244,7 @@ router2.post("/:id([0-9a-fA-F-]{36})/share", async (req, res) => {
 });
 router2.get("/favorites", async (req, res) => {
   try {
-    const page = await queryFilesPage({ favoriteOnly: true, cursor: req.query.cursor, limit: req.query.limit });
+    const page = await queryFilesPage({ ...req.query, favorite: "true" });
     if (shouldReturnPagedEnvelope(req)) {
       return res.json(page);
     }
@@ -12496,39 +13274,103 @@ var files_default = router2;
 
 // src/routes/folderOperations.ts
 init_db();
-init_localPath();
 import { Router as Router3 } from "express";
-import path18 from "path";
+
+// src/services/operationalEvents.ts
+var REDACT_KEYS = /token|secret|password|cookie|authorization|path|filename|storedname|credential/i;
+function normalizeRequestId(value) {
+  if (typeof value !== "string" || value.length < 1 || value.length > 128) return null;
+  return /^[A-Za-z0-9._:-]+$/.test(value) ? value : null;
+}
+function redact(value, key = "") {
+  if (REDACT_KEYS.test(key)) return "[REDACTED]";
+  if (Array.isArray(value)) return value.map((item) => redact(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, redact(child, childKey)]));
+  }
+  return value;
+}
+function buildOperationalEvent(event, requestId, data) {
+  return {
+    timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+    event,
+    requestId,
+    data: redact(data)
+  };
+}
+function logOperationalEvent(event, requestId, data) {
+  console.log(JSON.stringify(buildOperationalEvent(event, requestId, data)));
+}
+
+// src/services/batchDeleteConfirmation.ts
+import crypto12 from "node:crypto";
+function hashAuthToken(token) {
+  return crypto12.createHash("sha256").update(token).digest("hex");
+}
+function normalizeFileIds(fileIds) {
+  return [...new Set(fileIds)].sort();
+}
+var BatchDeleteConfirmationStore = class {
+  confirmations = /* @__PURE__ */ new Map();
+  ttlMs;
+  now;
+  tokenFactory;
+  constructor(options = {}) {
+    this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
+    this.now = options.now ?? (() => Date.now());
+    this.tokenFactory = options.tokenFactory ?? (() => crypto12.randomBytes(24).toString("base64url"));
+  }
+  issue(input) {
+    const confirmationToken = this.tokenFactory();
+    const expiresAt = this.now() + this.ttlMs;
+    this.confirmations.set(confirmationToken, {
+      authTokenHash: hashAuthToken(input.authToken),
+      scope: { ...input.scope },
+      fileIds: normalizeFileIds(input.fileIds),
+      expiresAt
+    });
+    return { confirmationToken, expiresAt };
+  }
+  consume(confirmationToken, binding) {
+    const confirmation = this.confirmations.get(confirmationToken);
+    if (!confirmation) return { status: "missing" };
+    if (confirmation.expiresAt < this.now()) {
+      this.confirmations.delete(confirmationToken);
+      return { status: "expired" };
+    }
+    if (confirmation.authTokenHash !== hashAuthToken(binding.authToken) || confirmation.scope.provider !== binding.scope.provider || confirmation.scope.accountId !== binding.scope.accountId) {
+      return { status: "mismatch" };
+    }
+    this.confirmations.delete(confirmationToken);
+    return { status: "ok", confirmation };
+  }
+};
+var batchDeleteConfirmationStore = new BatchDeleteConfirmationStore();
+
+// src/routes/folderOperations.ts
 var router3 = Router3({ strict: true });
-var UPLOAD_DIR6 = path18.resolve(process.env.UPLOAD_DIR || "./data/uploads");
-var THUMBNAIL_DIR6 = path18.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
-var CLOUD_SOURCES2 = /* @__PURE__ */ new Set(["onedrive", "aliyun_oss", "s3", "webdav", "google_drive"]);
-async function getCurrentStorageScope2() {
+async function getBatchDeleteScope() {
   const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-  const provider = storageManager2.getProvider();
-  if (provider.name === "local") {
-    return { clause: "source = 'local'", params: [] };
-  }
-  return { clause: "storage_account_id = $1", params: [storageManager2.getActiveAccountId()] };
+  const target = storageManager2.getActiveTarget();
+  return { provider: target.provider.name, accountId: target.accountId };
 }
-function nextParam2(scope, offset) {
-  return `$${scope.params.length + offset}`;
+function getAuthenticatedSessionToken(req) {
+  const token = getAuthToken(req);
+  if (!token) throw new Error("Authenticated session token is missing");
+  return token;
 }
-async function removePhysicalFile2(file) {
-  if (CLOUD_SOURCES2.has(file.source)) {
-    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
-    await provider.deleteFile(file.path);
-  } else {
-    const filePath = file.path || path18.join(UPLOAD_DIR6, file.stored_name);
-    await safeUnlink(filePath, UPLOAD_DIR6);
-  }
-  if (file.thumbnail_path) {
-    const thumbPath = path18.join(THUMBNAIL_DIR6, path18.basename(file.thumbnail_path));
-    await safeUnlink(thumbPath, THUMBNAIL_DIR6);
-  }
+async function deleteFileIndex(id) {
+  const result = await query("DELETE FROM files WHERE id = $1", [id]);
+  return result.rowCount === 1;
 }
-router3.post("/batch-delete", requireAuth, async (req, res) => {
+var deletionService = createFileDeletionService({
+  removePhysicalFile,
+  deleteIndex: deleteFileIndex
+});
+function failedFile(file, result) {
+  return { id: file.id, name: file.name, error: result.error };
+}
+router3.post("/batch-delete/preview", requireAuth, async (req, res) => {
   try {
     const { fileIds = [], folderNames = [] } = req.body;
     if (!Array.isArray(fileIds) || !Array.isArray(folderNames)) {
@@ -12537,36 +13379,104 @@ router3.post("/batch-delete", requireAuth, async (req, res) => {
     if (fileIds.length === 0 && folderNames.length === 0) {
       return res.status(400).json({ error: "\u8BF7\u63D0\u4F9B\u8981\u5220\u9664\u7684\u6587\u4EF6\u6216\u6587\u4EF6\u5939" });
     }
-    const scope = await getCurrentStorageScope2();
-    let filesToDelete = [];
-    if (fileIds.length > 0) {
-      const result = await query(
-        `SELECT * FROM files WHERE ${scope.clause} AND id = ANY(${nextParam2(scope, 1)})`,
-        [...scope.params, fileIds]
-      );
-      filesToDelete = [...filesToDelete, ...result.rows];
+    const storageScope = await getCurrentStorageScope();
+    const result = await query(
+      `SELECT COUNT(DISTINCT id)::int AS file_count,
+                    COUNT(DISTINCT id) FILTER (WHERE name <> '.folder')::int AS data_file_count,
+                    COUNT(DISTINCT id) FILTER (WHERE name = '.folder')::int AS placeholder_count,
+                    COUNT(DISTINCT folder) FILTER (WHERE folder = ANY(${nextParam(storageScope, 2)}::text[]))::int AS folder_count,
+                    COALESCE(SUM(size) FILTER (WHERE name <> '.folder'), 0)::bigint AS total_size,
+                    COALESCE(ARRAY_AGG(DISTINCT id), ARRAY[]::uuid[]) AS file_ids
+             FROM files
+             WHERE ${storageScope.clause}
+               AND (id = ANY(${nextParam(storageScope, 1)}::uuid[]) OR folder = ANY(${nextParam(storageScope, 2)}::text[]))`,
+      [...storageScope.params, fileIds, folderNames]
+    );
+    const row = result.rows[0] || {};
+    const immutableFileIds = row.file_ids || [];
+    if (immutableFileIds.length === 0) {
+      return res.status(404).json({ error: "\u5F53\u524D\u5B58\u50A8\u8303\u56F4\u5185\u6CA1\u6709\u627E\u5230\u5F85\u5220\u9664\u9879\u76EE" });
     }
-    if (folderNames.length > 0) {
-      const result = await query(
-        `SELECT * FROM files WHERE ${scope.clause} AND folder = ANY(${nextParam2(scope, 1)})`,
-        [...scope.params, folderNames]
-      );
-      filesToDelete = [...filesToDelete, ...result.rows];
+    const issued = batchDeleteConfirmationStore.issue({
+      authToken: getAuthenticatedSessionToken(req),
+      scope: await getBatchDeleteScope(),
+      fileIds: immutableFileIds
+    });
+    res.json({
+      confirmationToken: issued.confirmationToken,
+      fileCount: Number(row.file_count || 0),
+      dataFileCount: Number(row.data_file_count || 0),
+      placeholderCount: Number(row.placeholder_count || 0),
+      folderCount: Number(row.folder_count || 0),
+      totalSizeBytes: Number(row.total_size || 0),
+      expiresAt: new Date(issued.expiresAt).toISOString()
+    });
+  } catch (error) {
+    console.error("\u83B7\u53D6\u6279\u91CF\u5220\u9664\u5F71\u54CD\u8303\u56F4\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u83B7\u53D6\u5220\u9664\u5F71\u54CD\u8303\u56F4\u5931\u8D25" });
+  }
+});
+router3.post("/batch-delete", requireAuth, async (req, res) => {
+  try {
+    const { confirmationToken } = req.body;
+    if (!confirmationToken || typeof confirmationToken !== "string") {
+      return res.status(400).json({ error: "\u7F3A\u5C11\u5220\u9664\u786E\u8BA4\u4EE4\u724C", code: "CONFIRMATION_REQUIRED" });
     }
-    const uniqueFiles = Array.from(new Map(filesToDelete.map((file) => [file.id, file])).values());
-    if (uniqueFiles.length === 0) {
-      return res.json({ success: true, message: "\u6CA1\u6709\u53D1\u73B0\u5F85\u5220\u9664\u7684\u9879\u76EE" });
+    const consumed = batchDeleteConfirmationStore.consume(confirmationToken, {
+      authToken: getAuthenticatedSessionToken(req),
+      scope: await getBatchDeleteScope()
+    });
+    if (consumed.status === "expired") {
+      return res.status(410).json({ error: "\u5220\u9664\u786E\u8BA4\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u9884\u89C8", code: "CONFIRMATION_EXPIRED" });
     }
-    await Promise.all(uniqueFiles.map(async (file) => {
-      try {
-        await removePhysicalFile2(file);
-      } catch (err) {
-        console.error(`\u5220\u9664\u7269\u7406\u6587\u4EF6\u5931\u8D25 (ID: ${file.id}):`, err);
+    if (consumed.status === "mismatch") {
+      return res.status(409).json({ error: "\u5220\u9664\u786E\u8BA4\u4E0E\u5F53\u524D\u4F1A\u8BDD\u6216\u5B58\u50A8\u8303\u56F4\u4E0D\u5339\u914D", code: "CONFIRMATION_MISMATCH" });
+    }
+    if (consumed.status === "missing" || !consumed.confirmation) {
+      return res.status(409).json({ error: "\u5220\u9664\u786E\u8BA4\u4E0D\u5B58\u5728\u6216\u5DF2\u4F7F\u7528", code: "CONFIRMATION_REPLAYED" });
+    }
+    const fileIds = consumed.confirmation.fileIds;
+    const storageScope = await getCurrentStorageScope();
+    const selected = await query(
+      `SELECT * FROM files WHERE ${storageScope.clause} AND id = ANY(${nextParam(storageScope, 1)}::uuid[])`,
+      [...storageScope.params, fileIds]
+    );
+    const filesById = new Map(selected.rows.map((file) => [file.id, file]));
+    const deletedIds = [];
+    const failedFiles = [];
+    for (const id of fileIds) {
+      const file = filesById.get(id);
+      if (!file) {
+        deletedIds.push(id);
+        continue;
       }
-    }));
-    const idsToDelete = uniqueFiles.map((file) => file.id);
-    await query("DELETE FROM files WHERE id = ANY($1)", [idsToDelete]);
-    res.json({ success: true, message: `\u6210\u529F\u5220\u9664 ${uniqueFiles.length} \u4E2A\u6587\u4EF6` });
+      const outcome = await deletionService.deleteIndexedFile(file);
+      if (outcome.status === "failed") {
+        console.error(`\u5220\u9664\u6587\u4EF6\u5931\u8D25\uFF0C\u4FDD\u7559\u6570\u636E\u5E93\u7D22\u5F15 (ID: ${file.id}):`, outcome.error);
+        failedFiles.push(failedFile(file, outcome));
+      } else {
+        deletedIds.push(file.id);
+      }
+    }
+    if (failedFiles.length > 0) {
+      logOperationalEvent("files.batch-delete.partial", res.locals.requestId || null, {
+        deletedCount: deletedIds.length,
+        failedCount: failedFiles.length,
+        storageScope: consumed.confirmation.scope
+      });
+      return res.status(207).json({
+        status: "partial",
+        deletedIds,
+        failedFiles,
+        message: `\u5DF2\u5220\u9664 ${deletedIds.length} \u4E2A\u9879\u76EE\uFF0C${failedFiles.length} \u4E2A\u9879\u76EE\u5931\u8D25\u5E76\u4FDD\u7559\u7D22\u5F15`
+      });
+    }
+    res.json({
+      status: "complete",
+      deletedIds,
+      failedFiles: [],
+      message: `\u6210\u529F\u5220\u9664 ${deletedIds.length} \u4E2A\u9879\u76EE`
+    });
   } catch (error) {
     console.error("\u6279\u91CF\u5220\u9664\u5931\u8D25:", error);
     res.status(500).json({ error: "\u6279\u91CF\u5220\u9664\u5931\u8D25" });
@@ -12585,9 +13495,9 @@ router3.patch("/rename-folder", requireAuth, async (req, res) => {
     if (/[\/\\:*?"<>|]/.test(trimmedNew)) {
       return res.status(400).json({ error: "\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
     }
-    const scope = await getCurrentStorageScope2();
+    const scope = await getCurrentStorageScope();
     const checkResult = await query(
-      `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam2(scope, 1)}`,
+      `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam(scope, 1)}`,
       [...scope.params, oldName]
     );
     if (parseInt(checkResult.rows[0].cnt) === 0) {
@@ -12595,7 +13505,7 @@ router3.patch("/rename-folder", requireAuth, async (req, res) => {
     }
     if (trimmedNew !== oldName) {
       const existResult = await query(
-        `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam2(scope, 1)}`,
+        `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam(scope, 1)}`,
         [...scope.params, trimmedNew]
       );
       if (parseInt(existResult.rows[0].cnt) > 0) {
@@ -12603,7 +13513,7 @@ router3.patch("/rename-folder", requireAuth, async (req, res) => {
       }
     }
     await query(
-      `UPDATE files SET folder = ${nextParam2(scope, 1)} WHERE ${scope.clause} AND folder = ${nextParam2(scope, 2)}`,
+      `UPDATE files SET folder = ${nextParam(scope, 1)} WHERE ${scope.clause} AND folder = ${nextParam(scope, 2)}`,
       [...scope.params, trimmedNew, oldName]
     );
     res.json({ success: true, name: trimmedNew });
@@ -12626,16 +13536,16 @@ router3.patch("/move-folder", requireAuth, async (req, res) => {
     if (trimmedNew && /[\/\\:*?"<>|]/.test(trimmedNew)) {
       return res.status(400).json({ error: "\u76EE\u6807\u6587\u4EF6\u5939\u540D\u5305\u542B\u975E\u6CD5\u5B57\u7B26" });
     }
-    const scope = await getCurrentStorageScope2();
+    const scope = await getCurrentStorageScope();
     const checkResult = await query(
-      `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam2(scope, 1)}`,
+      `SELECT COUNT(*) as cnt FROM files WHERE ${scope.clause} AND folder = ${nextParam(scope, 1)}`,
       [...scope.params, trimmedOld]
     );
     if (parseInt(checkResult.rows[0].cnt) === 0) {
       return res.status(404).json({ error: "\u539F\u6587\u4EF6\u5939\u4E0D\u5B58\u5728" });
     }
     await query(
-      `UPDATE files SET folder = ${nextParam2(scope, 1)}, updated_at = NOW() WHERE ${scope.clause} AND folder = ${nextParam2(scope, 2)}`,
+      `UPDATE files SET folder = ${nextParam(scope, 1)}, updated_at = NOW() WHERE ${scope.clause} AND folder = ${nextParam(scope, 2)}`,
       [...scope.params, trimmedNew, trimmedOld]
     );
     res.json({ success: true, folder: trimmedNew });
@@ -12651,7 +13561,7 @@ init_db();
 import { Router as Router4 } from "express";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
-import path19 from "path";
+import path18 from "path";
 import fs13 from "fs";
 
 // src/middleware/apiKey.ts
@@ -12696,6 +13606,7 @@ var validateApiKey = async (req, res, next) => {
     if (!keyInfo.key_hash && keyInfo.key === apiKey) {
       await query("UPDATE api_keys SET key_hash = $1, key = $2 WHERE id = $3", [apiKeyHash, `legacy:${keyInfo.id}`, keyInfo.id]).catch(() => void 0);
     }
+    await query("UPDATE api_keys SET last_used_at = NOW() WHERE id = $1", [keyInfo.id]).catch(() => void 0);
     req.apiKeyInfo = {
       id: keyInfo.id,
       name: keyInfo.name,
@@ -12707,11 +13618,21 @@ var validateApiKey = async (req, res, next) => {
     res.status(500).json({ error: "\u9A8C\u8BC1 API Key \u5931\u8D25" });
   }
 };
+function requireApiKeyPermission(permission) {
+  return (req, res, next) => {
+    const permissions = req.apiKeyInfo?.permissions || [];
+    if (!permissions.includes(permission)) {
+      return res.status(403).json({ error: "API Key \u6743\u9650\u4E0D\u8DB3", requiredPermission: permission });
+    }
+    next();
+  };
+}
 
 // src/routes/upload.ts
 init_storage();
 import { rateLimit as rateLimit2 } from "express-rate-limit";
 var router4 = Router4();
+var apiRouter = Router4();
 var uploadLimiter = rateLimit2({
   windowMs: 15 * 60 * 1e3,
   max: 60,
@@ -12737,7 +13658,7 @@ function decodeFilename(filename) {
   }
   return filename;
 }
-var TEMP_DIR = path19.join(process.cwd(), "data", "temp");
+var TEMP_DIR = path18.join(process.cwd(), "data", "temp");
 if (!fs13.existsSync(TEMP_DIR)) {
   fs13.mkdirSync(TEMP_DIR, { recursive: true });
 }
@@ -12746,7 +13667,7 @@ var storage = multer.diskStorage({
     cb(null, TEMP_DIR);
   },
   filename: (_req, file, cb) => {
-    const ext = path19.extname(file.originalname);
+    const ext = path18.extname(file.originalname);
     const storedName = `${uuidv4()}${ext}`;
     cb(null, storedName);
   }
@@ -12767,16 +13688,16 @@ var handleUpload = async (req, res, source = "web") => {
   const originalName = decodeFilename(file.originalname);
   const mimeType = file.mimetype;
   const size = file.size;
-  const tempPath = path19.resolve(file.path);
-  const activeAccountId = storageManager.getActiveAccountId();
+  const tempPath = path18.resolve(file.path);
+  const target = storageManager.getActiveTarget();
+  const { provider, accountId: activeAccountId } = target;
   const storageRules = await getStoragePathRules();
   const storageFolder = buildStorageFolderWithRules({ source, folder: folder || null, mimeType, fileName: originalName }, storageRules);
   const storedName = await getUniqueStoredName(originalName, storageFolder, activeAccountId);
   console.log(`[Upload] \u{1F4C1} Received file: ${originalName} (${mimeType}, ${size} bytes)`);
   console.log(`[Upload] \u{1F3E0} Local temp path: ${tempPath}`);
   try {
-    const provider = storageManager.getProvider();
-    await assertActiveStorageWritable();
+    await assertStorageTargetWritable(target);
     console.log(`[Upload] \u{1F6E0}\uFE0F  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || "none (local)"}`);
     let thumbnailPath = null;
     let previewPath = null;
@@ -12805,7 +13726,7 @@ var handleUpload = async (req, res, source = "web") => {
       try {
         const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
         if (thumbResult) {
-          thumbnailPath = path19.basename(thumbResult);
+          thumbnailPath = path18.basename(thumbResult);
           console.log(`[Upload] \u2728 Thumbnail generated: ${thumbnailPath}`);
           const dims = await getImageDimensions(tempPath, mimeType);
           width = dims.width;
@@ -12821,25 +13742,11 @@ var handleUpload = async (req, res, source = "web") => {
       try {
         const previewResult = await generateMediaPreview(tempPath, storedName, mimeType);
         if (previewResult) {
-          previewPath = path19.basename(previewResult);
+          previewPath = path18.basename(previewResult);
           console.log(`[Upload] \u{1F39E}\uFE0F Image preview generated: ${previewPath}`);
         }
       } catch (error) {
         console.error("\u751F\u6210\u56FE\u7247\u9884\u89C8\u5931\u8D25:", error);
-      }
-    }
-    let storedPath = "";
-    try {
-      storedPath = await provider.saveFile(tempPath, storedName, mimeType, storageFolder);
-    } catch (err) {
-      if (fs13.existsSync(tempPath)) fs13.unlinkSync(tempPath);
-      throw err;
-    }
-    if (fs13.existsSync(tempPath)) {
-      try {
-        fs13.unlinkSync(tempPath);
-      } catch (e) {
-        console.warn("Failed to clean up temp file:", e);
       }
     }
     let type = "other";
@@ -12847,18 +13754,22 @@ var handleUpload = async (req, res, source = "web") => {
     else if (mimeType.startsWith("video/")) type = "video";
     else if (mimeType.startsWith("audio/")) type = "audio";
     else if (mimeType.includes("pdf") || mimeType.includes("document") || mimeType.includes("text") || mimeType.includes("word") || mimeType.includes("excel") || mimeType.includes("spreadsheet") || mimeType.includes("powerpoint") || mimeType.includes("presentation") || mimeType.includes("markdown") || mimeType.includes("json") || mimeType.includes("xml") || mimeType.includes("sql")) type = "document";
-    const result = await query(
-      `INSERT INTO files
-            (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id, created_at, name, type, size`,
-      [originalName, storedName, type, mimeType, size, storedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
-    );
+    let result;
+    const storedPath = await saveAndIndexWithCompensation(provider, tempPath, storedName, mimeType, storageFolder, async (savedPath) => {
+      result = await query(
+        `INSERT INTO files
+                (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                RETURNING id, created_at, name, type, size`,
+        [originalName, storedName, type, mimeType, size, savedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
+      );
+    });
+    if (fs13.existsSync(tempPath)) fs13.unlinkSync(tempPath);
     const newFile = result.rows[0];
     if (provider.name === "local" && type === "video") {
       void generateMediaPreview(storedPath, storedName, mimeType).then(async (previewResult) => {
         if (!previewResult) return;
-        const generatedPreviewName = path19.basename(previewResult);
+        const generatedPreviewName = path18.basename(previewResult);
         await query("UPDATE files SET preview_path = $1, updated_at = NOW() WHERE id = $2", [generatedPreviewName, newFile.id]);
         console.log(`[Upload] \u{1F39E}\uFE0F Video preview generated async: ${generatedPreviewName}`);
       }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error));
@@ -12888,7 +13799,7 @@ var handleUpload = async (req, res, source = "web") => {
 router4.post("/", uploadLimiter, upload.single("file"), async (req, res) => {
   await handleUpload(req, res, "web");
 });
-router4.post("/api", uploadLimiter, validateApiKey, upload.single("file"), async (req, res) => {
+apiRouter.post("/", uploadLimiter, validateApiKey, requireApiKeyPermission("upload"), upload.single("file"), async (req, res) => {
   await handleUpload(req, res, "api");
 });
 var upload_default = router4;
@@ -12898,15 +13809,246 @@ init_db();
 import { Router as Router5 } from "express";
 import checkDiskSpaceModule2 from "check-disk-space";
 import os3 from "os";
-import path20 from "path";
+import path19 from "path";
 import fs14 from "fs";
 import axios3 from "axios";
-import crypto10 from "crypto";
+import crypto14 from "crypto";
+
+// src/services/oauthFlowStore.ts
+init_db();
+init_credentialCrypto();
+import crypto13 from "node:crypto";
+var OAuthFlowError = class extends Error {
+  code = "OAUTH_FLOW_INVALID";
+  constructor() {
+    super("OAuth flow \u4E0D\u5B58\u5728\u3001\u5DF2\u8FC7\u671F\u3001\u5DF2\u4F7F\u7528\u6216\u4E0D\u5C5E\u4E8E\u5F53\u524D\u767B\u5F55\u4F1A\u8BDD");
+    this.name = "OAuthFlowError";
+  }
+};
+function sha256(value) {
+  return crypto13.createHash("sha256").update(value).digest("hex");
+}
+function parsePendingConfig(value) {
+  const parsed = typeof value === "string" ? JSON.parse(value) : value;
+  return decryptStorageConfig(parsed || {});
+}
+var OAuthFlowStore = class {
+  db;
+  ttlMs;
+  now;
+  stateFactory;
+  nonceFactory;
+  schemaPromise = null;
+  constructor(options = {}) {
+    this.db = options.db ?? pool;
+    this.ttlMs = options.ttlMs ?? 10 * 60 * 1e3;
+    this.now = options.now ?? (() => Date.now());
+    this.stateFactory = options.stateFactory ?? (() => crypto13.randomBytes(32).toString("base64url"));
+    this.nonceFactory = options.nonceFactory ?? (() => crypto13.randomBytes(24).toString("base64url"));
+  }
+  async ensureSchema() {
+    if (!this.schemaPromise) {
+      this.schemaPromise = (async () => {
+        await this.db.query(`
+                    CREATE TABLE IF NOT EXISTS oauth_pending_flows (
+                        state_hash VARCHAR(64) PRIMARY KEY,
+                        provider VARCHAR(32) NOT NULL,
+                        auth_session_hash VARCHAR(64) NOT NULL,
+                        redirect_uri TEXT NOT NULL,
+                        pending_config JSONB NOT NULL,
+                        flow_nonce VARCHAR(128) NOT NULL,
+                        expires_at TIMESTAMPTZ NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                `);
+        await this.db.query("CREATE INDEX IF NOT EXISTS idx_oauth_pending_flows_expiry ON oauth_pending_flows(expires_at)");
+      })().catch((error) => {
+        this.schemaPromise = null;
+        throw error;
+      });
+    }
+    await this.schemaPromise;
+  }
+  async issue(input) {
+    await this.ensureSchema();
+    const state = this.stateFactory();
+    const flowNonce = this.nonceFactory();
+    const expiresAt = new Date(this.now() + this.ttlMs);
+    const encryptedConfig = encryptStorageConfig({ ...input.config });
+    await this.db.query("DELETE FROM oauth_pending_flows WHERE expires_at <= $1", [new Date(this.now())]);
+    await this.db.query(
+      `INSERT INTO oauth_pending_flows
+                (state_hash, provider, auth_session_hash, redirect_uri, pending_config, flow_nonce, expires_at)
+             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+      [
+        sha256(state),
+        input.provider,
+        sha256(input.authSessionToken),
+        input.redirectUri,
+        JSON.stringify(encryptedConfig),
+        flowNonce,
+        expiresAt
+      ]
+    );
+    return { state, flowNonce, expiresAt };
+  }
+  async consume(input) {
+    await this.ensureSchema();
+    const result = await this.db.query(
+      `DELETE FROM oauth_pending_flows
+             WHERE state_hash = $1
+               AND provider = $2
+               AND auth_session_hash = $3
+               AND expires_at > $4
+             RETURNING provider, redirect_uri, pending_config, flow_nonce, expires_at`,
+      [sha256(input.state), input.provider, sha256(input.authSessionToken), new Date(this.now())]
+    );
+    if (result.rowCount !== 1 || !result.rows[0]) throw new OAuthFlowError();
+    const row = result.rows[0];
+    return {
+      provider: row.provider,
+      redirectUri: row.redirect_uri,
+      config: parsePendingConfig(row.pending_config),
+      flowNonce: row.flow_nonce,
+      expiresAt: new Date(row.expires_at)
+    };
+  }
+};
+var oauthFlowStore = new OAuthFlowStore();
+
+// src/services/oauthRouteConfig.ts
+var CALLBACK_PATHS = {
+  onedrive: "/api/storage/onedrive/callback",
+  google_drive: "/api/storage/google-drive/callback"
+};
+function exactOrigin(value, variable) {
+  if (!value || value === "*") throw new Error(`${variable} \u5FC5\u987B\u914D\u7F6E\u4E3A\u7CBE\u786E\u7684 http(s) origin`);
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${variable} \u5FC5\u987B\u662F\u6709\u6548 URL`);
+  }
+  if (!["http:", "https:"].includes(url.protocol)) throw new Error(`${variable} \u5FC5\u987B\u4F7F\u7528 http(s)`);
+  return url.origin;
+}
+function getOAuthRouteConfig(provider, env = process.env) {
+  const callbackBase = env.OAUTH_CALLBACK_BASE_URL || env.VITE_API_URL || "";
+  const frontendBase = env.OAUTH_FRONTEND_ORIGIN || env.CORS_ORIGIN?.split(",").map((value) => value.trim()).find(Boolean) || "";
+  if (!callbackBase) throw new Error("\u5FC5\u987B\u914D\u7F6E OAUTH_CALLBACK_BASE_URL \u6216 VITE_API_URL \u4EE5\u56FA\u5B9A OAuth callback URI");
+  const callbackOrigin = exactOrigin(callbackBase, "OAUTH_CALLBACK_BASE_URL/VITE_API_URL");
+  const frontendOrigin = exactOrigin(frontendBase, "OAUTH_FRONTEND_ORIGIN/CORS_ORIGIN");
+  return {
+    redirectUri: `${callbackOrigin}${CALLBACK_PATHS[provider]}`,
+    frontendOrigin
+  };
+}
+function escapeHtml(value) {
+  return value.replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[char]);
+}
+function renderOAuthSuccessPage(input) {
+  const message = JSON.stringify({
+    type: "oauth_success",
+    provider: input.provider,
+    flowNonce: input.flowNonce,
+    accountId: input.accountId
+  }).replace(/</g, "\\u003c");
+  const targetOrigin = JSON.stringify(input.frontendOrigin);
+  const providerName = escapeHtml(input.providerName);
+  const nonce = escapeHtml(input.scriptNonce);
+  return `
+        <!doctype html>
+        <html lang="zh-CN">
+            <head><meta charset="utf-8" /><title>${providerName} \u6388\u6743\u6210\u529F</title></head>
+            <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+                <div style="text-align: center; padding: 40px; border-radius: 20px; background: #f0fdf4; border: 1px solid #bbf7d0;">
+                    <h2 style="color: #16a34a; margin-bottom: 10px;">\u{1F389} \u6388\u6743\u6210\u529F\uFF01</h2>
+                    <p style="color: #15803d; margin-bottom: 8px;">${providerName} \u5DF2\u6210\u529F\u8FDE\u63A5\u5E76\u542F\u7528\u3002</p>
+                    <p style="color: #166534; font-size: 14px; margin-bottom: 20px;">\u7A97\u53E3\u5C06\u81EA\u52A8\u5173\u95ED\u3002\u5982\u679C\u672A\u5173\u95ED\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5173\u95ED\uFF0C\u4E3B\u9875\u9762\u4F1A\u81EA\u52A8\u5237\u65B0\u8D26\u6237\u5217\u8868\u3002</p>
+                    <button id="close-window" type="button" style="padding: 10px 20px; background: #16a34a; color: white; border: none; border-radius: 8px; cursor: pointer;">\u5173\u95ED\u6B64\u7A97\u53E3</button>
+                    <script nonce="${nonce}">
+                        const targetOrigin = ${targetOrigin};
+                        const message = ${message};
+                        const notifyParent = () => {
+                            if (window.opener && !window.opener.closed) {
+                                window.opener.postMessage(message, targetOrigin);
+                            }
+                        };
+                        const closeWindow = () => { notifyParent(); window.close(); };
+                        document.getElementById('close-window')?.addEventListener('click', closeWindow);
+                        notifyParent();
+                        setTimeout(closeWindow, 1200);
+                    </script>
+                </div>
+            </body>
+        </html>
+    `;
+}
+
+// src/services/storageAccountLifecycle.ts
+var StorageAccountNotFoundError = class extends Error {
+  constructor() {
+    super("\u5B58\u50A8\u8D26\u6237\u4E0D\u5B58\u5728\u6216\u5DF2\u88AB\u5220\u9664");
+    this.name = "StorageAccountNotFoundError";
+  }
+};
+var StorageAccountConflictError = class extends Error {
+  constructor(kind) {
+    super(kind === "active" ? "\u65E0\u6CD5\u5220\u9664\u5F53\u524D\u6B63\u5728\u4F7F\u7528\u7684\u8D26\u6237\uFF0C\u8BF7\u5148\u5207\u6362\u5230\u5176\u4ED6\u8D26\u6237\u6216\u672C\u5730\u5B58\u50A8\u3002" : kind === "job" ? "\u8BE5\u8D26\u6237\u4ECD\u88AB\u672A\u5B8C\u6210\u7684 Telegram \u4EFB\u52A1\u4F7F\u7528\uFF0C\u8BF7\u5148\u5B8C\u6210\u6216\u53D6\u6D88\u8FD9\u4E9B\u4EFB\u52A1\u3002" : "\u8BE5\u8D26\u6237\u4ECD\u88AB\u8FDB\u884C\u4E2D\u7684\u4E0A\u4F20\u4F7F\u7528\uFF0C\u8BF7\u7B49\u5F85\u4E0A\u4F20\u5B8C\u6210\u6216\u53D6\u6D88\u540E\u91CD\u8BD5\u3002");
+    this.kind = kind;
+    this.name = "StorageAccountConflictError";
+  }
+  kind;
+};
+async function deleteStorageAccountWithClient(client2, accountId) {
+  const accountResult = await client2.query(
+    "SELECT id, name, type, is_active FROM storage_accounts WHERE id = $1 FOR UPDATE",
+    [accountId]
+  );
+  if (!accountResult.rows[0]) throw new StorageAccountNotFoundError();
+  const account = accountResult.rows[0];
+  if (account.is_active) throw new StorageAccountConflictError("active");
+  const taskReference = await client2.query(
+    `SELECT id FROM telegram_background_jobs
+         WHERE finished_at IS NULL AND cancelled_at IS NULL
+           AND params->>'storageAccountId' = $1
+         LIMIT 1 FOR UPDATE`,
+    [accountId]
+  );
+  if (taskReference.rows.length > 0) throw new StorageAccountConflictError("job");
+  const uploadReference = await client2.query(
+    `SELECT id FROM storage_account_leases
+         WHERE storage_account_id = $1 AND released_at IS NULL AND expires_at > NOW()
+         LIMIT 1 FOR UPDATE`,
+    [accountId]
+  );
+  if (uploadReference.rows.length > 0) throw new StorageAccountConflictError("upload");
+  const fileResult = await client2.query("DELETE FROM files WHERE storage_account_id = $1", [accountId]);
+  const deleted = await client2.query(
+    "DELETE FROM storage_accounts WHERE id = $1 AND is_active = false RETURNING id",
+    [accountId]
+  );
+  if (deleted.rowCount !== 1) throw new StorageAccountConflictError("active");
+  return {
+    id: String(account.id),
+    name: String(account.name),
+    type: String(account.type),
+    deletedFiles: fileResult.rowCount || 0
+  };
+}
+
+// src/routes/storage.ts
 var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router5 = Router5();
-var UPLOAD_DIR7 = process.env.UPLOAD_DIR || "./data/uploads";
-function sendOAuthSuccessPage(res, providerName, messageType) {
-  const nonce = crypto10.randomBytes(16).toString("base64");
+var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
+function sendOAuthSuccessPage(res, input) {
+  const nonce = crypto14.randomBytes(16).toString("base64");
   res.setHeader("Content-Security-Policy", [
     "default-src 'self'",
     "style-src 'unsafe-inline'",
@@ -12916,59 +14058,23 @@ function sendOAuthSuccessPage(res, providerName, messageType) {
     "object-src 'none'"
   ].join("; "));
   res.setHeader("Cross-Origin-Opener-Policy", "unsafe-none");
-  res.type("html").send(`
-            <!doctype html>
-            <html lang="zh-CN">
-                <head>
-                    <meta charset="utf-8" />
-                    <title>${providerName} \u6388\u6743\u6210\u529F</title>
-                </head>
-                <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0;">
-                    <div style="text-align: center; padding: 40px; border-radius: 20px; background: #f0fdf4; border: 1px solid #bbf7d0;">
-                        <h2 style="color: #16a34a; margin-bottom: 10px;">\u{1F389} \u6388\u6743\u6210\u529F\uFF01</h2>
-                        <p style="color: #15803d; margin-bottom: 8px;">${providerName} \u5DF2\u6210\u529F\u8FDE\u63A5\u5E76\u542F\u7528\u3002</p>
-                        <p style="color: #166534; font-size: 14px; margin-bottom: 20px;">\u7A97\u53E3\u5C06\u81EA\u52A8\u5173\u95ED\u3002\u5982\u679C\u672A\u5173\u95ED\uFF0C\u8BF7\u70B9\u51FB\u4E0B\u65B9\u6309\u94AE\u5173\u95ED\uFF0C\u4E3B\u9875\u9762\u4F1A\u81EA\u52A8\u5237\u65B0\u8D26\u6237\u5217\u8868\u3002</p>
-                        <button id="close-window" type="button" style="padding: 10px 20px; background: #16a34a; color: white; border: none; border-radius: 8px; cursor: pointer;">\u5173\u95ED\u6B64\u7A97\u53E3</button>
-                        <script nonce="${nonce}">
-                            const notifyParent = () => {
-                                if (window.opener && !window.opener.closed) {
-                                    window.opener.postMessage('${messageType}', '*');
-                                }
-                            };
-                            const closeWindow = () => {
-                                notifyParent();
-                                window.close();
-                            };
-                            document.getElementById('close-window')?.addEventListener('click', closeWindow);
-                            notifyParent();
-                            setTimeout(closeWindow, 1200);
-                        </script>
-                    </div>
-                </body>
-            </html>
-        `);
+  res.type("html").send(renderOAuthSuccessPage({ ...input, scriptNonce: nonce }));
 }
-function getOneDriveRedirectUri(req) {
-  const apiBase = process.env.VITE_API_URL;
-  if (apiBase) {
-    return `${apiBase.replace(/\/$/, "")}/api/storage/onedrive/callback`;
-  }
-  const protocol = req.protocol;
-  const host = req.get("host");
-  return `${protocol}://${host}/api/storage/onedrive/callback`;
+function getOAuthSessionToken(req) {
+  const token = getAuthToken(req);
+  if (!token) throw new OAuthFlowError();
+  return token;
 }
-function getGoogleDriveRedirectUri(req) {
-  const apiBase = process.env.VITE_API_URL;
-  if (apiBase) {
-    return `${apiBase.replace(/\/$/, "")}/api/storage/google-drive/callback`;
+function sendOAuthFlowError(res, error) {
+  if (error instanceof OAuthFlowError) {
+    res.status(400).type("text/plain").send(error.message);
+    return;
   }
-  const protocol = req.protocol;
-  const host = req.get("host");
-  return `${protocol}://${host}/api/storage/google-drive/callback`;
+  throw error;
 }
 router5.get("/stats", requireAuth, async (_req, res) => {
   try {
-    const diskPath = os3.platform() === "win32" ? "C:" : path20.resolve(UPLOAD_DIR7);
+    const diskPath = os3.platform() === "win32" ? "C:" : path19.resolve(UPLOAD_DIR6);
     const diskSpace = await checkDiskSpace2(diskPath);
     const scope = await getCurrentStorageScope();
     const result = await query(`
@@ -13042,13 +14148,14 @@ router5.get("/config", requireAuth, async (req, res) => {
     const telegramUserDownloadEnabled = await getSetting("telegram_user_download_enabled", "false");
     const telegramUserSessionFilePath = getTelegramUserSessionFilePath();
     const telegramUserSessionReady = fs14.existsSync(telegramUserSessionFilePath) && isTelegramUserClientReady();
-    const redirectUri = getOneDriveRedirectUri(req);
+    const oneDriveOAuth = getOAuthRouteConfig("onedrive");
+    const googleDriveOAuth = getOAuthRouteConfig("google_drive");
     res.json({
       provider: provider.name,
       activeAccountId,
       accounts,
-      redirectUri,
-      googleDriveRedirectUri: getGoogleDriveRedirectUri(req),
+      redirectUri: oneDriveOAuth.redirectUri,
+      googleDriveRedirectUri: googleDriveOAuth.redirectUri,
       telegramUserDownloadEnabled: telegramUserDownloadEnabled === "true",
       telegramUserSessionReady
     });
@@ -13091,25 +14198,30 @@ router5.post("/maintenance/download-items/cleanup", requireAuth, async (req, res
 });
 router5.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, tenantId, redirectUri, clientSecret, name } = req.body;
-    if (!clientId || !redirectUri) {
-      return res.status(400).json({ error: "\u7F3A\u5C11 Client ID \u6216 Redirect URI" });
+    const { clientId, tenantId, clientSecret, name } = req.body;
+    if (!clientId) {
+      return res.status(400).json({ error: "\u7F3A\u5C11 Client ID" });
     }
-    const { OneDriveStorageProvider: OneDriveStorageProvider2, StorageManager: StorageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    const oauthState = crypto10.randomBytes(24).toString("base64url");
-    const authUrl = OneDriveStorageProvider2.generateAuthUrl(clientId, tenantId || "common", redirectUri, oauthState);
-    if (clientSecret) {
-      await StorageManager2.updateSetting("onedrive_client_secret", clientSecret);
-    } else {
-      await StorageManager2.updateSetting("onedrive_client_secret", "");
-    }
-    await StorageManager2.updateSetting("onedrive_client_id", clientId);
-    await StorageManager2.updateSetting("onedrive_tenant_id", tenantId || "common");
-    await StorageManager2.updateSetting("onedrive_oauth_state", oauthState);
-    if (name) {
-      await StorageManager2.updateSetting("onedrive_pending_name", name);
-    }
-    res.json({ authUrl });
+    const routeConfig = getOAuthRouteConfig("onedrive");
+    const flow = await oauthFlowStore.issue({
+      provider: "onedrive",
+      authSessionToken: getOAuthSessionToken(req),
+      redirectUri: routeConfig.redirectUri,
+      config: {
+        clientId: String(clientId),
+        clientSecret: clientSecret ? String(clientSecret) : "",
+        tenantId: tenantId ? String(tenantId) : "common",
+        name: name ? String(name) : ""
+      }
+    });
+    const { OneDriveStorageProvider: OneDriveStorageProvider2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const authUrl = OneDriveStorageProvider2.generateAuthUrl(
+      String(clientId),
+      tenantId ? String(tenantId) : "common",
+      routeConfig.redirectUri,
+      flow.state
+    );
+    res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), frontendOrigin: routeConfig.frontendOrigin });
   } catch (error) {
     console.error("\u83B7\u53D6\u6388\u6743 URL \u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u6388\u6743 URL \u5931\u8D25" });
@@ -13118,45 +14230,32 @@ router5.post("/config/onedrive/auth-url", requireAuth, async (req, res) => {
 router5.get("/onedrive/callback", async (req, res) => {
   try {
     const { code, state, error, error_description } = req.query;
-    if (error) {
-      return res.type("text/plain").send(`\u6388\u6743\u5931\u8D25: ${String(error_description || error)}`);
-    }
-    if (!code) {
-      return res.send("\u7F3A\u5C11\u6388\u6743\u7801 (code)");
-    }
-    const expectedState = await (await Promise.resolve().then(() => (init_storage(), storage_exports))).storageManager.getSetting("onedrive_oauth_state");
-    if (!state || !expectedState || state !== expectedState) {
-      return res.status(400).send("OAuth state \u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u8FD4\u56DE\u8BBE\u7F6E\u9875\u9762\u91CD\u65B0\u53D1\u8D77\u6388\u6743\u3002");
-    }
+    if (error) return res.type("text/plain").send(`\u6388\u6743\u5931\u8D25: ${String(error_description || error)}`);
+    if (!code || typeof code !== "string") return res.status(400).send("\u7F3A\u5C11\u6388\u6743\u7801 (code)");
+    if (!state || typeof state !== "string") return res.status(400).send("\u7F3A\u5C11 OAuth state");
+    const flow = await oauthFlowStore.consume({
+      state,
+      provider: "onedrive",
+      authSessionToken: getOAuthSessionToken(req)
+    });
+    const { clientId, clientSecret = "", tenantId = "common", name = "" } = flow.config;
+    if (typeof clientId !== "string" || !clientId) return res.status(400).send("OAuth \u914D\u7F6E\u4FE1\u606F\u4E0D\u5B8C\u6574");
     const { storageManager: storageManager2, OneDriveStorageProvider: OneDriveStorageProvider2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    const clientId = await storageManager2.getSetting("onedrive_client_id");
-    const clientSecret = await storageManager2.getSetting("onedrive_client_secret") || "";
-    const tenantId = await storageManager2.getSetting("onedrive_tenant_id") || "common";
-    const redirectUri = getOneDriveRedirectUri(req);
-    console.log(`[OneDrive] OAuth Callback, using redirectUri: ${redirectUri}`);
-    if (!clientId) {
-      console.error("[OneDrive] OAuth Callback failed: Client ID not found in settings");
-      return res.send("\u914D\u7F6E\u4FE1\u606F\u4E22\u5931\uFF08Client ID \u672A\u627E\u5230\uFF09\uFF0C\u8BF7\u8FD4\u56DE\u8BBE\u7F6E\u9875\u9762\u91CD\u8BD5\u3002");
-    }
     let tokens;
     try {
-      tokens = await OneDriveStorageProvider2.exchangeCodeForToken(clientId, clientSecret, tenantId, redirectUri, code);
+      tokens = await OneDriveStorageProvider2.exchangeCodeForToken(
+        clientId,
+        typeof clientSecret === "string" ? clientSecret : "",
+        typeof tenantId === "string" ? tenantId : "common",
+        flow.redirectUri,
+        code
+      );
     } catch (err) {
       const msError = err.response?.data;
       const errorCode = Array.isArray(msError?.error_codes) ? msError.error_codes[0] : void 0;
       const errorDescription = msError?.error_description || err.message || "\u672A\u77E5\u9519\u8BEF";
-      console.error("[OneDrive] exchangeCodeForToken failed:", {
-        error: msError?.error,
-        errorCode,
-        errorDescription,
-        traceId: msError?.trace_id,
-        correlationId: msError?.correlation_id,
-        clientId: clientId.substring(0, 8) + "...",
-        redirectUri,
-        tenantId
-      });
       if (errorCode === 7000215 || /invalid client secret|AADSTS7000215/i.test(errorDescription)) {
-        return res.status(400).send("\u6388\u6743\u5931\u8D25\uFF1AMicrosoft \u8FD4\u56DE AADSTS7000215\uFF0CClient Secret \u65E0\u6548\u3002\u8BF7\u5728 Azure/Entra\u300C\u8BC1\u4E66\u548C\u5BC6\u7801\u300D\u4E2D\u65B0\u5EFA\u5BA2\u6237\u7AEF\u5BC6\u7801\uFF0C\u5E76\u590D\u5236\u201C\u503C Value\u201D\uFF08\u4E0D\u662F\u201C\u673A\u5BC6 ID/Secret ID\u201D\uFF09\u540E\u91CD\u65B0\u6388\u6743\u3002");
+        return res.status(400).send("\u6388\u6743\u5931\u8D25\uFF1AMicrosoft \u8FD4\u56DE AADSTS7000215\uFF0CClient Secret \u65E0\u6548\u3002\u8BF7\u590D\u5236\u5BA2\u6237\u7AEF\u5BC6\u7801\u7684\u503C Value\u3002");
       }
       return res.status(err.response?.status || 400).type("text/plain").send(`\u6388\u6743\u5931\u8D25\uFF1A${String(errorDescription)}`);
     }
@@ -13165,41 +14264,60 @@ router5.get("/onedrive/callback", async (req, res) => {
       const profileRes = await axios3.get("https://graph.microsoft.com/v1.0/me", {
         headers: { "Authorization": `Bearer ${tokens.access_token}` }
       });
-      accountName = profileRes.data.mail || profileRes.data.userPrincipalName || "OneDrive Account";
-    } catch (profileError) {
-      console.log("[OneDrive] Could not fetch user profile (likely User.Read scope missing), using default name.");
+      accountName = profileRes.data.mail || profileRes.data.userPrincipalName || accountName;
+    } catch {
     }
-    const pendingName = await storageManager2.getSetting("onedrive_pending_name");
-    const finalName = pendingName || accountName;
-    await storageManager2.updateOneDriveConfig(clientId, clientSecret, tokens.refresh_token, tenantId);
-    const activeId = storageManager2.getActiveAccountId();
-    if (activeId) {
-      await query("UPDATE storage_accounts SET name = $1 WHERE id = $2", [finalName, activeId]);
-    }
-    sendOAuthSuccessPage(res, "OneDrive", "onedrive_auth_success");
+    const accountId = await storageManager2.addOneDriveAccount(
+      typeof name === "string" && name ? name : accountName,
+      clientId,
+      typeof clientSecret === "string" ? clientSecret : "",
+      tokens.refresh_token,
+      typeof tenantId === "string" ? tenantId : "common"
+    );
+    await storageManager2.switchAccount(accountId);
+    const routeConfig = getOAuthRouteConfig("onedrive");
+    sendOAuthSuccessPage(res, {
+      provider: "onedrive",
+      providerName: "OneDrive",
+      frontendOrigin: routeConfig.frontendOrigin,
+      flowNonce: flow.flowNonce,
+      accountId
+    });
   } catch (error) {
-    console.error("OneDrive \u56DE\u8C03\u5904\u7406\u5931\u8D25:", error);
-    res.status(500).send("\u6388\u6743\u5904\u7406\u51FA\u9519\uFF0C\u8BF7\u68C0\u67E5\u540E\u7AEF\u65E5\u5FD7\u3002");
+    try {
+      sendOAuthFlowError(res, error);
+    } catch (unexpected) {
+      console.error("OneDrive \u56DE\u8C03\u5904\u7406\u5931\u8D25:", unexpected);
+      res.status(500).send("\u6388\u6743\u5904\u7406\u51FA\u9519\uFF0C\u8BF7\u68C0\u67E5\u540E\u7AEF\u65E5\u5FD7\u3002");
+    }
   }
 });
 router5.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
   try {
-    const { clientId, clientSecret, redirectUri, name, sharedDriveId } = req.body;
-    if (!clientId || !clientSecret || !redirectUri) {
-      return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570 (Client ID, Client Secret \u6216 Redirect URI)" });
+    const { clientId, clientSecret, name, sharedDriveId } = req.body;
+    if (!clientId || !clientSecret) {
+      return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570 (Client ID \u6216 Client Secret)" });
     }
-    const { GoogleDriveStorageProvider: GoogleDriveStorageProvider2, StorageManager: StorageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    const oauthState = crypto10.randomBytes(24).toString("base64url");
-    const authUrl = GoogleDriveStorageProvider2.generateAuthUrl(clientId, clientSecret, redirectUri, oauthState);
-    await StorageManager2.updateSetting("google_drive_client_id", clientId);
-    await StorageManager2.updateSetting("google_drive_client_secret", clientSecret);
-    await StorageManager2.updateSetting("google_drive_redirect_uri", redirectUri);
-    await StorageManager2.updateSetting("google_drive_oauth_state", oauthState);
-    await StorageManager2.updateSetting("google_drive_shared_drive_id", sharedDriveId?.trim() || "");
-    if (name) {
-      await StorageManager2.updateSetting("google_drive_pending_name", name);
-    }
-    res.json({ authUrl });
+    const routeConfig = getOAuthRouteConfig("google_drive");
+    const flow = await oauthFlowStore.issue({
+      provider: "google_drive",
+      authSessionToken: getOAuthSessionToken(req),
+      redirectUri: routeConfig.redirectUri,
+      config: {
+        clientId: String(clientId),
+        clientSecret: String(clientSecret),
+        name: name ? String(name) : "",
+        sharedDriveId: sharedDriveId ? String(sharedDriveId).trim() : ""
+      }
+    });
+    const { GoogleDriveStorageProvider: GoogleDriveStorageProvider2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const authUrl = GoogleDriveStorageProvider2.generateAuthUrl(
+      String(clientId),
+      String(clientSecret),
+      routeConfig.redirectUri,
+      flow.state
+    );
+    res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), frontendOrigin: routeConfig.frontendOrigin });
   } catch (error) {
     console.error("\u83B7\u53D6 Google Drive \u6388\u6743 URL \u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u6388\u6743 URL \u5931\u8D25" });
@@ -13208,42 +14326,47 @@ router5.post("/config/google-drive/auth-url", requireAuth, async (req, res) => {
 router5.get("/google-drive/callback", async (req, res) => {
   try {
     const { code, state, error } = req.query;
-    if (error) {
-      return res.type("text/plain").send(`\u6388\u6743\u5931\u8D25: ${String(error)}`);
+    if (error) return res.type("text/plain").send(`\u6388\u6743\u5931\u8D25: ${String(error)}`);
+    if (!code || typeof code !== "string") return res.status(400).send("\u7F3A\u5C11\u6388\u6743\u7801 (code)");
+    if (!state || typeof state !== "string") return res.status(400).send("\u7F3A\u5C11 OAuth state");
+    const flow = await oauthFlowStore.consume({
+      state,
+      provider: "google_drive",
+      authSessionToken: getOAuthSessionToken(req)
+    });
+    const { clientId, clientSecret, name = "", sharedDriveId = "" } = flow.config;
+    if (typeof clientId !== "string" || !clientId || typeof clientSecret !== "string" || !clientSecret) {
+      return res.status(400).send("OAuth \u914D\u7F6E\u4FE1\u606F\u4E0D\u5B8C\u6574");
     }
-    if (!code) {
-      return res.send("\u7F3A\u5C11\u6388\u6743\u7801 (code)");
-    }
-    const { storageManager: storageManager2, GoogleDriveStorageProvider: GoogleDriveStorageProvider2, StorageManager: StorageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    const expectedState = await storageManager2.getSetting("google_drive_oauth_state");
-    if (!state || !expectedState || state !== expectedState) {
-      return res.status(400).send("OAuth state \u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u8FD4\u56DE\u8BBE\u7F6E\u9875\u9762\u91CD\u65B0\u53D1\u8D77\u6388\u6743\u3002");
-    }
-    const clientId = await storageManager2.getSetting("google_drive_client_id");
-    const clientSecret = await storageManager2.getSetting("google_drive_client_secret") || "";
-    const redirectUri = await storageManager2.getSetting("google_drive_redirect_uri") || getGoogleDriveRedirectUri(req);
-    const sharedDriveId = await storageManager2.getSetting("google_drive_shared_drive_id") || "";
-    if (!clientId || !clientSecret) {
-      return res.send("\u914D\u7F6E\u4FE1\u606F\u4E22\u5931\uFF0C\u8BF7\u8FD4\u56DE\u8BBE\u7F6E\u9875\u9762\u91CD\u8BD5\u3002");
-    }
-    const tokens = await GoogleDriveStorageProvider2.exchangeCodeForToken(clientId, clientSecret, redirectUri, code);
+    const { storageManager: storageManager2, GoogleDriveStorageProvider: GoogleDriveStorageProvider2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const tokens = await GoogleDriveStorageProvider2.exchangeCodeForToken(clientId, clientSecret, flow.redirectUri, code);
     if (!tokens.refresh_token) {
-      return res.send("\u6388\u6743\u5931\u8D25\uFF1A\u672A\u83B7\u5F97 Refresh Token\u3002\u8BF7\u786E\u4FDD\u662F\u9996\u6B21\u6388\u6743\uFF0C\u6216\u5728 Google \u63A7\u5236\u53F0\u4E2D\u64A4\u9500\u6743\u9650\u540E\u91CD\u8BD5\u3002");
+      return res.status(400).send("\u6388\u6743\u5931\u8D25\uFF1A\u672A\u83B7\u5F97 Refresh Token\u3002\u8BF7\u5728 Google \u63A7\u5236\u53F0\u4E2D\u64A4\u9500\u6743\u9650\u540E\u91CD\u8BD5\u3002");
     }
-    const pendingName = await storageManager2.getSetting("google_drive_pending_name");
-    await StorageManager2.updateSetting("google_drive_pending_name", "");
-    await StorageManager2.updateSetting("google_drive_oauth_state", "");
-    await StorageManager2.updateSetting("google_drive_shared_drive_id", "");
-    await storageManager2.addGoogleDriveAccount(pendingName || "Google Drive Account", clientId, clientSecret, tokens.refresh_token, redirectUri, sharedDriveId);
-    const accounts = await storageManager2.getAccounts();
-    const newAccount = accounts.filter((a) => a.type === "google_drive").sort((a, b) => b.created_at - a.created_at)[0];
-    if (newAccount) {
-      await storageManager2.switchAccount(newAccount.id);
-    }
-    sendOAuthSuccessPage(res, "Google Drive", "google_drive_auth_success");
+    const accountId = await storageManager2.addGoogleDriveAccount(
+      typeof name === "string" && name ? name : "Google Drive Account",
+      clientId,
+      clientSecret,
+      tokens.refresh_token,
+      flow.redirectUri,
+      typeof sharedDriveId === "string" ? sharedDriveId : ""
+    );
+    await storageManager2.switchAccount(accountId);
+    const routeConfig = getOAuthRouteConfig("google_drive");
+    sendOAuthSuccessPage(res, {
+      provider: "google_drive",
+      providerName: "Google Drive",
+      frontendOrigin: routeConfig.frontendOrigin,
+      flowNonce: flow.flowNonce,
+      accountId
+    });
   } catch (error) {
-    console.error("Google Drive \u56DE\u8C03\u5904\u7406\u5931\u8D25:", error);
-    res.status(500).send("\u6388\u6743\u5904\u7406\u51FA\u9519\uFF0C\u8BF7\u68C0\u67E5\u540E\u7AEF\u65E5\u5FD7\u3002");
+    try {
+      sendOAuthFlowError(res, error);
+    } catch (unexpected) {
+      console.error("Google Drive \u56DE\u8C03\u5904\u7406\u5931\u8D25:", unexpected);
+      res.status(500).send("\u6388\u6743\u5904\u7406\u51FA\u9519\uFF0C\u8BF7\u68C0\u67E5\u540E\u7AEF\u65E5\u5FD7\u3002");
+    }
   }
 });
 router5.put("/config/onedrive", requireAuth, async (req, res) => {
@@ -13343,26 +14466,39 @@ router5.get("/accounts", requireAuth, async (req, res) => {
   }
 });
 router5.delete("/accounts/:id", requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+  const client2 = await pool.connect();
+  let accountName = "";
+  let accountType = "";
+  let deletedFiles = 0;
   try {
-    const { id } = req.params;
-    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    if (storageManager2.getActiveAccountId() === id) {
-      return res.status(400).json({ error: "\u65E0\u6CD5\u5220\u9664\u5F53\u524D\u6B63\u5728\u4F7F\u7528\u7684\u8D26\u6237\uFF0C\u8BF7\u5148\u5207\u6362\u5230\u5176\u4ED6\u8D26\u6237\u6216\u672C\u5730\u5B58\u50A8\u3002" });
-    }
-    const accountRes = await query("SELECT id, name FROM storage_accounts WHERE id = $1", [id]);
-    if (accountRes.rows.length === 0) {
-      return res.status(404).json({ error: "\u8D26\u6237\u4E0D\u5B58\u5728" });
-    }
-    const accountName = accountRes.rows[0].name;
-    const accountType = accountRes.rows[0].type;
-    const fileRes = await query("DELETE FROM files WHERE storage_account_id = $1", [id]);
-    await query("DELETE FROM storage_accounts WHERE id = $1", [id]);
+    await client2.query("BEGIN");
+    const deleted = await deleteStorageAccountWithClient(client2, id);
+    if (storageManager2.getActiveAccountId() === id) throw new StorageAccountConflictError("active");
+    accountName = deleted.name;
+    accountType = deleted.type;
+    deletedFiles = deleted.deletedFiles;
+    await client2.query("COMMIT");
     storageManager2.removeProvider(`${accountType}:${id}`);
-    console.log(`[Storage] Account deleted: ${accountName} (${id})`);
-    res.json({ success: true, message: `\u5DF2\u5220\u9664\u8D26\u6237: ${accountName}\uFF0C\u5DF2\u6E05\u7406 ${fileRes.rowCount || 0} \u6761\u5173\u8054\u6587\u4EF6\u7D22\u5F15` });
+    logOperationalEvent("storage.account.deleted", res.locals.requestId || null, {
+      accountId: id,
+      provider: accountType,
+      deletedIndexes: deletedFiles
+    });
+    res.json({ success: true, message: `\u5DF2\u5220\u9664\u8D26\u6237: ${accountName}\uFF0C\u5DF2\u6E05\u7406 ${deletedFiles} \u6761\u5173\u8054\u6587\u4EF6\u7D22\u5F15` });
   } catch (error) {
+    await client2.query("ROLLBACK").catch(() => void 0);
+    if (error instanceof StorageAccountNotFoundError) {
+      return res.status(404).json({ error: error.message });
+    }
+    if (error instanceof StorageAccountConflictError) {
+      return res.status(error.kind === "active" ? 400 : 409).json({ error: error.message });
+    }
     console.error("\u5220\u9664\u8D26\u6237\u5931\u8D25:", error);
     res.status(500).json({ error: "\u5220\u9664\u8D26\u6237\u5931\u8D25" });
+  } finally {
+    client2.release();
   }
 });
 var storage_default = router5;
@@ -13370,388 +14506,770 @@ var storage_default = router5;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router6 } from "express";
-import { v4 as uuidv42 } from "uuid";
-import path21 from "path";
-import fs15 from "fs";
-import { pipeline } from "stream/promises";
-init_storage();
+import crypto16 from "node:crypto";
+import fs16 from "node:fs";
+import fsPromises2 from "node:fs/promises";
+import path21 from "node:path";
+import { pipeline as pipeline2 } from "node:stream/promises";
 import { rateLimit as rateLimit3 } from "express-rate-limit";
+import checkDiskSpaceModule3 from "check-disk-space";
+init_storage();
+
+// src/services/chunkUploadSessions.ts
+import crypto15 from "node:crypto";
+import fs15 from "node:fs";
+import fsPromises from "node:fs/promises";
+import path20 from "node:path";
+import { pipeline } from "node:stream/promises";
+var ChunkUploadProtocolError = class extends Error {
+  constructor(name, message) {
+    super(message);
+    this.name = name;
+  }
+};
+async function writeChunkAtomically(input) {
+  await fsPromises.mkdir(path20.dirname(input.finalPath), { recursive: true });
+  const temporaryPath = `${input.finalPath}.${crypto15.randomUUID()}.part`;
+  const hash = crypto15.createHash("sha256");
+  let size = 0;
+  const counter = new (await import("node:stream")).Transform({
+    transform(chunk, _encoding, callback) {
+      size += chunk.length;
+      if (size > input.maxChunkBytes) return callback(new ChunkUploadProtocolError("ChunkTooLargeError", "\u5355\u4E2A\u5206\u5757\u8FC7\u5927"));
+      hash.update(chunk);
+      callback(null, chunk);
+    }
+  });
+  try {
+    await pipeline(input.stream, counter, fs15.createWriteStream(temporaryPath, { flags: "wx" }));
+    if (size !== input.expectedSize) throw new ChunkUploadProtocolError("ChunkSizeMismatchError", "\u5206\u5757\u5927\u5C0F\u4E0D\u5339\u914D");
+    const sha2562 = hash.digest("hex");
+    if (sha2562 !== input.expectedSha256.toLowerCase()) throw new ChunkUploadProtocolError("ChunkHashMismatchError", "\u5206\u5757\u54C8\u5E0C\u4E0D\u5339\u914D");
+    await fsPromises.rename(temporaryPath, input.finalPath);
+    return { index: -1, size, sha256: sha2562, path: input.finalPath, createdAt: /* @__PURE__ */ new Date() };
+  } catch (error) {
+    await fsPromises.rm(temporaryPath, { force: true }).catch(() => void 0);
+    throw error;
+  }
+}
+var ChunkUploadSessionStore = class {
+  constructor(repository, limits) {
+    this.repository = repository;
+    this.limits = limits;
+  }
+  repository;
+  limits;
+  create(session) {
+    return this.repository.createSession(session);
+  }
+  async reserve(session) {
+    if (!this.limits) return this.create(session);
+    if (session.totalSize > this.limits.maxTotalBytes) {
+      throw new ChunkUploadProtocolError("ChunkTotalSizeError", "\u6587\u4EF6\u8D85\u8FC7\u5206\u5757\u4E0A\u4F20\u603B\u5927\u5C0F\u9650\u5236");
+    }
+    const diskFreeBytes = await this.limits.getDiskFreeBytes();
+    if (diskFreeBytes - session.totalSize < this.limits.diskReserveBytes) {
+      throw new ChunkUploadProtocolError("ChunkDiskReserveError", "\u4E34\u65F6\u78C1\u76D8\u9884\u7559\u7A7A\u95F4\u4E0D\u8DB3");
+    }
+    const reserved = await this.repository.reserveSession(session, this.limits.globalBudgetBytes);
+    if (!reserved) {
+      throw new ChunkUploadProtocolError("ChunkBudgetError", "\u5168\u5C40\u4E34\u65F6\u4E0A\u4F20\u9884\u7B97\u4E0D\u8DB3");
+    }
+  }
+  async writeChunk(input) {
+    const existing = await this.repository.getSession(input.uploadId, input.ownerId);
+    if (!existing || existing.status !== "open") throw new ChunkUploadProtocolError("ChunkSessionStateError", "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u53EF\u5199");
+    const known = await this.repository.getChunk(input.uploadId, input.ownerId, input.index);
+    if (known) {
+      input.input.resume();
+      if (known.size === input.expectedSize && known.sha256 === input.expectedSha256.toLowerCase()) {
+        return { status: "duplicate", chunk: known };
+      }
+      throw new ChunkUploadProtocolError("ChunkConflictError", "\u540C\u4E00\u5206\u5757\u7D22\u5F15\u7684\u5927\u5C0F\u6216\u54C8\u5E0C\u51B2\u7A81");
+    }
+    const chunk = await writeChunkAtomically({
+      stream: input.input,
+      finalPath: input.finalPath,
+      expectedSize: input.expectedSize,
+      expectedSha256: input.expectedSha256,
+      maxChunkBytes: input.maxChunkBytes
+    });
+    chunk.index = input.index;
+    const result = await this.repository.recordChunk(input.uploadId, input.ownerId, chunk);
+    if (result.status === "recorded") return result;
+    if (result.status === "duplicate") return result;
+    await fsPromises.rm(input.finalPath, { force: true }).catch(() => void 0);
+    if (result.status === "conflict") throw new ChunkUploadProtocolError("ChunkConflictError", "\u540C\u4E00\u5206\u5757\u7D22\u5F15\u7684\u5927\u5C0F\u6216\u54C8\u5E0C\u51B2\u7A81");
+    throw new ChunkUploadProtocolError("ChunkSessionStateError", "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u53EF\u5199");
+  }
+  status(uploadId, ownerId2) {
+    return this.repository.getSession(uploadId, ownerId2);
+  }
+  chunks(uploadId, ownerId2) {
+    return this.repository.listChunks(uploadId, ownerId2);
+  }
+  claimCompletion(uploadId, ownerId2, token) {
+    return this.repository.claimCompletion(uploadId, ownerId2, token);
+  }
+  failCompletion(uploadId, ownerId2, token, error) {
+    return this.repository.markCompletionFailed(uploadId, ownerId2, token, error);
+  }
+  retryFailed(uploadId, ownerId2) {
+    return this.repository.reopenFailed(uploadId, ownerId2);
+  }
+  complete(uploadId, ownerId2, token, fileId) {
+    return this.repository.markCompleted(uploadId, ownerId2, token, fileId);
+  }
+  cancel(uploadId, ownerId2) {
+    return this.repository.cancel(uploadId, ownerId2);
+  }
+};
+function mapSession(row) {
+  return {
+    uploadId: String(row.upload_id ?? row.uploadId),
+    ownerId: String(row.owner_id ?? row.ownerId),
+    filename: String(row.filename),
+    mimeType: String(row.mime_type ?? row.mimeType),
+    folder: row.folder == null ? null : String(row.folder),
+    totalSize: Number(row.total_size ?? row.totalSize),
+    totalChunks: Number(row.total_chunks ?? row.totalChunks),
+    receivedBytes: Number(row.received_bytes ?? row.receivedBytes),
+    status: String(row.status),
+    targetProvider: String(row.target_provider ?? row.targetProvider),
+    targetAccountId: row.target_account_id == null && row.targetAccountId == null ? null : String(row.target_account_id ?? row.targetAccountId),
+    expiresAt: new Date(String(row.expires_at ?? row.expiresAt)),
+    completionToken: row.completion_token == null && row.completionToken == null ? null : String(row.completion_token ?? row.completionToken),
+    completedFileId: row.completed_file_id == null && row.completedFileId == null ? null : String(row.completed_file_id ?? row.completedFileId),
+    lastError: row.last_error == null && row.lastError == null ? null : String(row.last_error ?? row.lastError),
+    createdAt: new Date(String(row.created_at ?? row.createdAt)),
+    updatedAt: new Date(String(row.updated_at ?? row.updatedAt))
+  };
+}
+function mapChunk(row) {
+  return {
+    index: Number(row.chunk_index ?? row.index),
+    size: Number(row.size),
+    sha256: String(row.sha256),
+    path: String(row.path),
+    createdAt: new Date(String(row.created_at ?? row.createdAt))
+  };
+}
+var PostgresChunkUploadSessionRepository = class {
+  constructor(pool3) {
+    this.pool = pool3;
+  }
+  pool;
+  insertParams(value) {
+    return [
+      value.uploadId,
+      value.ownerId,
+      value.filename,
+      value.mimeType,
+      value.folder,
+      value.totalSize,
+      value.totalChunks,
+      value.receivedBytes,
+      value.status,
+      value.targetProvider,
+      value.targetAccountId,
+      value.expiresAt,
+      value.completionToken,
+      value.completedFileId,
+      value.lastError,
+      value.createdAt,
+      value.updatedAt
+    ];
+  }
+  async createSession(value) {
+    await this.pool.query(
+      `INSERT INTO chunk_upload_sessions
+             (upload_id, owner_id, filename, mime_type, folder, total_size, total_chunks, received_bytes, status,
+              target_provider, target_account_id, expires_at, completion_token, completed_file_id, last_error, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+      this.insertParams(value)
+    );
+  }
+  async reserveSession(value, globalBudgetBytes) {
+    const client2 = await this.pool.connect();
+    try {
+      await client2.query("BEGIN");
+      await client2.query(`SELECT pg_advisory_xact_lock(hashtext('chunk_upload_global_budget'))`);
+      const budget = await client2.query(
+        `SELECT COALESCE(SUM(total_size), 0)::text AS reserved_bytes
+                 FROM chunk_upload_sessions
+                 WHERE status IN ('open','completing','failed') AND expires_at > NOW()`
+      );
+      if (Number(budget.rows[0]?.reserved_bytes || 0) + value.totalSize > globalBudgetBytes) {
+        await client2.query("ROLLBACK");
+        return false;
+      }
+      await client2.query(
+        `INSERT INTO chunk_upload_sessions
+                 (upload_id, owner_id, filename, mime_type, folder, total_size, total_chunks, received_bytes, status,
+                  target_provider, target_account_id, expires_at, completion_token, completed_file_id, last_error, created_at, updated_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        this.insertParams(value)
+      );
+      await client2.query("COMMIT");
+      return true;
+    } catch (error) {
+      await client2.query("ROLLBACK").catch(() => void 0);
+      throw error;
+    } finally {
+      client2.release();
+    }
+  }
+  async getReservedBytes() {
+    const result = await this.pool.query(
+      `SELECT COALESCE(SUM(total_size), 0)::text AS reserved_bytes FROM chunk_upload_sessions
+             WHERE status IN ('open','completing','failed') AND expires_at > NOW()`
+    );
+    return Number(result.rows[0]?.reserved_bytes || 0);
+  }
+  async getSession(uploadId, ownerId2) {
+    const result = await this.pool.query(
+      `SELECT * FROM chunk_upload_sessions WHERE upload_id = $1 AND owner_id = $2`,
+      [uploadId, ownerId2]
+    );
+    return result.rows[0] ? mapSession(result.rows[0]) : null;
+  }
+  async getChunk(uploadId, ownerId2, index) {
+    const result = await this.pool.query(
+      `SELECT c.* FROM chunk_upload_chunks c
+             JOIN chunk_upload_sessions s ON s.upload_id = c.upload_id
+             WHERE c.upload_id = $1 AND s.owner_id = $2 AND c.chunk_index = $3`,
+      [uploadId, ownerId2, index]
+    );
+    return result.rows[0] ? mapChunk(result.rows[0]) : null;
+  }
+  async listChunks(uploadId, ownerId2) {
+    const result = await this.pool.query(
+      `SELECT c.* FROM chunk_upload_chunks c
+             JOIN chunk_upload_sessions s ON s.upload_id = c.upload_id
+             WHERE c.upload_id = $1 AND s.owner_id = $2 ORDER BY c.chunk_index`,
+      [uploadId, ownerId2]
+    );
+    return result.rows.map(mapChunk);
+  }
+  async recordChunk(uploadId, ownerId2, chunk) {
+    const client2 = await this.pool.connect();
+    try {
+      await client2.query("BEGIN");
+      const locked = await client2.query(
+        `SELECT total_size FROM chunk_upload_sessions
+                 WHERE upload_id = $1 AND owner_id = $2 AND status = 'open' AND expires_at > NOW() FOR UPDATE`,
+        [uploadId, ownerId2]
+      );
+      if (!locked.rows[0]) {
+        await client2.query("ROLLBACK");
+        return { status: "rejected" };
+      }
+      const inserted = await client2.query(
+        `INSERT INTO chunk_upload_chunks (upload_id, chunk_index, size, sha256, path, created_at)
+                 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (upload_id, chunk_index) DO NOTHING RETURNING *`,
+        [uploadId, chunk.index, chunk.size, chunk.sha256, chunk.path, chunk.createdAt]
+      );
+      if (!inserted.rows[0]) {
+        const currentResult = await client2.query(
+          `SELECT * FROM chunk_upload_chunks WHERE upload_id = $1 AND chunk_index = $2`,
+          [uploadId, chunk.index]
+        );
+        await client2.query("ROLLBACK");
+        const current = mapChunk(currentResult.rows[0]);
+        return current.size === chunk.size && current.sha256 === chunk.sha256 ? { status: "duplicate", chunk: current } : { status: "conflict", chunk: current };
+      }
+      const updated = await client2.query(
+        `UPDATE chunk_upload_sessions SET received_bytes = received_bytes + $3, updated_at = NOW()
+                 WHERE upload_id = $1 AND owner_id = $2 AND status = 'open' AND received_bytes + $3 <= total_size`,
+        [uploadId, ownerId2, chunk.size]
+      );
+      if (updated.rowCount !== 1) throw new ChunkUploadProtocolError("ChunkBudgetError", "\u5206\u5757\u7D2F\u8BA1\u5927\u5C0F\u8D85\u8FC7\u58F0\u660E\u603B\u5927\u5C0F");
+      await client2.query("COMMIT");
+      return { status: "recorded", chunk };
+    } catch (error) {
+      await client2.query("ROLLBACK").catch(() => void 0);
+      throw error;
+    } finally {
+      client2.release();
+    }
+  }
+  async claimCompletion(uploadId, ownerId2, token) {
+    const client2 = await this.pool.connect();
+    try {
+      await client2.query("BEGIN");
+      const claimed = await client2.query(
+        `UPDATE chunk_upload_sessions s
+                 SET status = 'completing', completion_token = $3, last_error = NULL, updated_at = NOW()
+                 WHERE upload_id = $1 AND owner_id = $2 AND status = 'open' AND completion_token IS NULL
+                   AND received_bytes = total_size
+                   AND (SELECT COUNT(*) FROM chunk_upload_chunks c WHERE c.upload_id = s.upload_id) = total_chunks
+                 RETURNING s.*`,
+        [uploadId, ownerId2, token]
+      );
+      if (!claimed.rows[0]) {
+        await client2.query("ROLLBACK");
+        return null;
+      }
+      const chunks = await client2.query(
+        `SELECT * FROM chunk_upload_chunks WHERE upload_id = $1 ORDER BY chunk_index FOR UPDATE`,
+        [uploadId]
+      );
+      await client2.query("COMMIT");
+      return { session: mapSession(claimed.rows[0]), chunks: chunks.rows.map(mapChunk) };
+    } catch (error) {
+      await client2.query("ROLLBACK").catch(() => void 0);
+      throw error;
+    } finally {
+      client2.release();
+    }
+  }
+  async markCompletionFailed(uploadId, ownerId2, token, error) {
+    const result = await this.pool.query(
+      `UPDATE chunk_upload_sessions SET status = 'failed', completion_token = NULL, last_error = $4, updated_at = NOW()
+             WHERE upload_id = $1 AND owner_id = $2 AND status = 'completing' AND completion_token = $3`,
+      [uploadId, ownerId2, token, error.slice(0, 2e3)]
+    );
+    return result.rowCount === 1;
+  }
+  async reopenFailed(uploadId, ownerId2) {
+    const result = await this.pool.query(
+      `UPDATE chunk_upload_sessions SET status = 'open', last_error = NULL, updated_at = NOW()
+             WHERE upload_id = $1 AND owner_id = $2 AND status = 'failed' AND expires_at > NOW()`,
+      [uploadId, ownerId2]
+    );
+    return result.rowCount === 1;
+  }
+  async markCompleted(uploadId, ownerId2, token, fileId) {
+    const result = await this.pool.query(
+      `UPDATE chunk_upload_sessions SET status = 'completed', completed_file_id = $4, updated_at = NOW()
+             WHERE upload_id = $1 AND owner_id = $2 AND status = 'completing' AND completion_token = $3`,
+      [uploadId, ownerId2, token, fileId]
+    );
+    return result.rowCount === 1;
+  }
+  async cancel(uploadId, ownerId2) {
+    const client2 = await this.pool.connect();
+    try {
+      await client2.query("BEGIN");
+      const locked = await client2.query(
+        `SELECT status FROM chunk_upload_sessions WHERE upload_id = $1 AND owner_id = $2 FOR UPDATE`,
+        [uploadId, ownerId2]
+      );
+      if (!locked.rows[0]) {
+        await client2.query("ROLLBACK");
+        return "not_found";
+      }
+      const status = String(locked.rows[0].status);
+      if (status === "completing") {
+        await client2.query("ROLLBACK");
+        return "busy";
+      }
+      if (status === "completed" || status === "cancelled") {
+        await client2.query("ROLLBACK");
+        return "terminal";
+      }
+      const updated = await client2.query(
+        `UPDATE chunk_upload_sessions SET status = 'cancelled', completion_token = NULL, updated_at = NOW()
+                 WHERE upload_id = $1 AND owner_id = $2 AND status IN ('open','failed')`,
+        [uploadId, ownerId2]
+      );
+      await client2.query("COMMIT");
+      return updated.rowCount === 1 ? "cancelled" : "busy";
+    } catch (error) {
+      await client2.query("ROLLBACK").catch(() => void 0);
+      throw error;
+    } finally {
+      client2.release();
+    }
+  }
+};
+
+// src/routes/chunkedUpload.ts
 var router6 = Router6();
-var chunkedUploadLimiter = rateLimit3({
+var checkDiskSpace3 = checkDiskSpaceModule3.default || checkDiskSpaceModule3;
+var UPLOAD_DIR7 = process.env.UPLOAD_DIR || "./data/uploads";
+var THUMBNAIL_DIR6 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
+var CHUNK_DIR = process.env.CHUNK_DIR || "./data/chunks";
+var MAX_CHUNK_BYTES = Math.max(1024 * 1024, (parseInt(process.env.MAX_UPLOAD_CHUNK_MB || "32", 10) || 32) * 1024 * 1024);
+var MAX_TOTAL_BYTES = Math.max(MAX_CHUNK_BYTES, (parseInt(process.env.MAX_CHUNK_UPLOAD_GB || "20", 10) || 20) * 1024 ** 3);
+var GLOBAL_BUDGET_BYTES = Math.max(MAX_TOTAL_BYTES, (parseInt(process.env.CHUNK_GLOBAL_BUDGET_GB || "40", 10) || 40) * 1024 ** 3);
+var DISK_RESERVE_BYTES = Math.max(1024 ** 3, (parseInt(process.env.CHUNK_DISK_RESERVE_GB || "8", 10) || 8) * 1024 ** 3);
+var MAX_TOTAL_CHUNKS = Math.max(1, parseInt(process.env.MAX_TOTAL_CHUNKS || "50000", 10) || 5e4);
+var SESSION_TTL_MS = Math.max(60 * 60 * 1e3, parseInt(process.env.CHUNK_SESSION_TTL_MS || String(24 * 60 * 60 * 1e3), 10));
+[UPLOAD_DIR7, THUMBNAIL_DIR6, CHUNK_DIR].forEach((dir) => fs16.mkdirSync(dir, { recursive: true }));
+var chunkStore = new ChunkUploadSessionStore(new PostgresChunkUploadSessionRepository(pool), {
+  maxTotalBytes: MAX_TOTAL_BYTES,
+  globalBudgetBytes: GLOBAL_BUDGET_BYTES,
+  diskReserveBytes: DISK_RESERVE_BYTES,
+  getDiskFreeBytes: async () => (await checkDiskSpace3(path21.resolve(CHUNK_DIR))).free
+});
+router6.use(rateLimit3({
   windowMs: 15 * 60 * 1e3,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "\u5206\u5757\u4E0A\u4F20\u8BF7\u6C42\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" }
-});
-var MAX_CHUNK_BYTES = Math.max(1024 * 1024, parseInt(process.env.MAX_UPLOAD_CHUNK_MB || "64", 10) * 1024 * 1024);
-var MAX_UPLOAD_SESSIONS = Math.max(10, parseInt(process.env.MAX_UPLOAD_SESSIONS || "200", 10) || 200);
-var MAX_TOTAL_CHUNKS = Math.max(1, parseInt(process.env.MAX_TOTAL_CHUNKS || "50000", 10) || 5e4);
-router6.use(chunkedUploadLimiter);
-var UPLOAD_DIR8 = process.env.UPLOAD_DIR || "./data/uploads";
-var THUMBNAIL_DIR7 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
-var CHUNK_DIR = process.env.CHUNK_DIR || "./data/chunks";
-[UPLOAD_DIR8, THUMBNAIL_DIR7, CHUNK_DIR].forEach((dir) => {
-  if (!fs15.existsSync(dir)) {
-    fs15.mkdirSync(dir, { recursive: true });
-  }
-});
-var uploadSessions = /* @__PURE__ */ new Map();
-setInterval(() => {
-  const now = /* @__PURE__ */ new Date();
-  uploadSessions.forEach((session, uploadId) => {
-    if (now.getTime() - session.createdAt.getTime() > 24 * 60 * 60 * 1e3) {
-      const chunkDir = path21.join(CHUNK_DIR, uploadId);
-      if (fs15.existsSync(chunkDir)) {
-        fs15.rmSync(chunkDir, { recursive: true });
-      }
-      uploadSessions.delete(uploadId);
-    }
-  });
-}, 60 * 60 * 1e3);
+}));
+function ownerId(req) {
+  const token = getAuthToken(req);
+  if (!token) throw new ChunkUploadProtocolError("ChunkOwnerError", "\u7F3A\u5C11\u8BA4\u8BC1\u4F1A\u8BDD");
+  return crypto16.createHash("sha256").update(token).digest("hex");
+}
 function decodeFilename2(filename) {
   try {
-    const urlDecoded = decodeURIComponent(filename);
-    if (urlDecoded !== filename) {
-      return urlDecoded;
-    }
+    const decoded = decodeURIComponent(filename);
+    if (decoded !== filename) return decoded;
   } catch {
   }
   try {
-    const bytes = Buffer.from(filename, "binary");
-    const decoded = bytes.toString("utf8");
-    if (!decoded.includes("\uFFFD") && decoded !== filename) {
-      return decoded;
-    }
+    const decoded = Buffer.from(filename, "binary").toString("utf8");
+    if (!decoded.includes("\uFFFD") && decoded !== filename) return decoded;
   } catch {
   }
   return filename;
 }
-router6.post("/init", (req, res) => {
+function safeChunkPath(uploadId, chunkIndex) {
+  return path21.join(path21.resolve(CHUNK_DIR), uploadId, `chunk_${chunkIndex}`);
+}
+function getFileType2(mimeType) {
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
+  if (mimeType.startsWith("audio/")) return "audio";
+  if (/pdf|document|text|word|excel|spreadsheet|powerpoint|presentation|markdown|json|xml|sql/i.test(mimeType)) return "document";
+  return "other";
+}
+function sendProtocolError(res, error) {
+  if (error instanceof ChunkUploadProtocolError) {
+    const status = error.name === "ChunkOwnerError" ? 401 : /TooLarge|TotalSize/.test(error.name) ? 413 : error.name === "ChunkDiskReserveError" ? 507 : error.name === "ChunkBudgetError" ? 429 : /State|Conflict/.test(error.name) ? 409 : 400;
+    return res.status(status).json({ error: error.message, code: error.name });
+  }
+  console.error("\u5206\u5757\u4E0A\u4F20\u534F\u8BAE\u5931\u8D25:", error);
+  return res.status(500).json({ error: "\u5206\u5757\u4E0A\u4F20\u5931\u8D25" });
+}
+router6.post("/init", async (req, res) => {
+  let uploadDirectory = "";
   try {
     const { filename, totalChunks, mimeType, totalSize, folder } = req.body;
-    if (!filename || !totalChunks || !mimeType || !totalSize) {
+    const chunks = Number(totalChunks);
+    const bytes = Number(totalSize);
+    if (typeof filename !== "string" || !filename.trim() || typeof mimeType !== "string") {
       return res.status(400).json({ error: "\u7F3A\u5C11\u5FC5\u8981\u53C2\u6570" });
     }
-    const normalizedTotalChunks = Number(totalChunks);
-    const normalizedTotalSize = Number(totalSize);
-    if (!Number.isInteger(normalizedTotalChunks) || normalizedTotalChunks < 1 || normalizedTotalChunks > MAX_TOTAL_CHUNKS || !Number.isFinite(normalizedTotalSize) || normalizedTotalSize < 1) {
+    if (!Number.isSafeInteger(chunks) || chunks < 1 || chunks > MAX_TOTAL_CHUNKS || !Number.isSafeInteger(bytes) || bytes < 1) {
       return res.status(400).json({ error: "\u4E0A\u4F20\u53C2\u6570\u65E0\u6548" });
     }
-    if (uploadSessions.size >= MAX_UPLOAD_SESSIONS) {
-      return res.status(429).json({ error: "\u5F53\u524D\u4E0A\u4F20\u4F1A\u8BDD\u8FC7\u591A\uFF0C\u8BF7\u7A0D\u540E\u518D\u8BD5" });
-    }
-    const uploadId = uuidv42();
-    const chunkDir = path21.join(CHUNK_DIR, uploadId);
-    fs15.mkdirSync(chunkDir, { recursive: true });
-    uploadSessions.set(uploadId, {
-      uploadId,
-      filename: decodeFilename2(filename),
-      totalChunks: normalizedTotalChunks,
-      uploadedChunks: /* @__PURE__ */ new Set(),
-      mimeType,
-      totalSize: normalizedTotalSize,
-      folder,
-      createdAt: /* @__PURE__ */ new Date()
-    });
-    res.json({
-      success: true,
-      uploadId,
-      message: "\u4E0A\u4F20\u4F1A\u8BDD\u5DF2\u521B\u5EFA"
-    });
+    const target = storageManager.getActiveTarget();
+    const now = /* @__PURE__ */ new Date();
+    const session = {
+      uploadId: crypto16.randomUUID(),
+      ownerId: ownerId(req),
+      filename: decodeFilename2(filename).slice(0, 255),
+      mimeType: mimeType.slice(0, 100),
+      folder: typeof folder === "string" && folder ? folder.slice(0, 255) : null,
+      totalSize: bytes,
+      totalChunks: chunks,
+      receivedBytes: 0,
+      status: "open",
+      targetProvider: target.provider.name,
+      targetAccountId: target.accountId,
+      expiresAt: new Date(now.getTime() + SESSION_TTL_MS),
+      completionToken: null,
+      completedFileId: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now
+    };
+    uploadDirectory = path21.join(CHUNK_DIR, session.uploadId);
+    await fsPromises2.mkdir(uploadDirectory, { recursive: true });
+    await chunkStore.reserve(session);
+    res.json({ success: true, uploadId: session.uploadId, expiresAt: session.expiresAt.toISOString() });
   } catch (error) {
-    console.error("\u521D\u59CB\u5316\u5206\u5757\u4E0A\u4F20\u5931\u8D25:", error);
-    res.status(500).json({ error: "\u521D\u59CB\u5316\u4E0A\u4F20\u5931\u8D25" });
+    if (uploadDirectory) await fsPromises2.rm(uploadDirectory, { recursive: true, force: true }).catch(() => void 0);
+    sendProtocolError(res, error);
   }
 });
 router6.post("/chunk", async (req, res) => {
   try {
-    const uploadIdHeader = req.headers["x-upload-id"];
-    const chunkIndexHeader = req.headers["x-chunk-index"];
-    const uploadId = Array.isArray(uploadIdHeader) ? uploadIdHeader[0] : uploadIdHeader;
-    const chunkIndex = parseInt(Array.isArray(chunkIndexHeader) ? chunkIndexHeader[0] : chunkIndexHeader || "", 10);
-    if (!uploadId || isNaN(chunkIndex)) {
-      return res.status(400).json({ error: "\u7F3A\u5C11\u4E0A\u4F20 ID \u6216\u5206\u5757\u7D22\u5F15" });
+    const uploadId = String(req.headers["x-upload-id"] || "");
+    const chunkIndex = Number(req.headers["x-chunk-index"]);
+    const expectedSize = Number(req.headers["x-chunk-size"] ?? req.headers["content-length"]);
+    const expectedSha256 = String(req.headers["x-chunk-sha256"] || "").toLowerCase();
+    if (!/^[0-9a-f-]{36}$/.test(uploadId) || !Number.isSafeInteger(chunkIndex) || chunkIndex < 0 || !Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MAX_CHUNK_BYTES || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+      req.resume();
+      return res.status(400).json({ error: "\u5206\u5757\u7D22\u5F15\u3001\u5927\u5C0F\u6216 SHA-256 \u65E0\u6548" });
     }
-    const session = uploadSessions.get(uploadId);
+    const session = await chunkStore.status(uploadId, ownerId(req));
     if (!session) {
-      return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u8FC7\u671F" });
+      req.resume();
+      return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728" });
     }
-    if (chunkIndex < 0 || chunkIndex >= session.totalChunks) {
+    if (chunkIndex >= session.totalChunks) {
+      req.resume();
       return res.status(400).json({ error: "\u5206\u5757\u7D22\u5F15\u8D85\u51FA\u8303\u56F4" });
     }
-    const declaredLength = Number(req.headers["content-length"] || 0);
-    if (declaredLength > MAX_CHUNK_BYTES) {
-      return res.status(413).json({ error: "\u5355\u4E2A\u5206\u5757\u8FC7\u5927" });
-    }
-    const chunkPath = path21.join(CHUNK_DIR, uploadId, `chunk_${chunkIndex}`);
-    const writeStream = fs15.createWriteStream(chunkPath);
-    await new Promise((resolve, reject) => {
-      let receivedBytes = 0;
-      req.on("data", (chunk) => {
-        receivedBytes += chunk.length;
-        if (receivedBytes > MAX_CHUNK_BYTES) {
-          req.destroy(new Error("\u5355\u4E2A\u5206\u5757\u8FC7\u5927"));
-        }
-      });
-      req.pipe(writeStream);
-      req.on("end", () => {
-        session.uploadedChunks.add(chunkIndex);
-        resolve();
-      });
-      req.on("error", reject);
-      writeStream.on("error", reject);
+    const result = await chunkStore.writeChunk({
+      uploadId,
+      ownerId: session.ownerId,
+      index: chunkIndex,
+      expectedSize,
+      expectedSha256,
+      finalPath: safeChunkPath(uploadId, chunkIndex),
+      input: req,
+      maxChunkBytes: MAX_CHUNK_BYTES
     });
-    const progress = Math.round(session.uploadedChunks.size / session.totalChunks * 100);
+    const updated = await chunkStore.status(uploadId, session.ownerId);
     res.json({
       success: true,
       chunkIndex,
-      uploadedChunks: session.uploadedChunks.size,
-      totalChunks: session.totalChunks,
-      progress
+      duplicate: result.status === "duplicate",
+      receivedBytes: updated?.receivedBytes || 0,
+      totalSize: session.totalSize,
+      progress: Math.round((updated?.receivedBytes || 0) / session.totalSize * 100)
     });
   } catch (error) {
-    console.error("\u4E0A\u4F20\u5206\u5757\u5931\u8D25:", error);
-    res.status(500).json({ error: "\u4E0A\u4F20\u5206\u5757\u5931\u8D25" });
+    sendProtocolError(res, error);
   }
 });
-router6.post("/complete", async (req, res) => {
+async function mergeChunks(uploadId, chunks, targetPath, expectedBytes) {
+  const temporary = `${targetPath}.${crypto16.randomUUID()}.part`;
+  await fsPromises2.mkdir(path21.dirname(targetPath), { recursive: true });
+  const output = fs16.createWriteStream(temporary, { flags: "wx" });
   try {
-    const { uploadId } = req.body;
-    if (!uploadId) {
-      return res.status(400).json({ error: "\u7F3A\u5C11\u4E0A\u4F20 ID" });
+    if (chunks.length === 0) throw new Error("\u5206\u5757\u4E0D\u5B8C\u6574");
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index];
+      const expectedPath = path21.resolve(safeChunkPath(uploadId, index));
+      if (chunk.index !== index || path21.resolve(chunk.path) !== expectedPath) throw new Error(`\u5206\u5757 ${index} \u5143\u6570\u636E\u65E0\u6548`);
+      const stat2 = await fsPromises2.stat(expectedPath);
+      if (stat2.size !== chunk.size || stat2.size < 1 || stat2.size > MAX_CHUNK_BYTES) throw new Error(`\u5206\u5757 ${index} \u5927\u5C0F\u65E0\u6548`);
+      await pipeline2(fs16.createReadStream(expectedPath), output, { end: false });
     }
-    const session = uploadSessions.get(uploadId);
-    if (!session) {
-      return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728\u6216\u5DF2\u8FC7\u671F" });
-    }
-    if (session.uploadedChunks.size !== session.totalChunks) {
-      return res.status(400).json({
-        error: "\u5206\u5757\u4E0D\u5B8C\u6574",
-        uploadedChunks: session.uploadedChunks.size,
-        totalChunks: session.totalChunks
+    await new Promise((resolve, reject) => {
+      output.end(resolve);
+      output.on("error", reject);
+    });
+    const stat = await fsPromises2.stat(temporary);
+    if (stat.size !== expectedBytes) throw new Error("\u5408\u5E76\u540E\u6587\u4EF6\u5927\u5C0F\u4E0E\u58F0\u660E\u5927\u5C0F\u4E0D\u4E00\u81F4");
+    await fsPromises2.rename(temporary, targetPath);
+  } catch (error) {
+    output.destroy();
+    await fsPromises2.rm(temporary, { force: true }).catch(() => void 0);
+    throw error;
+  }
+}
+router6.post("/complete", async (req, res) => {
+  const uploadId = String(req.body?.uploadId || "");
+  let owner = "";
+  let token = "";
+  let tempMergedPath = "";
+  try {
+    owner = ownerId(req);
+    const current = await chunkStore.status(uploadId, owner);
+    if (!current) return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728" });
+    if (current.status === "completed" && current.completedFileId) {
+      const existing = await query("SELECT id, name, type, size, created_at, source, thumbnail_path FROM files WHERE id = $1", [current.completedFileId]);
+      if (!existing.rows[0]) return res.status(409).json({ error: "\u5B8C\u6210\u8BB0\u5F55\u6307\u5411\u7684\u6587\u4EF6\u4E0D\u5B58\u5728" });
+      const file2 = existing.rows[0];
+      return res.json({
+        success: true,
+        idempotent: true,
+        file: {
+          id: file2.id,
+          name: file2.name,
+          type: file2.type,
+          size: file2.size,
+          thumbnailUrl: file2.thumbnail_path ? getSignedUrl(file2.id, "thumbnail") : void 0,
+          previewUrl: getSignedUrl(file2.id, "preview"),
+          date: file2.created_at,
+          source: file2.source
+        }
       });
     }
-    const activeAccountId = storageManager.getActiveAccountId();
-    const storageRules = await getStoragePathRules();
+    if (current.status === "failed") {
+      return res.status(409).json({ error: "\u4E0A\u6B21\u5B8C\u6210\u5931\u8D25\uFF0C\u8BF7\u5148\u91CD\u8BD5\u4E0A\u4F20\u4F1A\u8BDD", retryable: true, lastError: current.lastError });
+    }
+    token = crypto16.randomUUID();
+    const claim = await chunkStore.claimCompletion(uploadId, owner, token);
+    if (!claim) return res.status(409).json({ error: "\u4E0A\u4F20\u672A\u5B8C\u6574\u3001\u5DF2\u7531\u5176\u4ED6\u8BF7\u6C42\u5904\u7406\u6216\u72B6\u6001\u4E0D\u53EF\u5B8C\u6210" });
+    const session = claim.session;
+    const target = storageManager.getTarget(session.targetProvider, session.targetAccountId);
+    await assertStorageTargetWritable(target);
     const storageFolder = buildStorageFolderWithRules({
       source: "web",
-      folder: session.folder || null,
+      folder: session.folder,
       mimeType: session.mimeType,
       fileName: session.filename
-    }, storageRules);
-    const storedName = await getUniqueStoredName(session.filename, storageFolder, activeAccountId);
-    const tempMergedPath = path21.resolve(path21.join(UPLOAD_DIR8, `${uploadId}-${storedName}`));
-    const writeStream = fs15.createWriteStream(tempMergedPath);
-    console.log(`[ChunkedComplete] \u{1F9E9} Merging ${session.totalChunks} chunks for: ${session.filename}`);
-    console.log(`[ChunkedComplete] \u{1F3E0} Final temp path: ${tempMergedPath}`);
-    try {
-      for (let i = 0; i < session.totalChunks; i++) {
-        const chunkPath = path21.join(CHUNK_DIR, uploadId, `chunk_${i}`);
-        if (!fs15.existsSync(chunkPath)) {
-          throw new Error(`\u7F3A\u5C11\u5206\u5757 ${i}`);
+    }, await getStoragePathRules());
+    const storedName = await getUniqueStoredName(session.filename, storageFolder, session.targetAccountId);
+    tempMergedPath = path21.join(path21.resolve(UPLOAD_DIR7), `${uploadId}-${storedName}`);
+    await mergeChunks(uploadId, claim.chunks, tempMergedPath, session.totalSize);
+    const duplicate = await getDuplicateMode() === "skip" ? await findDuplicateFile(session.filename, storageFolder, session.totalSize, session.targetAccountId) : null;
+    if (duplicate) {
+      await fsPromises2.rm(tempMergedPath, { force: true });
+      if (!await chunkStore.complete(uploadId, owner, token, duplicate.id)) throw new Error("\u5B8C\u6210\u79DF\u7EA6\u5DF2\u5931\u6548");
+      await fsPromises2.rm(path21.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u91CD\u590D\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
+      return res.json({
+        success: true,
+        skipped: true,
+        reason: "duplicate",
+        file: {
+          id: duplicate.id,
+          name: duplicate.name,
+          size: duplicate.size,
+          folder: duplicate.folder,
+          date: duplicate.created_at
         }
-        const chunkStat = fs15.statSync(chunkPath);
-        if (chunkStat.size <= 0 || chunkStat.size > MAX_CHUNK_BYTES) {
-          throw new Error(`\u5206\u5757 ${i} \u5927\u5C0F\u65E0\u6548`);
-        }
-        await pipeline(fs15.createReadStream(chunkPath), writeStream, { end: false });
-      }
-      await new Promise((resolve, reject) => {
-        writeStream.end();
-        writeStream.on("finish", resolve);
-        writeStream.on("error", reject);
       });
-    } catch (mergeError) {
-      writeStream.destroy();
-      if (fs15.existsSync(tempMergedPath)) fs15.unlinkSync(tempMergedPath);
-      const chunkDir2 = path21.join(CHUNK_DIR, uploadId);
-      if (fs15.existsSync(chunkDir2)) fs15.rmSync(chunkDir2, { recursive: true });
-      uploadSessions.delete(uploadId);
-      return res.status(400).json({ error: mergeError instanceof Error ? mergeError.message : "\u5408\u5E76\u5206\u5757\u5931\u8D25" });
-    }
-    const mergedStat = fs15.statSync(tempMergedPath);
-    if (mergedStat.size !== session.totalSize) {
-      if (fs15.existsSync(tempMergedPath)) fs15.unlinkSync(tempMergedPath);
-      const chunkDir2 = path21.join(CHUNK_DIR, uploadId);
-      if (fs15.existsSync(chunkDir2)) fs15.rmSync(chunkDir2, { recursive: true });
-      uploadSessions.delete(uploadId);
-      return res.status(400).json({
-        error: "\u5408\u5E76\u540E\u6587\u4EF6\u5927\u5C0F\u4E0E\u58F0\u660E\u5927\u5C0F\u4E0D\u4E00\u81F4",
-        expectedSize: session.totalSize,
-        actualSize: mergedStat.size
-      });
-    }
-    const chunkDir = path21.join(CHUNK_DIR, uploadId);
-    fs15.rmSync(chunkDir, { recursive: true });
-    uploadSessions.delete(uploadId);
-    const duplicateMode = await getDuplicateMode();
-    if (duplicateMode === "skip") {
-      const duplicate = await findDuplicateFile(session.filename, storageFolder, session.totalSize, activeAccountId);
-      if (duplicate) {
-        if (fs15.existsSync(tempMergedPath)) fs15.unlinkSync(tempMergedPath);
-        return res.json({
-          success: true,
-          skipped: true,
-          reason: "duplicate",
-          file: {
-            id: duplicate.id,
-            name: duplicate.name,
-            size: duplicate.size,
-            folder: duplicate.folder,
-            date: duplicate.created_at
-          }
-        });
-      }
     }
     let thumbnailPath = null;
     let previewPath = null;
     let width = null;
     let height = null;
-    const provider = storageManager.getProvider();
-    await assertActiveStorageWritable();
-    if (provider.name === "local" && (session.mimeType.startsWith("image/") || session.mimeType.startsWith("video/"))) {
-      try {
-        console.log(`[ChunkedComplete] \u{1F5BC}\uFE0F  MIME: ${session.mimeType}, starting generation...`);
-        const thumbResult = await generateThumbnail(tempMergedPath, storedName, session.mimeType);
-        if (thumbResult) {
-          thumbnailPath = path21.basename(thumbResult);
-          console.log(`[ChunkedComplete] \u2728 Thumbnail generated: ${thumbnailPath}`);
-          const dims = await getImageDimensions(tempMergedPath, session.mimeType);
-          width = dims.width;
-          height = dims.height;
-        } else {
-          console.log(`[ChunkedComplete] \u26A0\uFE0F  No thumbnail generated for: ${session.mimeType}`);
-        }
-      } catch (error) {
-        console.error("\u751F\u6210\u7F29\u7565\u56FE\u5931\u8D25:", error);
-      }
+    if (target.provider.name === "local" && (session.mimeType.startsWith("image/") || session.mimeType.startsWith("video/"))) {
+      const thumbnail = await generateThumbnail(tempMergedPath, storedName, session.mimeType).catch(() => null);
+      thumbnailPath = thumbnail ? path21.basename(thumbnail) : null;
+      const dimensions = await getImageDimensions(tempMergedPath, session.mimeType).catch(() => ({ width: null, height: null }));
+      width = dimensions.width;
+      height = dimensions.height;
     }
-    if (provider.name === "local" && session.mimeType.startsWith("image/")) {
-      try {
-        const previewResult = await generateMediaPreview(tempMergedPath, storedName, session.mimeType);
-        if (previewResult) {
-          previewPath = path21.basename(previewResult);
-          console.log(`[ChunkedComplete] \u{1F39E}\uFE0F Image preview generated: ${previewPath}`);
-        }
-      } catch (error) {
-        console.error("\u751F\u6210\u56FE\u7247\u9884\u89C8\u5931\u8D25:", error);
-      }
+    if (target.provider.name === "local" && session.mimeType.startsWith("image/")) {
+      const preview = await generateMediaPreview(tempMergedPath, storedName, session.mimeType).catch(() => null);
+      previewPath = preview ? path21.basename(preview) : null;
     }
-    let storedPath = "";
-    console.log(`[ChunkedComplete] \u{1F6E0}\uFE0F  Provider: ${provider.name}, accountId: ${activeAccountId || "none (local)"}`);
+    const type = getFileType2(session.mimeType);
+    let indexed;
+    const storedPath = await saveAndIndexWithCompensation(target.provider, tempMergedPath, storedName, session.mimeType, storageFolder, async (savedPath) => {
+      indexed = await query(
+        `INSERT INTO files
+                 (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+                 RETURNING id, created_at, name, type, size, source`,
+        [
+          session.filename,
+          storedName,
+          type,
+          session.mimeType,
+          session.totalSize,
+          savedPath,
+          thumbnailPath,
+          previewPath,
+          width,
+          height,
+          target.provider.name,
+          storageFolder,
+          session.targetAccountId
+        ]
+      );
+    });
+    const file = indexed.rows[0];
+    let completed = false;
     try {
-      storedPath = await provider.saveFile(tempMergedPath, storedName, session.mimeType, storageFolder);
-    } catch (err) {
-      if (fs15.existsSync(tempMergedPath)) fs15.unlinkSync(tempMergedPath);
-      throw err;
+      completed = await chunkStore.complete(uploadId, owner, token, file.id);
+    } catch (completionError) {
+      await target.provider.deleteFile(storedPath).catch((error) => console.error("\u5B8C\u6210 CAS \u5F02\u5E38\u540E\u5220\u9664\u5B58\u50A8\u5BF9\u8C61\u5931\u8D25:", error));
+      await query("DELETE FROM files WHERE id = $1", [file.id]).catch((error) => console.error("\u5B8C\u6210 CAS \u5F02\u5E38\u540E\u5220\u9664\u6587\u4EF6\u7D22\u5F15\u5931\u8D25:", error));
+      throw completionError;
     }
-    if (fs15.existsSync(tempMergedPath)) {
-      try {
-        fs15.unlinkSync(tempMergedPath);
-      } catch (e) {
-      }
+    if (!completed) {
+      await target.provider.deleteFile(storedPath).catch((error) => console.error("\u5B8C\u6210 CAS \u5931\u8D25\u540E\u5220\u9664\u5B58\u50A8\u5BF9\u8C61\u5931\u8D25:", error));
+      await query("DELETE FROM files WHERE id = $1", [file.id]).catch((error) => console.error("\u5B8C\u6210 CAS \u5931\u8D25\u540E\u5220\u9664\u6587\u4EF6\u7D22\u5F15\u5931\u8D25:", error));
+      throw new Error("\u6C38\u4E45\u6587\u4EF6\u5DF2\u4FDD\u5B58\uFF0C\u4F46\u5B8C\u6210\u79DF\u7EA6\u5931\u6548");
     }
-    const type = session.mimeType.startsWith("image/") ? "image" : session.mimeType.startsWith("video/") ? "video" : session.mimeType.startsWith("audio/") ? "audio" : "other";
-    const result = await query(
-      `INSERT INTO files
-            (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id, created_at, name, type, size`,
-      [session.filename, storedName, type, session.mimeType, session.totalSize, storedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
-    );
-    const newFile = result.rows[0];
-    if (provider.name === "local" && type === "video") {
-      void generateMediaPreview(storedPath, storedName, session.mimeType).then(async (previewResult) => {
-        if (!previewResult) return;
-        const generatedPreviewName = path21.basename(previewResult);
-        await query("UPDATE files SET preview_path = $1, updated_at = NOW() WHERE id = $2", [generatedPreviewName, newFile.id]);
-        console.log(`[ChunkedComplete] \u{1F39E}\uFE0F Video preview generated async: ${generatedPreviewName}`);
+    await fsPromises2.rm(tempMergedPath, { force: true }).catch((error) => console.error("\u6E05\u7406\u5408\u5E76\u4E34\u65F6\u6587\u4EF6\u5931\u8D25:", error));
+    await fsPromises2.rm(path21.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
+    if (target.provider.name === "local" && type === "video") {
+      void generateMediaPreview(storedPath, storedName, session.mimeType).then(async (preview) => {
+        if (preview) await query("UPDATE files SET preview_path = $1 WHERE id = $2", [path21.basename(preview), file.id]);
       }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error));
     }
     res.json({
       success: true,
       file: {
-        id: newFile.id,
-        name: newFile.name,
-        type: newFile.type,
-        size: newFile.size,
-        thumbnailUrl: thumbnailPath ? getSignedUrl(newFile.id, "thumbnail") : void 0,
-        previewUrl: getSignedUrl(newFile.id, "preview"),
-        date: newFile.created_at,
-        source: provider.name
+        id: file.id,
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        thumbnailUrl: thumbnailPath ? getSignedUrl(file.id, "thumbnail") : void 0,
+        previewUrl: getSignedUrl(file.id, "preview"),
+        date: file.created_at,
+        source: target.provider.name
       }
     });
   } catch (error) {
-    console.error("\u5B8C\u6210\u4E0A\u4F20\u5931\u8D25:", error);
-    if (isStorageCooldownError(error)) {
-      return sendStorageCooldownHttpError(res, error);
-    }
-    res.status(500).json({ error: "\u5B8C\u6210\u4E0A\u4F20\u5931\u8D25" });
+    if (uploadId && owner && token) await chunkStore.failCompletion(uploadId, owner, token, error instanceof Error ? error.message : String(error)).catch(() => void 0);
+    if (tempMergedPath) await fsPromises2.rm(tempMergedPath, { force: true }).catch(() => void 0);
+    if (isStorageCooldownError(error)) return sendStorageCooldownHttpError(res, error);
+    sendProtocolError(res, error);
   }
 });
-router6.delete("/:uploadId", (req, res) => {
+router6.post("/:uploadId/retry", async (req, res) => {
   try {
-    const uploadId = req.params.uploadId;
-    const session = uploadSessions.get(uploadId);
-    if (session) {
-      const chunkDir = path21.join(CHUNK_DIR, uploadId);
-      if (fs15.existsSync(chunkDir)) {
-        fs15.rmSync(chunkDir, { recursive: true });
-      }
-      uploadSessions.delete(uploadId);
-    }
-    res.json({ success: true, message: "\u4E0A\u4F20\u5DF2\u53D6\u6D88" });
+    const reopened = await chunkStore.retryFailed(req.params.uploadId, ownerId(req));
+    res.status(reopened ? 200 : 409).json({ success: reopened });
   } catch (error) {
-    console.error("\u53D6\u6D88\u4E0A\u4F20\u5931\u8D25:", error);
-    res.status(500).json({ error: "\u53D6\u6D88\u4E0A\u4F20\u5931\u8D25" });
+    sendProtocolError(res, error);
   }
 });
-router6.get("/:uploadId/status", (req, res) => {
+router6.delete("/:uploadId", async (req, res) => {
   try {
-    const uploadId = req.params.uploadId;
-    const session = uploadSessions.get(uploadId);
-    if (!session) {
-      return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728" });
-    }
+    const result = await chunkStore.cancel(req.params.uploadId, ownerId(req));
+    if (result === "busy") return res.status(409).json({ error: "\u4E0A\u4F20\u6B63\u5728\u5B8C\u6210\uFF0C\u6682\u65F6\u4E0D\u80FD\u53D6\u6D88" });
+    if (result === "cancelled") await fsPromises2.rm(path21.join(CHUNK_DIR, req.params.uploadId), { recursive: true, force: true });
+    res.status(result === "not_found" ? 404 : 200).json({ success: result !== "not_found", status: result });
+  } catch (error) {
+    sendProtocolError(res, error);
+  }
+});
+router6.get("/:uploadId/status", async (req, res) => {
+  try {
+    const session = await chunkStore.status(req.params.uploadId, ownerId(req));
+    if (!session) return res.status(404).json({ error: "\u4E0A\u4F20\u4F1A\u8BDD\u4E0D\u5B58\u5728" });
+    const chunks = await chunkStore.chunks(session.uploadId, session.ownerId);
     res.json({
       uploadId: session.uploadId,
       filename: session.filename,
+      status: session.status,
       totalChunks: session.totalChunks,
-      uploadedChunks: session.uploadedChunks.size,
-      progress: Math.round(session.uploadedChunks.size / session.totalChunks * 100)
+      uploadedChunks: chunks.map((chunk) => chunk.index),
+      receivedBytes: session.receivedBytes,
+      totalSize: session.totalSize,
+      progress: Math.round(session.receivedBytes / session.totalSize * 100),
+      expiresAt: session.expiresAt,
+      completedFileId: session.completedFileId,
+      error: session.lastError
     });
   } catch (error) {
-    console.error("\u83B7\u53D6\u4E0A\u4F20\u72B6\u6001\u5931\u8D25:", error);
-    res.status(500).json({ error: "\u83B7\u53D6\u4E0A\u4F20\u72B6\u6001\u5931\u8D25" });
+    sendProtocolError(res, error);
   }
 });
 var chunkedUpload_default = router6;
 
 // src/index.ts
+init_db();
 import helmet from "helmet";
+import crypto17 from "node:crypto";
 dotenv3.config();
 var app = express();
 app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
 var PORT = process.env.PORT || 51947;
-var UPLOAD_DIR9 = process.env.UPLOAD_DIR || "./data/uploads";
-var THUMBNAIL_DIR8 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
+var UPLOAD_DIR8 = process.env.UPLOAD_DIR || "./data/uploads";
+var THUMBNAIL_DIR7 = process.env.THUMBNAIL_DIR || "./data/thumbnails";
 var PREVIEW_DIR4 = process.env.PREVIEW_DIR || "./data/previews";
 var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
-if (!fs16.existsSync(UPLOAD_DIR9)) {
-  fs16.mkdirSync(UPLOAD_DIR9, { recursive: true });
-  console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR9}`);
+if (!fs17.existsSync(UPLOAD_DIR8)) {
+  fs17.mkdirSync(UPLOAD_DIR8, { recursive: true });
+  console.log(`\u{1F4C1} \u521B\u5EFA\u4E0A\u4F20\u76EE\u5F55: ${UPLOAD_DIR8}`);
 }
-if (!fs16.existsSync(THUMBNAIL_DIR8)) {
-  fs16.mkdirSync(THUMBNAIL_DIR8, { recursive: true });
-  console.log(`\u{1F4C1} \u521B\u5EFA\u7F29\u7565\u56FE\u76EE\u5F55: ${THUMBNAIL_DIR8}`);
+if (!fs17.existsSync(THUMBNAIL_DIR7)) {
+  fs17.mkdirSync(THUMBNAIL_DIR7, { recursive: true });
+  console.log(`\u{1F4C1} \u521B\u5EFA\u7F29\u7565\u56FE\u76EE\u5F55: ${THUMBNAIL_DIR7}`);
 }
-if (!fs16.existsSync(PREVIEW_DIR4)) {
-  fs16.mkdirSync(PREVIEW_DIR4, { recursive: true });
+if (!fs17.existsSync(PREVIEW_DIR4)) {
+  fs17.mkdirSync(PREVIEW_DIR4, { recursive: true });
   console.log(`\u{1F39E}\uFE0F \u521B\u5EFA\u9884\u89C8\u76EE\u5F55: ${PREVIEW_DIR4}`);
 }
-if (!fs16.existsSync(CHUNK_DIR2)) {
-  fs16.mkdirSync(CHUNK_DIR2, { recursive: true });
+if (!fs17.existsSync(CHUNK_DIR2)) {
+  fs17.mkdirSync(CHUNK_DIR2, { recursive: true });
   console.log(`\u{1F4C1} \u521B\u5EFA\u5206\u5757\u76EE\u5F55: ${CHUNK_DIR2}`);
 }
 var configuredCorsOrigin = process.env.CORS_ORIGIN || "";
@@ -13766,9 +15284,16 @@ app.use(cors({
   },
   credentials: !allowAnyOrigin,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
-  allowedHeaders: ["Content-Type", "X-API-Key", "X-Upload-Id", "X-Chunk-Index", "Authorization"]
+  allowedHeaders: ["Content-Type", "X-API-Key", "X-Upload-Id", "X-Chunk-Index", "X-Chunk-Size", "X-Chunk-Sha256", "Authorization"]
 }));
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
+app.use((req, res, next) => {
+  const provided = normalizeRequestId(req.headers["x-request-id"]);
+  const requestId = provided || crypto17.randomUUID();
+  res.locals.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
 app.use((req, res, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
   const origin = req.headers.origin;
@@ -13794,20 +15319,36 @@ app.use(helmet({
   hsts: { maxAge: 31536e3, includeSubDomains: true }
 }));
 app.use("/api/auth", auth_default);
-app.use("/uploads", requireAuth, express.static(UPLOAD_DIR9, {
+app.use("/uploads", requireAuth, express.static(UPLOAD_DIR8, {
   maxAge: "1d",
   etag: true
 }));
-app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR8, {
+app.use("/thumbnails", requireAuth, express.static(THUMBNAIL_DIR7, {
   maxAge: "7d",
   etag: true
 }));
 app.use("/api/files", folderOperations_default);
 app.use("/api/files", requireAuthOrSignedUrl, files_default);
 app.use("/api/upload", requireAuth, upload_default);
-app.use("/api/v1/upload", requireAuth, upload_default);
+app.use("/api/v1/upload", apiRouter);
 app.use("/api/chunked", requireAuth, chunkedUpload_default);
 app.use("/api/storage", storage_default);
+var applicationReady = false;
+var readinessError = null;
+app.get("/livez", (_req, res) => {
+  res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+});
+app.get("/readyz", async (_req, res) => {
+  try {
+    if (!applicationReady) throw new Error(readinessError || "\u5E94\u7528\u4ECD\u5728\u521D\u59CB\u5316");
+    await pool.query("SELECT 1");
+    const twoFactor = await get2FAReadiness();
+    if (!twoFactor.ready) throw new Error("2FA \u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6");
+    res.json({ status: "ready", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
+  } catch (error) {
+    res.status(503).json({ status: "not_ready", error: error instanceof Error ? error.message : String(error) });
+  }
+});
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", timestamp: (/* @__PURE__ */ new Date()).toISOString() });
 });
@@ -13815,29 +15356,71 @@ app.use((err, _req, res, _next) => {
   console.error("\u274C \u9519\u8BEF:", err);
   res.status(500).json({ error: "\u670D\u52A1\u5668\u5185\u90E8\u9519\u8BEF" });
 });
-app.listen(PORT, async () => {
+var server = null;
+async function initializeApplication() {
   const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
-  try {
-    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-    await storageManager2.init();
-  } catch (e) {
-    console.error("\u5B58\u50A8\u7BA1\u7406\u5668\u521D\u59CB\u5316\u5931\u8D25:", e);
-  }
+  const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+  await storageManager2.init();
+  const twoFactor = await get2FAReadiness();
+  if (!twoFactor.ready) throw new Error("2FA \u5DF2\u542F\u7528\u4F46\u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6");
   if (telegramEnabled) {
     await initTelegramUserClient();
     await initTelegramBot();
   }
-  const initialSetupRequired = await isInitialSetupRequired();
-  console.log(`
+  applicationReady = true;
+  readinessError = null;
+}
+async function startApplication() {
+  await initializeApplication();
+  server = app.listen(PORT, async () => {
+    const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
+    const initialSetupRequired = await isInitialSetupRequired();
+    console.log(`
 \u{1F680} TG Vault \u540E\u7AEF\u670D\u52A1\u5DF2\u542F\u52A8
 \u{1F4CD} \u7AEF\u53E3: ${PORT}
-\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path22.resolve(UPLOAD_DIR9)}
-\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path22.resolve(THUMBNAIL_DIR8)}
+\u{1F4C1} \u4E0A\u4F20\u76EE\u5F55: ${path22.resolve(UPLOAD_DIR8)}
+\u{1F5BC}\uFE0F  \u7F29\u7565\u56FE\u76EE\u5F55: ${path22.resolve(THUMBNAIL_DIR7)}
 \u{1F39E}\uFE0F  \u9884\u89C8\u76EE\u5F55: ${path22.resolve(PREVIEW_DIR4)}
 \u{1F510} \u5BC6\u7801\u4FDD\u62A4: ${initialSetupRequired ? "\u5F85\u9996\u6B21\u521D\u59CB\u5316" : "\u5DF2\u542F\u7528"}
 \u{1F916} Telegram Bot: ${telegramEnabled ? "\u5DF2\u542F\u7528 (\u6700\u5927 2GB\uFF0C\u8D26\u53F7\u7EA7\u4E0B\u8F7D\u5668\u4E0D\u53D7\u6B64\u9650\u5236)" : "\u672A\u542F\u7528"}
 \u{1F464} Telegram User Download: ${isTelegramUserClientReady() ? "\u5DF2\u542F\u7528" : "\u672A\u542F\u7528"}
-    `);
+        `);
+  });
+}
+void startApplication().catch((error) => {
+  applicationReady = false;
+  readinessError = error instanceof Error ? error.message : String(error);
+  console.error("\u5E94\u7528\u521D\u59CB\u5316\u5931\u8D25\uFF0C\u62D2\u7EDD\u76D1\u542C\u4E1A\u52A1\u7AEF\u53E3:", error);
+  process.exitCode = 1;
+});
+var shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  applicationReady = false;
+  readinessError = `\u6B63\u5728\u56E0 ${signal} \u505C\u673A`;
+  const forceTimer = setTimeout(() => process.exit(1), 3e4);
+  forceTimer.unref();
+  if (server) {
+    server.close(async () => {
+      try {
+        await pool.end();
+        process.exit(0);
+      } catch (error) {
+        console.error("\u4F18\u96C5\u505C\u673A\u5931\u8D25:", error);
+        process.exit(1);
+      }
+    });
+  } else {
+    await pool.end().catch(() => void 0);
+    process.exit(0);
+  }
+}
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
 });
 var index_default = app;
 export {

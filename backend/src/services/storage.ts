@@ -6,7 +6,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, Head
 import { getSignedUrl as getS3SignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createClient, WebDAVClient } from 'webdav';
 import { google } from 'googleapis';
-import { query } from '../db/index.js';
+import { query, pool } from '../db/index.js';
 import { safeJoin } from '../utils/localPath.js';
 import {
     decryptSettingValue,
@@ -106,6 +106,12 @@ export interface IStorageProvider {
      * @param expiration 过期时间 ISO 字符串（可选）
      */
     createShareLink?(storedPath: string, password?: string, expiration?: string): Promise<{ link: string; error?: string }>;
+}
+
+export interface StorageTargetSnapshot {
+    provider: IStorageProvider;
+    accountId: string | null;
+    providerKey: string;
 }
 
 // 本地存储实现
@@ -446,7 +452,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
         private refreshToken: string,
         private tenantId: string = 'common'
     ) {
-        console.log(`[OneDrive] Provider ${id} initialized with clientId:`, clientId.substring(0, 8) + '...', 'Tenant:', tenantId);
+        console.log(`[OneDrive] Provider initialized: ${id}`);
     }
 
     /**
@@ -1157,6 +1163,11 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
      * 创建分享链接
      */
     async createShareLink(storedPath: string, password?: string, expiration?: string): Promise<{ link: string; error?: string }> {
+        if (password || expiration) {
+            const unsupported = [password ? '密码' : '', expiration ? '过期时间' : ''].filter(Boolean).join('和');
+            return { link: '', error: `Google Drive 普通账户不支持通过 API 设置分享${unsupported}，未创建公开权限。` };
+        }
+
         await this.ensureAuthenticated();
 
         try {
@@ -1182,14 +1193,7 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
             }
 
             console.log('[GoogleDrive] Share link created successfully:', link);
-
-            // 提示用户 Google Drive 不支持在 API 层面直接设置密码或过期时间（针对普通账户）
-            let errorMsg = undefined;
-            if (password || expiration) {
-                errorMsg = 'Google Drive 普通账户暂不支持通过 API 设置分享密码或过期时间，已为您生成公开分享链接。';
-            }
-
-            return { link, error: errorMsg };
+            return { link };
 
         } catch (error: any) {
             console.error('[GoogleDrive] Create share link failed:', error.message);
@@ -1353,7 +1357,7 @@ export class StorageManager {
             }
         } catch (error) {
             console.error('Failed to init storage manager:', error);
-            this.activeProvider = this.providers.get('local')!;
+            throw error;
         }
     }
 
@@ -1448,6 +1452,25 @@ export class StorageManager {
 
     getActiveAccountId(): string | null {
         return this.activeAccountId;
+    }
+
+    getActiveTarget(): StorageTargetSnapshot {
+        const provider = this.activeProvider;
+        const accountId = this.activeAccountId;
+        return {
+            provider,
+            accountId,
+            providerKey: accountId ? `${provider.name}:${accountId}` : provider.name,
+        };
+    }
+
+    getTarget(providerName: string, accountId: string | null | undefined): StorageTargetSnapshot {
+        const providerKey = accountId ? `${providerName}:${accountId}` : providerName;
+        return {
+            provider: this.getProvider(providerKey),
+            accountId: accountId || null,
+            providerKey,
+        };
     }
 
     async getAccounts() {

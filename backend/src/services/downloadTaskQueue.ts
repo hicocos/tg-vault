@@ -131,6 +131,7 @@ export class DownloadTaskQueue {
     private maxConcurrent: number;
     private readonly idFactory: () => string;
     private userPaused = false;
+    private readonly scopedUserPauses = new Map<string, { scope: DownloadTaskScope; reason: string }>();
     private systemPause?: DownloadTaskSystemPause;
     private readonly diskPressureBlockers = new Map<string, { reason: string; recheckMs?: number }>();
 
@@ -312,16 +313,17 @@ export class DownloadTaskQueue {
         const systemBlocked = Boolean(this.systemPause);
         const pausing = groups.some(group => group.state === 'pausing');
         const groupPaused = groups.some(group => group.state === 'paused');
-        const paused = systemBlocked || this.userPaused || groupPaused;
+        const scopedPause = this.getScopedUserPause(scope);
+        const paused = systemBlocked || this.userPaused || Boolean(scopedPause) || groupPaused;
         return {
             paused,
             pausing,
             systemBlocked,
-            userPaused: this.userPaused || groupPaused,
+            userPaused: this.userPaused || Boolean(scopedPause) || groupPaused,
             reason: systemBlocked
                 ? this.systemPause?.reason || '系统保护暂停'
-                : this.userPaused || groupPaused
-                    ? '用户已暂停任务'
+                : this.userPaused || scopedPause || groupPaused
+                    ? scopedPause?.reason || '用户已暂停任务'
                     : pausing
                         ? '正在完成当前文件，随后暂停'
                         : undefined,
@@ -409,7 +411,6 @@ export class DownloadTaskQueue {
         if (access.status !== 'ok' || !access.record) return this.controlResult(access.status, access.record);
         const group = access.record;
         if (this.systemPause) return this.controlResult('blocked', group);
-        if (this.userPaused) this.userPaused = false;
         if (group.stateOverride === 'cancelling' || group.stateOverride === 'cancelled') {
             return this.controlResult('terminal', group);
         }
@@ -432,7 +433,6 @@ export class DownloadTaskQueue {
         if (this.snapshotGroup(group).state === 'completed') return this.controlResult('terminal', group);
 
         group.stateOverride = 'cancelling';
-        if (this.userPaused) this.userPaused = false;
         group.updatedAt = Date.now();
         const removed: DownloadFileTask[] = [];
         this.queue = this.queue.filter(task => {
@@ -477,6 +477,17 @@ export class DownloadTaskQueue {
 
     resume(): { active: number; pending: number; total: number } {
         return this.resumeAll('user');
+    }
+
+    pauseScope(scope: DownloadTaskScope, reason = '用户已暂停当前聊天下载队列'): { active: number; pending: number; total: number } {
+        this.scopedUserPauses.set(this.scopePauseKey(scope), { scope: { ...scope }, reason });
+        return this.countsForScope(scope);
+    }
+
+    resumeScope(scope: DownloadTaskScope): { active: number; pending: number; total: number } {
+        this.scopedUserPauses.delete(this.scopePauseKey(scope));
+        this.processNext();
+        return this.countsForScope(scope);
     }
 
     acquireDiskPressureBlocker(blockerId: string, reason: string, recheckMs?: number): { active: number; pending: number; total: number } {
@@ -571,7 +582,7 @@ export class DownloadTaskQueue {
             active += result.active;
             pending += result.pending;
         }
-        if (this.userPaused) this.userPaused = false;
+        this.scopedUserPauses.delete(this.scopePauseKey(scope));
         this.processNext();
         return { active, pending, total: active + pending };
     }
@@ -599,7 +610,9 @@ export class DownloadTaskQueue {
         while (!this.isGloballyPaused() && this.active.length < this.maxConcurrent && this.queue.length > 0) {
             const runnableIndex = this.queue.findIndex(task => {
                 const group = this.groups.get(task.groupId);
-                return group && !['pausing', 'paused', 'cancelling', 'cancelled'].includes(group.stateOverride || '');
+                return group
+                    && !this.isGroupScopePaused(group)
+                    && !['pausing', 'paused', 'cancelling', 'cancelled'].includes(group.stateOverride || '');
             });
             if (runnableIndex < 0) break;
             const [task] = this.queue.splice(runnableIndex, 1);
@@ -679,6 +692,15 @@ export class DownloadTaskQueue {
         };
     }
 
+    private countsForScope(scope: DownloadTaskScope): { active: number; pending: number; total: number } {
+        const groupIds = new Set(Array.from(this.groups.values())
+            .filter(group => this.matchesScope(group, scope))
+            .map(group => group.id));
+        const active = this.active.filter(task => groupIds.has(task.groupId)).length;
+        const pending = this.queue.filter(task => groupIds.has(task.groupId)).length;
+        return { active, pending, total: active + pending };
+    }
+
     private refreshDiskPressurePause(): void {
         if (this.diskPressureBlockers.size === 0) {
             this.systemPause = undefined;
@@ -710,12 +732,11 @@ export class DownloadTaskQueue {
 
     private snapshotForDisplay(group: DownloadTaskGroupRecord): DownloadTaskGroupSnapshot {
         const snapshot = this.snapshotGroup(group);
-        if (this.isGloballyPaused() && snapshot.state === 'waiting') snapshot.state = 'paused';
+        const scopedPause = this.getScopedUserPause(group);
+        if ((this.isGloballyPaused() || scopedPause) && snapshot.state === 'waiting') snapshot.state = 'paused';
         snapshot.reason = this.systemPause
             ? this.systemPause.reason
-            : this.userPaused
-                ? '用户已暂停下载队列'
-                : snapshot.reason;
+            : scopedPause?.reason || (this.userPaused ? '用户已暂停下载队列' : snapshot.reason);
         snapshot.systemPause = this.systemPause;
         return snapshot;
     }
@@ -735,7 +756,8 @@ export class DownloadTaskQueue {
         } else {
             state = 'completed';
         }
-        if (this.isGloballyPaused() && state === 'waiting' && pendingTasks.length > 0) {
+        const scopedPause = this.getScopedUserPause(group);
+        if ((this.isGloballyPaused() || scopedPause) && state === 'waiting' && pendingTasks.length > 0) {
             state = 'paused';
         }
         return {
@@ -758,8 +780,8 @@ export class DownloadTaskQueue {
             currentFileName: activeTasks[0]?.fileName,
             reason: this.systemPause
                 ? this.systemPause.reason
-                : this.userPaused && state === 'paused'
-                    ? '用户已暂停下载队列'
+                : state === 'paused' && (scopedPause || this.userPaused)
+                    ? scopedPause?.reason || '用户已暂停下载队列'
                     : undefined,
             systemPause: this.systemPause,
             createdAt: group.createdAt,
@@ -782,6 +804,26 @@ export class DownloadTaskQueue {
         if (scope.chatId !== undefined && group.chatId !== scope.chatId) return false;
         if (scope.userId !== undefined && group.userId !== scope.userId) return false;
         return true;
+    }
+
+    private scopePauseKey(scope: DownloadTaskScope): string {
+        if (scope.chatId === undefined && scope.userId === undefined) {
+            throw new Error('作用域暂停必须包含 chatId 或 userId');
+        }
+        return `${scope.userId ?? '*'}:${scope.chatId ?? '*'}`;
+    }
+
+    private getScopedUserPause(scope: DownloadTaskScope): { scope: DownloadTaskScope; reason: string } | undefined {
+        for (const pause of this.scopedUserPauses.values()) {
+            const chatMatches = pause.scope.chatId === undefined || pause.scope.chatId === scope.chatId;
+            const userMatches = pause.scope.userId === undefined || pause.scope.userId === scope.userId;
+            if (chatMatches && userMatches) return pause;
+        }
+        return undefined;
+    }
+
+    private isGroupScopePaused(group: DownloadTaskGroupRecord): boolean {
+        return Boolean(this.getScopedUserPause(group));
     }
 
     private resolveGroupForControl(

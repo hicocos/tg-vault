@@ -16,8 +16,9 @@ frontend/dist/
 dist/*
 !dist/index.js
 
-# archives
+# archives and local backups
 *.tar.gz
+backups/
 
 # logs
 *.log

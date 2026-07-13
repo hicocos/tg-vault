@@ -1,221 +1,137 @@
 # TG Vault 服务器部署指南
 
-## 前置条件
+TG Vault 当前采用 **Docker Compose + 宿主机 Nginx/面板反向代理**。Compose 只包含 `postgres`、`backend`、`frontend`，不包含 Nginx 或 Certbot 服务。
 
-- Debian 系统服务器
-- 域名 `cloud.example.com` 已解析到服务器 IP
-- 开放端口：80, 443
+## 1. 前置条件
 
-## 部署步骤
+- Debian/Ubuntu 服务器，已安装 Docker Engine 和 Compose 插件。
+- 已把 Web 域名和 API 域名解析到服务器。
+- 宿主机 Nginx、宝塔或其他反向代理负责 HTTPS 证书。
+- 从项目目录执行下列命令；项目目录即包含 `docker-compose.yml` 的目录。
 
-### 方式一：自动部署（推荐）
-
-1. **上传项目到服务器**
+## 2. 创建环境变量
 
 ```bash
-# 在本地打包项目（不包含 node_modules）
-cd C:\Users\admin\Desktop\tg-vault
-tar --exclude='node_modules' --exclude='.git' -czvf tg-vault.tar.gz .
-
-# 上传到服务器
-scp tg-vault.tar.gz user@your-server-ip:/tmp/
+cp .env.example .env 2>/dev/null || touch .env
+nano .env
 ```
 
-2. **在服务器上解压并运行部署脚本**
+`.env` 使用普通 `KEY=value`，不要加 `export`。至少填写：
 
-```bash
-# SSH 连接到服务器
-ssh user@your-server-ip
-
-# 解压
-sudo mkdir -p /opt/tg-vault
-cd /opt/tg-vault
-sudo tar -xzvf /tmp/tg-vault.tar.gz
-
-# 修改部署脚本中的邮箱
-nano deploy/install.sh
-# 将 EMAIL="admin@example.com" 改为您的邮箱
-
-# 运行部署脚本
-chmod +x deploy/install.sh
-./deploy/install.sh
+```dotenv
+DB_PASSWORD=使用 openssl rand -hex 32 生成的随机值
+VITE_API_URL=https://api.example.com
+CORS_ORIGIN=https://cloud.example.com
+DOMAIN=cloud.example.com
+COOKIE_SECURE=true
 ```
 
-3. **访问网站**
+可选但建议显式保存：
 
-部署完成后，访问 https://cloud.example.com
-
----
-
-### 方式二：手动部署
-
-#### 1. 安装 Docker
-
-```bash
-# 更新系统
-sudo apt-get update && sudo apt-get upgrade -y
-
-# 安装依赖
-sudo apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
-
-# 添加 Docker GPG 密钥
-sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-# 添加 Docker 仓库
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-# 安装 Docker
-sudo apt-get update
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-
-# 启动 Docker
-sudo systemctl start docker
-sudo systemctl enable docker
-
-# 将当前用户添加到 docker 组
-sudo usermod -aG docker $USER
-
-# 重新登录以应用组权限
-exit
-# 重新 SSH 连接
+```dotenv
+SESSION_SECRET=至少32字符；可用 openssl rand -hex 32
+STORAGE_CREDENTIALS_SECRET=至少32字符；可用 openssl rand -hex 32
 ```
 
-#### 2. 上传项目文件
+如果这两个值留空，后端会在 `file-storage` 卷的 `/data/secrets` 中持久生成。迁移与恢复时必须同时备份该卷，否则已加密的 2FA 和存储凭证可能无法读取。
+
+## 3. 构建并启动
 
 ```bash
-# 创建目录
-sudo mkdir -p /opt/tg-vault
-sudo chown -R $USER:$USER /opt/tg-vault
-
-# 上传文件到 /opt/tg-vault
-# (使用 scp, rsync, 或 SFTP)
-```
-
-#### 3. 创建环境变量文件
-
-```bash
-cd /opt/tg-vault
-
-# 生成随机数据库密码
-{
-  echo "DB_PASSWORD=*** rand -base64 32 | tr -d '/+=' | cut -c1-32)"
-} > .env
-
-```
-
-#### 4. 首次启动（获取 SSL 证书）
-
-```bash
-# 使用临时配置（HTTP only）
-cp nginx/conf.d/default.conf nginx/conf.d/default.conf.ssl
-cp nginx/conf.d/default.conf.init nginx/conf.d/default.conf
-
-# 启动服务
+docker compose config --quiet
 docker compose up -d --build
-
-# 等待服务启动
-sleep 10
-
-# 获取 SSL 证书（替换邮箱）
-docker compose run --rm certbot certonly --webroot \
-    --webroot-path=/var/www/certbot \
-    --email your-email@example.com \
-    --agree-tos \
-    --no-eff-email \
-    -d cloud.example.com
-```
-
-#### 5. 启用 HTTPS
-
-```bash
-# 恢复 HTTPS 配置
-cp nginx/conf.d/default.conf.ssl nginx/conf.d/default.conf
-
-# 重启 Nginx
-docker compose restart nginx
-```
-
-#### 6. 验证
-
-访问 https://cloud.example.com
-
----
-
-## 常用命令
-
-```bash
-# 进入项目目录
-cd /opt/tg-vault
-
-# 查看服务状态
 docker compose ps
+```
 
-# 查看日志
-docker compose logs -f
-docker compose logs -f backend    # 后端日志
-docker compose logs -f frontend   # 前端日志
-docker compose logs -f postgres   # 数据库日志
+数据库 schema 会在后端启动时自动检查/迁移。`postgres`、`backend`、`frontend` 都配置了健康检查；只有 `/readyz` 通过后 backend 才为 healthy。
 
-# 重启服务
+## 4. 配置宿主机反向代理
+
+仓库示例：`deploy/nginx-site.conf`。按照实际域名调整后加载到宿主机 Nginx：
+
+- Web 域名代理至 `http://127.0.0.1:47832`
+- API 域名代理至 `http://127.0.0.1:51947`
+- API 上传链路的 `client_max_body_size` 必须与应用配置一致
+- TLS 证书由宿主机 Nginx/面板/Certbot 管理，不要运行 `docker compose run certbot`
+
+## 5. 更新部署
+
+从项目目录执行完整更新：
+
+```bash
+git fetch origin
+git status --short
+git pull --ff-only origin feat/telegram-task-center
+docker compose up -d --build
+```
+
+如果 `git status --short` 显示本地改动，先人工确认，不要强制覆盖。
+
+可选验证：
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:51947/livez
+curl -fsS http://127.0.0.1:51947/readyz
+docker compose logs --tail=100 backend frontend postgres
+```
+
+## 6. 常用运维命令
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose logs -f postgres
 docker compose restart
-docker compose restart backend    # 重启后端
-
-# 停止服务
 docker compose down
-
-# 更新代码后重新部署
-docker compose up -d --build
-
-# 清理无用镜像
-docker system prune -f
 ```
 
-## SSL 证书管理
+`docker compose down` 不会删除 named volumes；不要添加 `-v`，除非明确要永久删除数据库和文件数据。
 
-证书由 Certbot 自动续期。手动续期命令：
+## 7. 备份与恢复
+
+备份必须包含同一维护窗口内的：
+
+1. PostgreSQL custom-format dump
+2. `file-storage` 卷中的完整 `/data`（包括 secrets、缩略图和未完成上传状态）
+3. 版本、时间和 SHA-256 manifest
+
+仓库脚本：
 
 ```bash
-docker compose run --rm certbot renew
-docker compose restart nginx
+chmod +x deploy/backup.sh deploy/restore-verify.sh
+BACKUP_DIR=./backups ./deploy/backup.sh
 ```
 
-## 数据备份
+备份目录可能包含敏感凭证材料，应加密后异地保存并限制访问。恢复前在隔离环境执行：
 
 ```bash
-# 备份数据库
-docker compose exec postgres pg_dump -U tgvault tgvault > backup_$(date +%Y%m%d).sql
-
-# 备份上传文件
-docker run --rm -v tg-vault_file-storage:/data -v $(pwd):/backup alpine tar czvf /backup/files_$(date +%Y%m%d).tar.gz /data
+./deploy/restore-verify.sh ./backups/<backup-directory>
 ```
 
-## 故障排查
+恢复验证不会替代生产恢复演练；应定期在隔离 Compose 项目中验证 schema、行数、密钥可读性和 `/readyz`。
 
-### 502 Bad Gateway
+## 8. 故障排查
+
+### backend 不健康
+
 ```bash
-# 检查后端是否运行
 docker compose ps
-docker compose logs backend
+docker compose logs --tail=200 backend
+curl -i http://127.0.0.1:51947/livez
+curl -i http://127.0.0.1:51947/readyz
 ```
 
-### SSL 证书问题
-```bash
-# 检查证书
-docker compose run --rm certbot certificates
-
-# 强制续期
-docker compose run --rm certbot renew --force-renewal
-docker compose restart nginx
-```
+`/livez=200` 但 `/readyz=503` 表示进程存活，但数据库、存储或安全密钥尚不可用。
 
 ### 数据库连接失败
-```bash
-# 检查数据库状态
-docker compose exec postgres pg_isready -U tgvault
 
-# 查看数据库日志
-docker compose logs postgres
+```bash
+docker compose exec postgres pg_isready -U tgvault -d tgvault
+docker compose logs --tail=200 postgres
 ```
+
+### HTTPS/502
+
+检查宿主机 Nginx 配置、证书、Web/API upstream 端口和请求体限制。Compose 内不存在 `nginx` 或 `certbot` 服务。

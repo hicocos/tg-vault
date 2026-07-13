@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 export interface QueueItem {
     id: string;
     file: File;
-    status: 'pending' | 'uploading' | 'completed' | 'error';
+    status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'cancelled';
     progress: number;
     error?: string;
 }
@@ -17,14 +17,16 @@ interface UploadQueueModalProps {
     isOpen: boolean;
     onClose: () => void;
     items: QueueItem[];
+    onCancel: (id: string) => void;
+    onRetry: (id: string) => void;
 }
 
-export const UploadQueueModal = ({ isOpen, onClose, items }: UploadQueueModalProps) => {
+export const UploadQueueModal = ({ isOpen, onClose, items, onCancel, onRetry }: UploadQueueModalProps) => {
     const [isComplete, setIsComplete] = useState(false);
 
     // 检查是否全部完成
     useEffect(() => {
-        if (items.length > 0 && items.every(item => item.status === 'completed' || item.status === 'error')) {
+        if (items.length > 0 && items.every(item => item.status === 'completed' || item.status === 'error' || item.status === 'cancelled')) {
             setIsComplete(true);
         } else {
             setIsComplete(false);
@@ -32,7 +34,7 @@ export const UploadQueueModal = ({ isOpen, onClose, items }: UploadQueueModalPro
     }, [items]);
 
     // 计算总体完成进度
-    const completedCount = items.filter(i => i.status === 'completed' || i.status === 'error').length;
+    const completedCount = items.filter(i => i.status === 'completed' || i.status === 'error' || i.status === 'cancelled').length;
     const totalCount = items.length;
 
     if (!isOpen) return null;
@@ -93,12 +95,14 @@ export const UploadQueueModal = ({ isOpen, onClose, items }: UploadQueueModalPro
                                             <span className={cn(
                                                 "text-xs shrink-0 font-medium",
                                                 item.status === 'completed' && "text-green-500",
-                                                item.status === 'error' && "text-red-500",
-                                                item.status === 'uploading' && "text-primary"
+                                                (item.status === 'error' || item.status === 'cancelled') && "text-red-500",
+                                                (item.status === 'uploading' || item.status === 'processing') && "text-primary"
                                             )}>
                                                 {item.status === 'completed' && "完成"}
                                                 {item.status === 'error' && "失败"}
                                                 {item.status === 'uploading' && `${item.progress}%`}
+                                                {item.status === 'processing' && "服务器处理中"}
+                                                {item.status === 'cancelled' && "已取消"}
                                                 {item.status === 'pending' && "等待中"}
                                             </span>
                                         </div>
@@ -106,12 +110,19 @@ export const UploadQueueModal = ({ isOpen, onClose, items }: UploadQueueModalPro
                                     <div className="shrink-0">
                                         {item.status === 'completed' && <CheckCircle2 className="w-5 h-5 text-green-500" />}
                                         {item.status === 'error' && <AlertCircle className="w-5 h-5 text-red-500" />}
-                                        {item.status === 'uploading' && <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />}
+                                        {item.status === 'cancelled' && <AlertCircle className="w-5 h-5 text-muted-foreground" />}
+                                        {(item.status === 'uploading' || item.status === 'processing') && <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />}
                                     </div>
+                                    {(item.status === 'pending' || item.status === 'uploading' || item.status === 'processing') && (
+                                        <Button variant="outline" size="sm" onClick={() => onCancel(item.id)}>取消</Button>
+                                    )}
+                                    {(item.status === 'error' || item.status === 'cancelled') && (
+                                        <Button variant="outline" size="sm" onClick={() => onRetry(item.id)}>重试</Button>
+                                    )}
                                 </div>
 
                                 {/* 进度条 */}
-                                {(item.status === 'uploading' || item.progress > 0) && (
+                                {(item.status === 'uploading' || item.status === 'processing' || item.progress > 0) && (
                                     <div className="h-1 w-full bg-muted rounded-full overflow-hidden">
                                         <motion.div
                                             className={cn(

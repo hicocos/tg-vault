@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { waitForStorageCooldownRetry } from './telegramUpload.js';
+
+const channelJobSource = fs.readFileSync(new URL('./telegramChannelJobs.ts', import.meta.url), 'utf8');
+const subscriptionBody = channelJobSource.slice(
+    channelJobSource.indexOf('async function runSubscriptionScan'),
+    channelJobSource.indexOf('async function recoverTelegramJob'),
+);
+assert.match(subscriptionBody, /downloadPendingForJob\([\s\S]*botClient,[\s\S]*requestMessage,[\s\S]*jobId/);
+assert.doesNotMatch(subscriptionBody, /markDownloadRefsDownloading\(jobId, subscriptionRefs\)/);
+assert.doesNotMatch(subscriptionBody, /downloadTelegramChannelRange\(botClient, requestMessage/);
 
 async function testRetriesUntilCooldownClears() {
     const signal = new AbortController().signal;

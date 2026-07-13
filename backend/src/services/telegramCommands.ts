@@ -25,6 +25,7 @@ import { startPeriodicCleanup, stopPeriodicCleanup } from './orphanCleanup.js';
 import { safeUnlink } from '../utils/localPath.js';
 import { getCurrentStorageScope, nextParam, removePhysicalFile } from '../utils/fileScope.js';
 import { buildTaskCancelConfirm, buildTaskCenterDetail, buildTaskCenterPage, channelTaskCenterItem, ordinaryTaskCenterItem, parseTaskCenterCallback, type TaskCenterButton, type TaskCenterItem, type TaskCenterSourceType, type TaskCenterView } from './telegramTaskCenter.js';
+import { DestructiveConfirmationStore } from './destructiveConfirmation.js';
 import {
     buildPathSettingsKeyboard,
     buildPathSettingsText,
@@ -51,7 +52,9 @@ interface PendingDeleteInfo {
     name: string;
     size: number;
     selector: string;
-    createdAt: number;
+    actorId: number;
+    chatId: string;
+    messageId: number;
 }
 
 interface StorageAccountSummary {
@@ -61,8 +64,14 @@ interface StorageAccountSummary {
     is_active: boolean;
 }
 
+interface PendingStorageClearSnapshot {
+    indexedIds: string[];
+    orphanPaths: string[];
+}
+
 const pendingDeleteConfirmations = new Map<string, PendingDeleteInfo>();
-const DELETE_CONFIRM_TTL_MS = 5 * 60 * 1000;
+const pendingStorageClearSnapshots = new Map<string, PendingStorageClearSnapshot>();
+const destructiveConfirmations = new DestructiveConfirmationStore();
 
 function buildDeleteConfirmKeyboard(confirmId: string): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
@@ -118,15 +127,15 @@ function buildDownloadWorkersKeyboard(current: number, confirmValue?: number): A
     });
 }
 
-function buildStorageMaintenanceKeyboard(localFileCount: number, confirm = false): Api.ReplyInlineMarkup | undefined {
+function buildStorageMaintenanceKeyboard(localFileCount: number, confirmationToken?: string): Api.ReplyInlineMarkup | undefined {
     if (localFileCount <= 0) return undefined;
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({
-                buttons: confirm
+                buttons: confirmationToken
                     ? [
-                        new Api.KeyboardButtonCallback({ text: '⚠️ 确认删除本地全部下载文件', data: Buffer.from('storage_clear_confirm') }),
-                        new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from('storage_clear_cancel') }),
+                        new Api.KeyboardButtonCallback({ text: '⚠️ 确认删除本地全部下载文件', data: Buffer.from(`storage_clear_confirm_${confirmationToken}`) }),
+                        new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from(`storage_clear_cancel_${confirmationToken}`) }),
                     ]
                     : [
                         new Api.KeyboardButtonCallback({ text: `🧹 删除本地全部下载文件 (${localFileCount})`, data: Buffer.from('storage_clear_ask') }),
@@ -558,9 +567,23 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
 
     try {
         const stats = await scanLocalDownloadFiles();
-        if (data === 'storage_clear_cancel') {
+        const chatId = getCallbackChatKey(update);
+        const messageId = Number(update.msgId);
+        const tokenMatch = data.match(/^storage_clear_(confirm|cancel)_([A-Za-z0-9_-]+)$/);
+        if (tokenMatch?.[1] === 'cancel') {
+            const cancelled = destructiveConfirmations.cancel(tokenMatch[2], {
+                actorId: userId,
+                chatId,
+                messageId,
+                action: 'clear_local_storage',
+            });
+            if (!cancelled) {
+                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '清理确认无效或已过期', alert: true }));
+                return;
+            }
+            pendingStorageClearSnapshots.delete(tokenMatch[2]);
             await client.editMessage(update.peer, {
-                message: Number(update.msgId),
+                message: messageId,
                 text: stats.count > 0 ? `已取消清理。当前本地下载文件：${stats.count} 个，占用 ${formatBytes(stats.totalSize)}。` : '已取消清理。当前没有本地下载文件。',
                 buttons: buildStorageMaintenanceKeyboard(stats.count),
             });
@@ -569,6 +592,18 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
         }
 
         if (data === 'storage_clear_ask') {
+            const indexed = await query(`SELECT id, path, stored_name FROM files WHERE source = 'local'`);
+            const indexedPaths = new Set(indexed.rows.map(file => path.resolve(file.path || path.join(UPLOAD_DIR, file.stored_name))));
+            const confirmationToken = destructiveConfirmations.issue({
+                actorId: userId,
+                chatId,
+                messageId,
+                action: 'clear_local_storage',
+            });
+            pendingStorageClearSnapshots.set(confirmationToken, {
+                indexedIds: indexed.rows.map(file => String(file.id)),
+                orphanPaths: stats.paths.map(filePath => path.resolve(filePath)).filter(filePath => !indexedPaths.has(filePath)),
+            });
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
                 text: [
@@ -579,26 +614,54 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
                     '',
                     '如确认，请点击下方红色确认按钮。',
                 ].join('\n'),
-                buttons: buildStorageMaintenanceKeyboard(stats.count, true),
+                buttons: buildStorageMaintenanceKeyboard(stats.count, confirmationToken),
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '需要二次确认' }));
             return;
         }
 
-        if (data === 'storage_clear_confirm') {
+        if (tokenMatch?.[1] === 'confirm') {
+            const consumed = destructiveConfirmations.consume(tokenMatch[2], {
+                actorId: userId,
+                chatId,
+                messageId,
+                action: 'clear_local_storage',
+            });
+            const snapshot = pendingStorageClearSnapshots.get(tokenMatch[2]);
+            pendingStorageClearSnapshots.delete(tokenMatch[2]);
+            if (consumed.status !== 'ok' || !snapshot) {
+                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '清理确认无效、已过期或已使用', alert: true }));
+                return;
+            }
             let deletedCount = 0;
             let deletedBytes = 0;
-            for (const filePath of stats.paths) {
-                const size = fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
-                if (await safeUnlink(filePath, UPLOAD_DIR)) {
+            const indexed = snapshot.indexedIds.length > 0
+                ? await query(`SELECT * FROM files WHERE source = 'local' AND id = ANY($1::uuid[])`, [snapshot.indexedIds])
+                : { rows: [] };
+            for (const file of indexed.rows) {
+                const filePath = path.resolve(file.path || path.join(UPLOAD_DIR, file.stored_name));
+                const size = fs.existsSync(filePath) ? fs.statSync(filePath).size : Number(file.size || 0);
+                try {
+                    await removePhysicalFile(file);
+                    await query('DELETE FROM files WHERE id = $1', [file.id]);
                     deletedCount += 1;
                     deletedBytes += size;
                     await pruneEmptyDirs(path.dirname(filePath));
+                } catch (error) {
+                    console.warn(`🤖 本地文件删除失败，保留索引等待重试: ${file.id}`, error);
+                }
+            }
+            for (const resolved of snapshot.orphanPaths) {
+                const size = fs.existsSync(resolved) ? fs.statSync(resolved).size : 0;
+                if (await safeUnlink(resolved, UPLOAD_DIR)) {
+                    deletedCount += 1;
+                    deletedBytes += size;
+                    await pruneEmptyDirs(path.dirname(resolved));
                 }
             }
             const after = await scanLocalDownloadFiles();
             await client.editMessage(update.peer, {
-                message: Number(update.msgId),
+                message: messageId,
                 text: [
                     '✅ **本地服务器下载文件已清理**',
                     '',
@@ -609,6 +672,11 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
                 buttons: buildStorageMaintenanceKeyboard(after.count),
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已删除 ${deletedCount} 个文件` }));
+            return;
+        }
+
+        if (data.startsWith('storage_clear_confirm') || data.startsWith('storage_clear_cancel')) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '旧清理按钮已失效，请重新发送 /storage', alert: true }));
         }
     } catch (error) {
         console.error('🤖 清理本地下载文件失败:', error);
@@ -694,9 +762,7 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
         }
 
         const file = result.rows[0];
-        const confirmId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-        pendingDeleteConfirmations.set(confirmId, { fileId: file.id, name: file.name, size: Number(file.size || 0), selector, createdAt: Date.now() });
-        await message.reply({
+        const sent = await message.reply({
             message: [
                 '⚠️ **确认删除这个文件？**',
                 '',
@@ -707,6 +773,27 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
                 '',
                 '删除会移除数据库记录并尝试删除实际文件。请确认无误后点击按钮。',
             ].filter(Boolean).join('\n'),
+        }) as Api.Message;
+        const chatId = canonicalTelegramChatKey(message.chatId?.toString());
+        if (!chatId || !sent?.id) throw new Error('无法绑定删除确认消息');
+        const confirmId = destructiveConfirmations.issue({
+            actorId: message.senderId!.toJSNumber(),
+            chatId,
+            messageId: sent.id,
+            action: 'delete_file',
+            objectId: String(file.id),
+        });
+        pendingDeleteConfirmations.set(confirmId, {
+            fileId: file.id,
+            name: file.name,
+            size: Number(file.size || 0),
+            selector,
+            actorId: message.senderId!.toJSNumber(),
+            chatId,
+            messageId: sent.id,
+        });
+        await sent.edit({
+            text: sent.message,
             buttons: buildDeleteConfirmKeyboard(confirmId),
         });
     } catch (error) {
@@ -725,17 +812,33 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
     if (!match) return;
     const [, action, confirmId] = match;
     const pending = pendingDeleteConfirmations.get(confirmId);
-    if (!pending || Date.now() - pending.createdAt > DELETE_CONFIRM_TTL_MS) {
-        pendingDeleteConfirmations.delete(confirmId);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认已过期', alert: true }));
+    if (!pending) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认无效或已过期', alert: true }));
         return;
     }
+    const binding = {
+        actorId: userId,
+        chatId: getCallbackChatKey(update),
+        messageId: Number(update.msgId),
+        action: 'delete_file' as const,
+        objectId: pending.fileId,
+    };
     if (action === 'cancel') {
+        if (!destructiveConfirmations.cancel(confirmId, binding)) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认不属于你或已过期', alert: true }));
+            return;
+        }
         pendingDeleteConfirmations.delete(confirmId);
         await client.editMessage(update.peer, { message: Number(update.msgId), text: `已取消删除：${pending.name}`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
         return;
     }
+    const consumed = destructiveConfirmations.consume(confirmId, binding);
+    if (consumed.status !== 'ok') {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认不属于你、已过期或已使用', alert: true }));
+        return;
+    }
+    pendingDeleteConfirmations.delete(confirmId);
     try {
         const scope = await getCurrentStorageScope();
         const result = await query(`SELECT * FROM files WHERE ${scope.clause} AND id = ${nextParam(scope, 1)} LIMIT 1`, [...scope.params, pending.fileId]);
@@ -746,9 +849,8 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '文件不存在', alert: true }));
             return;
         }
-        try { await removePhysicalFile(file); } catch (err) { console.warn('🤖 文件物理删除失败或文件已不存在:', err); }
+        await removePhysicalFile(file);
         await query('DELETE FROM files WHERE id = $1', [file.id]);
-        pendingDeleteConfirmations.delete(confirmId);
         await client.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已删除' }));
     } catch (error) {
@@ -1102,8 +1204,10 @@ export async function handlePauseTasks(message: Api.Message, args: string[] = []
             await message.reply({ message: `⏸️ 已暂停频道任务 ${String(job.id).slice(0, 12)}\n来源：${job.source}` });
             return;
         }
+        await message.reply({ message: `📮 没有找到任务：${taskId}。未暂停当前聊天下载队列。` });
+        return;
     }
-    const result = pauseDownloadTasks();
+    const result = pauseDownloadTasks(undefined, chatId, senderId);
     if (senderId && chatId && message.client) {
         const scopeStatus = getDownloadTaskScopeStatus(chatId, senderId);
         if (scopeStatus.paused || scopeStatus.pausing) {
@@ -1138,8 +1242,10 @@ export async function handleResumeTasks(message: Api.Message, args: string[] = [
             await message.reply({ message: `▶️ 已继续频道任务 ${String(job.id).slice(0, 12)}\n来源：${job.source}` });
             return;
         }
+        await message.reply({ message: `📮 没有找到任务：${taskId}。未继续当前聊天下载队列。` });
+        return;
     }
-    const result = resumeDownloadTasks();
+    const result = resumeDownloadTasks(undefined, chatId, senderId);
     if (senderId && message.client && message.chatId) {
         await refreshSilentProgress(message.client as TelegramClient, message.chatId, senderId).catch(error => {
             console.error('🤖 继续命令刷新任务卡失败:', error);
@@ -1200,10 +1306,10 @@ export async function handleChannelTaskQueueCallback(client: TelegramClient, upd
     if (!match) return;
     const [, action, selector] = match;
     try {
-        if (selector === 'all' && action === 'cancel') {
+        if (action === 'cancel') {
             await client.invoke(new Api.messages.SetBotCallbackAnswer({
                 queryId: update.queryId,
-                message: '旧版“取消全部”按钮已失效，请使用新版 /tasks',
+                message: '旧版取消按钮已失效，请使用新版 /tasks 重新进入任务详情并确认',
                 alert: true,
             }));
             return;
@@ -1215,7 +1321,7 @@ export async function handleChannelTaskQueueCallback(client: TelegramClient, upd
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: matches.length > 1 ? '任务 ID 前缀不唯一，请使用新版 /tasks 刷新' : '任务已结束或已失效', alert: true }));
             return;
         }
-        const legacyAction = (action === 'cancel' ? 'cancel_confirm' : action) as 'pause' | 'resume' | 'cancel_confirm';
+        const legacyAction = action as 'pause' | 'resume';
         const result = await operateChannelTaskCenterItem(legacyAction, userId, callbackChatId, selector);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: result.toast, alert: !result.ok }));
     } catch (error) {

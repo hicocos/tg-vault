@@ -1,6 +1,6 @@
 import path from 'path';
 import { query } from '../db/index.js';
-import { safeUnlink } from './localPath.js';
+import { safeUnlink, isPathInside } from './localPath.js';
 
 export const CLOUD_SOURCES = new Set(['onedrive', 'aliyun_oss', 's3', 'webdav', 'google_drive']);
 
@@ -44,6 +44,7 @@ export async function removePhysicalFile(file: any): Promise<void> {
         await provider.deleteFile(file.path);
     } else {
         const filePath = file.path || path.join(UPLOAD_DIR, file.stored_name);
+        if (!isPathInside(UPLOAD_DIR, filePath)) throw new Error('拒绝删除存储目录之外的文件');
         await safeUnlink(filePath, UPLOAD_DIR);
     }
 

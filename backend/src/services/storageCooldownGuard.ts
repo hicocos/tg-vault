@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { storageManager, StorageQuotaCooldownError, isStorageQuotaCooldownError } from './storage.js';
+import { storageManager, StorageQuotaCooldownError, isStorageQuotaCooldownError, type StorageTargetSnapshot } from './storage.js';
 import {
     getStorageAccountCooldown,
     describeStorageCooldownRecovery,
@@ -44,15 +44,17 @@ export function sendStorageCooldownHttpError(res: Response, error: StorageQuotaC
     res.status(payload.status).json(payload.body);
 }
 
-export async function getActiveStorageCooldown(): Promise<StorageAccountCooldown | null> {
-    const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
-    if (provider.name !== 'google_drive' || !activeAccountId) return null;
-    return getStorageAccountCooldown(activeAccountId, provider.name, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
+export async function getStorageCooldown(target: StorageTargetSnapshot): Promise<StorageAccountCooldown | null> {
+    if (target.provider.name !== 'google_drive' || !target.accountId) return null;
+    return getStorageAccountCooldown(target.accountId, target.provider.name, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
 }
 
-export async function assertActiveStorageWritable(): Promise<void> {
-    const cooldown = await getActiveStorageCooldown();
+export async function getActiveStorageCooldown(): Promise<StorageAccountCooldown | null> {
+    return getStorageCooldown(storageManager.getActiveTarget());
+}
+
+export async function assertStorageTargetWritable(target: StorageTargetSnapshot): Promise<void> {
+    const cooldown = await getStorageCooldown(target);
     if (!cooldown) return;
     throw new StorageQuotaCooldownError('Google Drive 今日上传额度已达上限，请等待自动恢复后再上传，或临时切换其它存储源。', {
         provider: cooldown.provider,
@@ -60,6 +62,10 @@ export async function assertActiveStorageWritable(): Promise<void> {
         storageAccountId: cooldown.storageAccountId,
         cooldownUntil: cooldown.cooldownUntil,
     });
+}
+
+export async function assertActiveStorageWritable(): Promise<void> {
+    return assertStorageTargetWritable(storageManager.getActiveTarget());
 }
 
 export function isStorageCooldownError(error: unknown): error is StorageQuotaCooldownError {

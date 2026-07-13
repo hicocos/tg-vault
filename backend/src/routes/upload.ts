@@ -5,17 +5,19 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { query } from '../db/index.js';
-import { validateApiKey } from '../middleware/apiKey.js';
+import { validateApiKey, requireApiKeyPermission } from '../middleware/apiKey.js';
 import { generateThumbnail, getImageDimensions, generateMediaPreview } from '../utils/thumbnail.js';
 import { storageManager } from '../services/storage.js';
-import { assertActiveStorageWritable, isStorageCooldownError, sendStorageCooldownHttpError } from '../services/storageCooldownGuard.js';
+import { assertStorageTargetWritable, isStorageCooldownError, sendStorageCooldownHttpError } from '../services/storageCooldownGuard.js';
 import { getSignedUrl } from '../middleware/signedUrl.js';
 import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
+import { saveAndIndexWithCompensation } from '../services/storageWrite.js';
 import { rateLimit } from 'express-rate-limit';
 
 const router = Router();
+export const apiRouter = Router();
 
 const uploadLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -86,7 +88,8 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
     const size = file.size;
     const tempPath = path.resolve(file.path);
 
-    const activeAccountId = storageManager.getActiveAccountId();
+    const target = storageManager.getActiveTarget();
+    const { provider, accountId: activeAccountId } = target;
     const storageRules = await getStoragePathRules();
     const storageFolder = buildStorageFolderWithRules({ source, folder: folder || null, mimeType, fileName: originalName }, storageRules);
     // 3. 生成唯一的存储文件名
@@ -96,9 +99,8 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
     console.log(`[Upload] 🏠 Local temp path: ${tempPath}`);
 
     try {
-        // 1. 获取当前存储提供商
-        const provider = storageManager.getProvider();
-        await assertActiveStorageWritable();
+        // 1. 使用请求开始时捕获的不可变存储目标
+        await assertStorageTargetWritable(target);
         console.log(`[Upload] 🛠️  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || 'none (local)'}`);
 
         // 2. 在保存到永久存储前生成缩略图和获取尺寸
@@ -156,24 +158,6 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
             }
         }
 
-        // 3. 保存到永久存储
-        let storedPath = '';
-        try {
-            storedPath = await provider.saveFile(tempPath, storedName, mimeType, storageFolder);
-        } catch (err) {
-            if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-            throw err;
-        }
-
-        // 清理临时文件
-        if (fs.existsSync(tempPath)) {
-            try {
-                fs.unlinkSync(tempPath);
-            } catch (e) {
-                console.warn('Failed to clean up temp file:', e);
-            }
-        }
-
         let type = 'other';
         if (mimeType.startsWith('image/')) type = 'image';
         else if (mimeType.startsWith('video/')) type = 'video';
@@ -184,15 +168,19 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
             mimeType.includes('markdown') || mimeType.includes('json') || mimeType.includes('xml') ||
             mimeType.includes('sql')) type = 'document';
 
-        const result = await query(
-            `INSERT INTO files
-            (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            RETURNING id, created_at, name, type, size`,
-            [originalName, storedName, type, mimeType, size, storedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
-        );
+        let result: Awaited<ReturnType<typeof query>>;
+        const storedPath = await saveAndIndexWithCompensation(provider, tempPath, storedName, mimeType, storageFolder, async savedPath => {
+            result = await query(
+                `INSERT INTO files
+                (name, stored_name, type, mime_type, size, path, thumbnail_path, preview_path, width, height, source, folder, storage_account_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                RETURNING id, created_at, name, type, size`,
+                [originalName, storedName, type, mimeType, size, savedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
+            );
+        });
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
 
-        const newFile = result.rows[0];
+        const newFile = result!.rows[0];
 
         if (provider.name === 'local' && type === 'video') {
             void generateMediaPreview(storedPath, storedName, mimeType)
@@ -233,8 +221,8 @@ router.post('/', uploadLimiter, upload.single('file'), async (req: Request, res:
     await handleUpload(req, res, 'web');
 });
 
-// 外部 API 上传接口（需要 API Key）
-router.post('/api', uploadLimiter, validateApiKey, upload.single('file'), async (req: Request, res: Response) => {
+// 外部 API 上传接口（仅 API Key + upload 权限）
+apiRouter.post('/', uploadLimiter, validateApiKey, requireApiKeyPermission('upload'), upload.single('file'), async (req: Request, res: Response) => {
     await handleUpload(req, res, 'api');
 });
 

@@ -13,7 +13,21 @@ services:
       - "127.0.0.1:47832:80"
     networks:
       - tg-vault-network
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    stop_grace_period: 15s
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O - http://127.0.0.1/ >/dev/null" ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
@@ -59,6 +73,18 @@ services:
     networks:
       - tg-vault-network
     restart: unless-stopped
+    stop_grace_period: 35s
+    healthcheck:
+      test: [ "CMD-SHELL", "node -e \"fetch('http://127.0.0.1:51947/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"" ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   # 数据库
   postgres:
@@ -79,6 +105,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 volumes:
   file-storage:

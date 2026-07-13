@@ -16,7 +16,7 @@ assert.match(upload, /waitForDiskWatermark\(totalSize \|\| 0, signal\)/);
 assert.match(upload, /signal\?\.addEventListener/);
 assert.match(upload, /getExecutionControlState/);
 assert.match(commands, /forceStopDownloadTasksForScope/);
-assert.match(commands, /旧版“取消全部”按钮已失效/);
+assert.match(commands, /旧版取消按钮已失效，请使用新版 \/tasks/);
 assert.match(commands, /pendingTaskCenterCancels/);
 assert.match(commands, /taskCenterCardOwners/);
 assert.match(commands, /refreshSilentProgress\(client, update\.peer, userId,/);
@@ -27,6 +27,13 @@ assert.match(jobs, /j\.kind IN \('date_range', 'tag_download', 'subscription_syn
 assert.match(commands, /if \(executionGroup\) pauseChannelExecutionGroup\(fullId\)/);
 assert.match(bot, /下载任务已取消/);
 assert.match(bot, /slice\(0, 12\)/);
+
+assert.match(bot, /callbackChatId !== canonicalControlChatId/);
+assert.match(upload, /进入静默模式缺少任务所有者/);
+assert.match(upload, /scope\.userId !== userId/);
+assert.match(upload, /ownerUserId \?\? requestMessage\.senderId/);
+assert.match(jobs, /downloadPendingForJob\([\s\S]*String\(job\.id\)/);
+assert.doesNotMatch(jobs, /reconcileTelegramDownloadItemsWithFilesQuery/);
 
 const now = Date.parse('2026-07-11T00:00:00.000Z');
 assert.equal(await ensureJobCanRunForTest({ status: 'cooling', cooldown_until: '2026-07-11T00:01:00.000Z' }, now), 'cooldown');

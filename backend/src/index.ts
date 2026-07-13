@@ -6,7 +6,7 @@ import fs from 'fs';
 
 import filesRouter from './routes/files.js';
 import scopedFolderOperationsRouter from './routes/folderOperations.js';
-import uploadRouter from './routes/upload.js';
+import uploadRouter, { apiRouter as apiUploadRouter } from './routes/upload.js';
 import storageRouter from './routes/storage.js';
 import chunkedUploadRouter from './routes/chunkedUpload.js';
 import authRouter, { requireAuth } from './routes/auth.js';
@@ -14,7 +14,11 @@ import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
 import { initTelegramBot } from './services/telegramBot.js';
 import { initTelegramUserClient, isTelegramUserClientReady } from './services/telegramUserClient.js';
 import { isInitialSetupRequired } from './utils/authSettings.js';
+import { get2FAReadiness } from './utils/security.js';
+import { pool } from './db/index.js';
 import helmet from 'helmet';
+import crypto from 'node:crypto';
+import { normalizeRequestId } from './services/operationalEvents.js';
 
 dotenv.config();
 
@@ -66,10 +70,18 @@ app.use(cors({
         },
     credentials: !allowAnyOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Upload-Id', 'X-Chunk-Index', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Upload-Id', 'X-Chunk-Index', 'X-Chunk-Size', 'X-Chunk-Sha256', 'Authorization'],
 }));
 
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
+
+app.use((req, res, next) => {
+    const provided = normalizeRequestId(req.headers['x-request-id']);
+    const requestId = provided || crypto.randomUUID();
+    res.locals.requestId = requestId;
+    res.setHeader('X-Request-Id', requestId);
+    next();
+});
 
 // Browser-side CSRF/origin guard for state-changing requests. Non-browser API clients
 // often omit Origin; those requests still require normal authentication/API keys.
@@ -120,11 +132,28 @@ app.use('/thumbnails', requireAuth, express.static(THUMBNAIL_DIR, {
 app.use('/api/files', scopedFolderOperationsRouter);
 app.use('/api/files', requireAuthOrSignedUrl, filesRouter);
 app.use('/api/upload', requireAuth, uploadRouter);
-app.use('/api/v1/upload', requireAuth, uploadRouter); // 外部 API 接口保持原有认证（API Key）
+app.use('/api/v1/upload', apiUploadRouter);
 app.use('/api/chunked', requireAuth, chunkedUploadRouter);
 app.use('/api/storage', storageRouter);
 
 // 健康检查（不需要认证）
+let applicationReady = false;
+let readinessError: string | null = null;
+app.get('/livez', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+app.get('/readyz', async (_req, res) => {
+    try {
+        if (!applicationReady) throw new Error(readinessError || '应用仍在初始化');
+        await pool.query('SELECT 1');
+        const twoFactor = await get2FAReadiness();
+        if (!twoFactor.ready) throw new Error('2FA 密钥不可读取');
+        res.json({ status: 'ready', timestamp: new Date().toISOString() });
+    } catch (error) {
+        res.status(503).json({ status: 'not_ready', error: error instanceof Error ? error.message : String(error) });
+    }
+});
+// Backward-compatible liveness alias. Deployments should route traffic based on /readyz.
 app.get('/health', (_req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -135,26 +164,28 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
     res.status(500).json({ error: '服务器内部错误' });
 });
 
-app.listen(PORT, async () => {
+let server: ReturnType<typeof app.listen> | null = null;
+
+async function initializeApplication(): Promise<void> {
     const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
-
-    // 初始化存储管理器
-    try {
-        const { storageManager } = await import('./services/storage.js');
-        await storageManager.init();
-    } catch (e) {
-        console.error('存储管理器初始化失败:', e);
-    }
-
-    // 初始化 Telegram Bot
+    const { storageManager } = await import('./services/storage.js');
+    await storageManager.init();
+    const twoFactor = await get2FAReadiness();
+    if (!twoFactor.ready) throw new Error('2FA 已启用但密钥不可读取');
     if (telegramEnabled) {
         await initTelegramUserClient();
         await initTelegramBot();
     }
+    applicationReady = true;
+    readinessError = null;
+}
 
-    const initialSetupRequired = await isInitialSetupRequired();
-
-    console.log(`
+async function startApplication(): Promise<void> {
+    await initializeApplication();
+    server = app.listen(PORT, async () => {
+        const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
+        const initialSetupRequired = await isInitialSetupRequired();
+        console.log(`
 🚀 TG Vault 后端服务已启动
 📍 端口: ${PORT}
 📁 上传目录: ${path.resolve(UPLOAD_DIR)}
@@ -163,7 +194,41 @@ app.listen(PORT, async () => {
 🔐 密码保护: ${initialSetupRequired ? '待首次初始化' : '已启用'}
 🤖 Telegram Bot: ${telegramEnabled ? '已启用 (最大 2GB，账号级下载器不受此限制)' : '未启用'}
 👤 Telegram User Download: ${isTelegramUserClientReady() ? '已启用' : '未启用'}
-    `);
+        `);
+    });
+}
+
+void startApplication().catch(error => {
+    applicationReady = false;
+    readinessError = error instanceof Error ? error.message : String(error);
+    console.error('应用初始化失败，拒绝监听业务端口:', error);
+    process.exitCode = 1;
 });
+
+let shuttingDown = false;
+async function shutdown(signal: string) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    applicationReady = false;
+    readinessError = `正在因 ${signal} 停机`;
+    const forceTimer = setTimeout(() => process.exit(1), 30_000);
+    forceTimer.unref();
+    if (server) {
+        server.close(async () => {
+            try {
+                await pool.end();
+                process.exit(0);
+            } catch (error) {
+                console.error('优雅停机失败:', error);
+                process.exit(1);
+            }
+        });
+    } else {
+        await pool.end().catch(() => undefined);
+        process.exit(0);
+    }
+}
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.once('SIGINT', () => { void shutdown('SIGINT'); });
 
 export default app;

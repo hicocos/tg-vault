@@ -17,9 +17,11 @@ import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { RenameModal } from "./components/ui/RenameModal";
 import { MoveModal } from "./components/ui/MoveModal";
 import { Notification, type NotificationType } from "./components/ui/Notification";
-import { fileApi, type FileData, type StorageStats as StorageStatsType } from "./services/api";
+import { fileApi, type BatchDeletePreview, type BatchDeleteResult, type FileData, type FolderAggregation, type FileQueryOptions, type StorageStats as StorageStatsType } from "./services/api";
 import { authService } from "./services/auth";
 import type { QueueItem } from "./components/ui/UploadQueueModal";
+import { LatestRequest } from "./services/latestRequest";
+import { BoundedUploadQueue } from "./services/boundedUploadQueue";
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
 const PreviewModal = lazy(() => import("./components/ui/PreviewModal").then(module => ({ default: module.PreviewModal })));
@@ -40,17 +42,27 @@ function App() {
   const [authChecking, setAuthChecking] = useState(true);
 
   const [files, setFiles] = useState<FileData[]>([]);
+  const [folderAggregations, setFolderAggregations] = useState<FolderAggregation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [queryError, setQueryError] = useState<string | null>(null);
+  const [isStale, setIsStale] = useState(false);
   const [fileCursor, setFileCursor] = useState<string | null>(null);
   const [hasMoreFiles, setHasMoreFiles] = useState(false);
   const [loadingMoreFiles, setLoadingMoreFiles] = useState(false);
+  const latestFileRequestRef = useRef(new LatestRequest());
 
   // 改用队列管理上传状态
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
+  const uploadManagerRef = useRef(new BoundedUploadQueue<{ item: QueueItem; folder?: string }, void>(3, async ({ item, folder }, signal) => {
+    setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
+    await fileApi.uploadFile(item.file, folder, progress => {
+      setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: progress.percent === 100 ? 'processing' : 'uploading', progress: progress.percent } : q));
+    }, signal);
+  }));
   const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
 
   const [storageStats, setStorageStats] = useState<StorageStatsType | null>(null);
-  const [storageProvider, setStorageProvider] = useState<string>("local");
+  const [, setStorageProvider] = useState<string>("local");
 
   // 通知状态
   const [notification, setNotification] = useState<{
@@ -69,6 +81,8 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<FileData | null>(null);
   const [deletingFile, setDeletingFile] = useState<FileData | null>(null);
   const [pendingBatchDelete, setPendingBatchDelete] = useState<{ fileIds: string[]; folderNames: string[] } | null>(null);
+  const [batchDeletePreview, setBatchDeletePreview] = useState<BatchDeletePreview | null>(null);
+  const [batchDeleteResult, setBatchDeleteResult] = useState<BatchDeleteResult | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [currentFolder, setCurrentFolder] = useState<string | null>(null); // 当前选中的文件夹
   const [isNavigationTapShieldActive, setIsNavigationTapShieldActive] = useState(false);
@@ -145,50 +159,90 @@ function App() {
     checkAuth();
   }, []);
 
-  // 加载文件列表
-  const loadFiles = useCallback(async (category: string = currentCategory) => {
+  const buildFileQueryOptions = useCallback((signal?: AbortSignal): FileQueryOptions => {
+    let type: FileQueryOptions['type'];
+    if (currentCategory === 'media') type = 'media';
+    else if (['image', 'video', 'audio', 'document'].includes(currentCategory)) type = currentCategory as FileQueryOptions['type'];
+
+    const folder = currentCategory === 'ytdlp' ? 'ytdlp' : (currentFolder ?? null);
+    return {
+      q: searchQuery,
+      type,
+      folder,
+      favorite: currentCategory === 'favorites' ? true : undefined,
+      sort: sortConfig.key,
+      direction: sortConfig.direction,
+      signal,
+    };
+  }, [currentCategory, currentFolder, searchQuery, sortConfig]);
+
+  // 加载文件列表：新 generation 中止旧请求，且只有最新 generation 可提交。
+  const loadFiles = useCallback(async () => {
     if (!isAuthenticated) return;
+    const request = latestFileRequestRef.current.begin();
+    const hadData = files.length > 0 || folderAggregations.length > 0;
     try {
       setLoading(true);
-      const page = await fileApi.getFilesPage({ favorites: category === 'favorites' });
+      setQueryError(null);
+      const options = buildFileQueryOptions(request.signal);
+      const includeFolders = currentFolder === null && currentCategory !== 'ytdlp';
+      const [page, globalFolders] = await Promise.all([
+        fileApi.getFilesPage(options),
+        includeFolders
+          ? fileApi.getFolderAggregations(options)
+          : Promise.resolve([]),
+      ]);
+      if (!request.isCurrent()) return;
       setFiles(page.files);
+      setFolderAggregations(globalFolders);
       setFileCursor(page.nextCursor);
       setHasMoreFiles(page.hasMore);
+      setIsStale(false);
     } catch (error: any) {
+      if (error?.name === 'AbortError') return;
+      if (!request.isCurrent()) return;
       if (error.message === 'UNAUTHORIZED') {
         authService.clearToken();
         setIsAuthenticated(false);
       } else {
         console.error('加载文件失败:', error);
+        setQueryError(error.message || '加载文件失败');
+        setIsStale(hadData);
       }
     } finally {
-      setLoading(false);
+      if (request.isCurrent()) setLoading(false);
     }
-  }, [isAuthenticated, currentCategory]);
+  }, [isAuthenticated, buildFileQueryOptions, currentFolder, currentCategory]);
 
   const loadMoreFiles = useCallback(async () => {
     if (!isAuthenticated || !hasMoreFiles || !fileCursor || loadingMoreFiles) return;
+    const request = latestFileRequestRef.current.begin();
     try {
       setLoadingMoreFiles(true);
-      const page = await fileApi.getFilesPage({ cursor: fileCursor, favorites: currentCategory === 'favorites' });
+      const page = await fileApi.getFilesPage({ ...buildFileQueryOptions(request.signal), cursor: fileCursor });
+      if (!request.isCurrent()) return;
       setFiles(prev => {
         const seen = new Set(prev.map(file => file.id));
         return [...prev, ...page.files.filter(file => !seen.has(file.id))];
       });
       setFileCursor(page.nextCursor);
       setHasMoreFiles(page.hasMore);
+      setQueryError(null);
+      setIsStale(false);
     } catch (error: any) {
+      if (error?.name === 'AbortError' || !request.isCurrent()) return;
       if (error.message === 'UNAUTHORIZED') {
         authService.clearToken();
         setIsAuthenticated(false);
       } else {
         console.error('加载更多文件失败:', error);
-        setNotification({ show: true, message: error.message || '加载更多文件失败', type: 'error' });
+        setQueryError(error.message || '加载更多文件失败');
+        setIsStale(true);
       }
     } finally {
-      setLoadingMoreFiles(false);
+      if (request.isCurrent()) setLoadingMoreFiles(false);
     }
-  }, [isAuthenticated, hasMoreFiles, fileCursor, loadingMoreFiles, currentCategory]);
+  }, [isAuthenticated, hasMoreFiles, fileCursor, loadingMoreFiles, buildFileQueryOptions]);
 
   // 加载存储统计
   const loadStorageStats = useCallback(async () => {
@@ -229,7 +283,7 @@ function App() {
   // 监听分类变化
   useEffect(() => {
     if (isAuthenticated) {
-      loadFiles(currentCategory);
+      loadFiles();
     }
   }, [currentCategory, isAuthenticated, loadFiles]);
 
@@ -352,45 +406,21 @@ function App() {
     }
 
     try {
-      // 4. 并行上传
+      // 有界队列限制同时上传数量，避免大量文件把浏览器连接和服务器临时空间耗尽。
       const uploadPromises = newItems.map(async (item) => {
-        // 更新状态为上传中
-        setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
-
         try {
-          await fileApi.uploadFile(item.file, folder, (progress) => {
-            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-              ...q,
-              status: 'uploading',
-              progress: progress.percent
-            } : q));
-
-            // 如果进度达到 100% 且不是本地存储，提示正在上传到存储源
-            if (progress.percent === 100 && storageProvider !== 'local') {
-              const sourceName = storageProvider === 'onedrive' ? 'OneDrive' :
-                storageProvider === 'google_drive' ? 'Google Drive' :
-                  storageProvider === 'aliyun_oss' ? 'Aliyun OSS' :
-                    storageProvider === 's3' ? 'S3' :
-                      storageProvider === 'webdav' ? 'WebDAV' : storageProvider;
-
-              setNotification({
-                show: true,
-                message: t('app.syncing', { source: sourceName }),
-                type: 'info'
-              });
-            }
-          });
-
-          // 上传成功
+          await uploadManagerRef.current.enqueue(item.id, { item, folder });
           setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'completed', progress: 100 } : q));
         } catch (err: any) {
+          if (err?.name === 'AbortError') {
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'cancelled', error: '已取消' } : q));
+            return;
+          }
           console.error(`File ${item.file.name} upload failed:`, err);
-
           if (err.message === 'UNAUTHORIZED') {
             authService.clearToken();
             setIsAuthenticated(false);
           }
-
           setUploadQueue(prev => prev.map(q => q.id === item.id ? {
             ...q,
             status: 'error',
@@ -412,10 +442,35 @@ function App() {
   // 关闭队列弹窗并清空已完成项目
   const handleCloseQueue = () => {
     setIsQueueModalOpen(false);
-    // 延迟清空队列，让关闭动画播放完
+    const settledIds = new Set(uploadQueue
+      .filter(item => ['completed', 'error', 'cancelled'].includes(item.status))
+      .map(item => item.id));
+    // 只清理关闭时已结算的条目，避免延迟回调误删随后加入的新上传。
     setTimeout(() => {
-      setUploadQueue([]);
+      setUploadQueue(prev => prev.filter(item => !settledIds.has(item.id)));
     }, 300);
+  };
+
+  const handleCancelUpload = (id: string) => {
+    uploadManagerRef.current.cancel(id);
+  };
+
+  const handleRetryUpload = async (id: string) => {
+    setUploadQueue(prev => prev.map(item => item.id === id
+      ? { ...item, status: 'pending', progress: 0, error: undefined }
+      : item));
+    try {
+      await uploadManagerRef.current.retry(id);
+      setUploadQueue(prev => prev.map(item => item.id === id
+        ? { ...item, status: 'completed', progress: 100, error: undefined }
+        : item));
+      await Promise.all([loadFiles(), loadStorageStats()]);
+    } catch (error: any) {
+      const cancelled = error?.name === 'AbortError';
+      setUploadQueue(prev => prev.map(item => item.id === id
+        ? { ...item, status: cancelled ? 'cancelled' : 'error', error: cancelled ? '已取消' : (error?.message || '上传失败') }
+        : item));
+    }
   };
 
   const verifyDelete = (file: FileData) => {
@@ -442,15 +497,31 @@ function App() {
     }
   };
 
-  const performBatchDelete = async (fileIds: string[], folderNames: string[]) => {
+  const performBatchDelete = async () => {
+    if (!batchDeletePreview) return;
     try {
       setLoading(true);
-      const result = await fileApi.batchDelete(fileIds, folderNames);
+      const result = await fileApi.batchDelete(batchDeletePreview.confirmationToken);
+      setBatchDeleteResult(result);
+
+      // A 207 means the server already deleted some items. Always refresh server truth.
       await Promise.all([loadFiles(), loadStorageStats()]);
+      if (result.status === 'partial') {
+        const failedIds = new Set(result.failedFiles.map(file => file.id));
+        setSelectedFileIds(prev => prev.filter(id => failedIds.has(id)));
+        const failedFolderNames = new Set(
+          files.filter(file => failedIds.has(file.id) && file.folder).map(file => file.folder!),
+        );
+        setSelectedFolderNames(prev => prev.filter(name => failedFolderNames.has(name)));
+        setNotification({ show: true, message: result.message, type: 'error' });
+        return;
+      }
+
       setSelectedFileIds([]);
       setSelectedFolderNames([]);
       setIsSelectionMode(false);
       setPendingBatchDelete(null);
+      setBatchDeletePreview(null);
       setNotification({ show: true, message: result.message || '删除完成', type: 'success' });
     } catch (error: any) {
       if (error.message === 'UNAUTHORIZED') {
@@ -466,9 +537,21 @@ function App() {
     }
   };
 
-  const handleBatchDelete = (fileIds = selectedFileIds, folderNames = selectedFolderNames) => {
+  const handleBatchDelete = async (fileIds = selectedFileIds, folderNames = selectedFolderNames) => {
     if (fileIds.length === 0 && folderNames.length === 0) return;
-    setPendingBatchDelete({ fileIds, folderNames });
+    try {
+      const preview = await fileApi.previewBatchDelete(fileIds, folderNames);
+      setBatchDeletePreview(preview);
+      setBatchDeleteResult(null);
+      setPendingBatchDelete({ fileIds, folderNames });
+    } catch (error: any) {
+      if (error.message === 'UNAUTHORIZED') {
+        authService.clearToken();
+        setIsAuthenticated(false);
+      } else {
+        setNotification({ show: true, message: error.message || '获取删除影响范围失败', type: 'error' });
+      }
+    }
   };
 
   // 切换收藏状态
@@ -927,7 +1010,15 @@ function App() {
 
                 </div>
 
-                {loading ? (
+                {queryError && (
+                  <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
+                    <div className="flex items-center justify-between gap-4">
+                      <span>{queryError}{isStale ? '（当前显示上次成功加载的数据）' : ''}</span>
+                      <Button variant="outline" size="sm" onClick={() => void loadFiles()}>重试</Button>
+                    </div>
+                  </div>
+                )}
+                {loading && files.length === 0 && folderAggregations.length === 0 ? (
                   <div className="flex items-center justify-center py-20">
                     <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
                   </div>
@@ -1180,6 +1271,8 @@ function App() {
             <UploadQueueModal
               isOpen={isQueueModalOpen}
               onClose={handleCloseQueue}
+              onCancel={handleCancelUpload}
+              onRetry={handleRetryUpload}
               items={uploadQueue}
             />
           )}
@@ -1194,10 +1287,14 @@ function App() {
 
         <DeleteAlert
           isOpen={!!pendingBatchDelete}
-          onClose={() => setPendingBatchDelete(null)}
-          onConfirm={() => pendingBatchDelete ? performBatchDelete(pendingBatchDelete.fileIds, pendingBatchDelete.folderNames) : undefined}
-          itemCount={(pendingBatchDelete?.fileIds.length || 0) + (pendingBatchDelete?.folderNames.length || 0)}
-          folderCount={pendingBatchDelete?.folderNames.length || 0}
+          onClose={() => { setPendingBatchDelete(null); setBatchDeletePreview(null); setBatchDeleteResult(null); }}
+          onConfirm={performBatchDelete}
+          itemCount={batchDeletePreview?.fileCount || 0}
+          dataFileCount={batchDeletePreview?.dataFileCount || 0}
+          placeholderCount={batchDeletePreview?.placeholderCount || 0}
+          folderCount={batchDeletePreview?.folderCount || 0}
+          totalSizeBytes={batchDeletePreview?.totalSizeBytes || 0}
+          result={batchDeleteResult}
         />
 
         <RenameModal

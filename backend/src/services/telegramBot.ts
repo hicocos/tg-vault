@@ -299,36 +299,41 @@ interface TelegramDownloadScanSummary {
     commentsMaxPerPost: number;
 }
 
-async function updateJobProgressMessage(statusMessage: Api.Message, summary: TelegramJobProgressSummary): Promise<void> {
+export function buildLegacyJobProgressPresentation(summary: TelegramJobProgressSummary): string {
     const totalDone = summary.completed + summary.failed + summary.skipped;
-    const lines = [
-        summary.status === 'paused'
-            ? `⏸️ **频道下载已暂停**`
-            : summary.status === 'cooling'
-                ? `⏸️ **Google Drive 限额冷却中**`
-                : summary.status === 'cancelled'
-                    ? `🛑 **频道下载已取消**`
-                    : totalDone >= summary.totalMediaFound && summary.scanStatus === 'done'
-                        ? `✅ **频道任务完成**`
-                        : `🔎 **频道任务运行中**`,
+    const cooldownIsFloodWait = summary.status === 'cooling' && /floodwait/i.test((summary as TelegramJobProgressSummary & { error?: string }).error || '');
+    const title = summary.status === 'paused'
+        ? '⏸️ **频道下载已暂停**'
+        : summary.status === 'cooling'
+            ? (cooldownIsFloodWait ? '⏳ **Telegram FloodWait 冷却中**' : '⏸️ **存储服务保护冷却中**')
+            : summary.status === 'cancelled'
+                ? '🛑 **频道下载已取消**'
+                : totalDone >= summary.totalMediaFound && summary.scanStatus === 'done'
+                    ? '✅ **频道任务完成**'
+                    : '🔎 **频道任务运行中**';
+    const controls = summary.status === 'paused'
+        ? `控制：/task_resume ${summary.jobId.slice(0, 12)} · /task_cancel ${summary.jobId.slice(0, 12)}`
+        : summary.status === 'cooling' || summary.status === 'cancelled'
+            ? ''
+            : `控制：/task_pause ${summary.jobId.slice(0, 12)} · /task_cancel ${summary.jobId.slice(0, 12)}`;
+    return [
+        title,
         `🆔 job: ${summary.jobId.slice(0, 12)}`,
-        `📍 频道：${summary.source}`,
+        `📍 频道：${summary.source || '未知'}`,
         ``,
-        `🔎 扫描：${summary.scanStatus}`,
-        `📄 频道正文：已扫 ${summary.channelMessagesScanned} 条，发现 ${summary.channelMediaFound} 个文件`,
-        `💬 评论区：已扫 ${summary.commentMessagesScanned} 条，发现 ${summary.commentMediaFound} 个文件`,
+        `🔎 扫描：${summary.scanStatus || 'pending'}`,
+        `📄 频道正文：已扫 ${summary.channelMessagesScanned || 0} 条，发现 ${summary.channelMediaFound || 0} 个文件`,
+        `💬 评论区：已扫 ${summary.commentMessagesScanned || 0} 条，发现 ${summary.commentMediaFound || 0} 个文件`,
         ``,
         `⬇️ 下载：${summary.downloadStatus}`,
-        `✅ 成功 ${summary.completed}　⏳ 待下载 ${summary.pending}　🔄 下载中 ${summary.downloading}　❌ 失败 ${summary.failed}　⏭ 跳过 ${summary.skipped}`,
-        summary.cooldownUntil
-            ? (summary.status === 'cooling'
-                ? `⏸️ Google Drive 限额冷却到：${summary.cooldownUntil}`
-                : `⏳ FloodWait 冷却到：${summary.cooldownUntil}`)
-            : '',
-        ``,
-        `控制：/task_pause ${summary.jobId.slice(0, 12)} · /task_resume ${summary.jobId.slice(0, 12)} · /task_cancel ${summary.jobId.slice(0, 12)}`,
-    ].filter(Boolean);
-    await statusMessage.edit({ text: lines.join('\n') }).catch(() => undefined);
+        `✅ 成功 ${summary.completed || 0}　⏳ 待下载 ${summary.pending || 0}　🔄 下载中 ${summary.downloading || 0}　❌ 失败 ${summary.failed || 0}　⏭ 跳过 ${summary.skipped || 0}`,
+        summary.cooldownUntil ? `${cooldownIsFloodWait ? '⏳ Telegram FloodWait' : '⏸️ 存储服务保护'}冷却到：${summary.cooldownUntil}` : '',
+        controls,
+    ].filter(Boolean).join('\n');
+}
+
+async function updateJobProgressMessage(statusMessage: Api.Message, summary: TelegramJobProgressSummary): Promise<void> {
+    await statusMessage.edit({ text: buildLegacyJobProgressPresentation(summary) }).catch(() => undefined);
 }
 
 async function updateScanStatusMessage(statusMessage: Api.Message, summary: TelegramDownloadScanSummary): Promise<void> {
@@ -682,6 +687,10 @@ function generatePasswordKeyboard(currentLength: number): Api.ReplyInlineMarkup 
 }
 
 // Handle Password Callback
+export function canTelegramUserAuthenticate(userId: number, allowedUsers: number[]): boolean {
+    return allowedUsers.length > 0 && allowedUsers.includes(userId);
+}
+
 async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promise<void> {
     if (!client) return;
 
@@ -750,7 +759,7 @@ async function handlePasswordCallback(update: Api.UpdateBotCallbackQuery): Promi
                     }
 
                     const allowedUsers = await getConfiguredTelegramAllowedUsers();
-                    if (allowedUsers.length > 0 && !allowedUsers.includes(userId)) {
+                    if (!canTelegramUserAuthenticate(userId, allowedUsers)) {
                         state.password = '';
                         await client.editMessage(update.peer, {
                             message: update.msgId,
@@ -856,7 +865,14 @@ async function handleTaskQueueCallback(update: Api.UpdateBotCallbackQuery, data:
     if (!match) return;
     const [, action, taskId] = match;
     const controlChatId = resolveTaskChatIdForControl(taskId);
-    if (!controlChatId || !canControlTask(taskId, controlChatId, userId)) {
+    const callbackChatId = (() => {
+        const peer: any = update.peer as any;
+        const value = peer?.userId || peer?.chatId || peer?.channelId;
+        if (value && typeof value.toString === 'function') return value.toString().replace(/^-100/, '').replace(/^-/, '');
+        return String(value || '');
+    })();
+    const canonicalControlChatId = String(controlChatId || '').replace(/^-100/, '').replace(/^-/, '');
+    if (!controlChatId || callbackChatId !== canonicalControlChatId || !canControlTask(taskId, controlChatId, userId)) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
             message: '任务已完成、已失效或不属于当前聊天',
@@ -1168,7 +1184,8 @@ export async function initTelegramBot(): Promise<void> {
                     return;
                 }
 
-                console.log(`🤖 Received text from ${senderId}: ${text}`);
+                const commandName = text.trim().split(/\s+/, 1)[0].replace(/@\w+$/, '') || 'text';
+                console.log(`🤖 Received Telegram message from ${senderId}: command=${commandName} messageId=${message.id}`);
 
                 // Commands
                 if (text === '/start') {
@@ -1222,7 +1239,7 @@ export async function initTelegramBot(): Promise<void> {
                 {
                     const match = text.match(/^\s*\/ytdlp(?:@\w+)?(?:\s+([\s\S]*))?\s*$/i);
                     if (match) {
-                        console.log(`🤖 /ytdlp command received from ${senderId}: ${text}`);
+                        console.log(`🤖 /ytdlp command received from ${senderId}: messageId=${message.id}`);
                     if (!(await isAuthenticatedAsync(senderId))) {
                         await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;

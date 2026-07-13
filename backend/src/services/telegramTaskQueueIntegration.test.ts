@@ -4,7 +4,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('./telegramUpload.ts', import.meta.url), 'utf8');
 assert.match(source, /waitForChannelExecutionPermission\(getExecutionControlState, signal\)/);
 assert.match(source, /processFileUpload\(userClient, uploadItem, undefined, channelGroupId, getExecutionControlState\)/);
-assert.match(source, /await assertActiveStorageWritable\(\)/);
+assert.match(source, /await assertStorageTargetWritable\(storageTarget\)/);
 assert.match(source, /storageCooldownUntil = error\.cooldownUntil/);
 
 assert.match(source, /import \{ DownloadTaskQueue \} from '\.\/downloadTaskQueue\.js';/);
@@ -16,7 +16,8 @@ assert.match(source, /hidden: true/);
 assert.match(source, /downloadQueue\.add\(groupId, taskDisplayName, queueTask/);
 assert.match(source, /downloadQueue\.add\(singleGroupId, finalFileName, singleUploadTask/);
 assert.match(source, /downloadQueue\.updateProgress\(taskId, downloaded, total\)/);
-assert.match(source, /取消任务时回滚已保存文件失败/);
+assert.match(source, /compensateIndexedWriteAfterCancel/);
+assert.match(source, /下载任务取消后需要人工对账/);
 assert.match(source, /processFileUpload\(userClient, uploadItem, undefined, channelGroupId, getExecutionControlState\)/);
 
 console.log('telegram upload task group integration ok');

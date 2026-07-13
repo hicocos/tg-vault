@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import type { PoolClient } from 'pg';
+import { pool } from '../db/index.js';
 import { getSetting, setSetting } from './settings.js';
 
 const WEB_PASSWORD_KEY = 'admin_password_hash';
@@ -79,11 +81,9 @@ export function validateTelegramPin(pin: unknown): string | null {
     return null;
 }
 
-export async function createInitialAdminCredentials(webPassword: string, telegramPin: string): Promise<void> {
-    if (!(await isInitialSetupRequired())) {
-        throw new Error('管理员密码已创建，不能重复初始化');
-    }
+type SetupQueryClient = Pick<PoolClient, 'query'>;
 
+export async function createInitialAdminCredentialsWithClient(client: SetupQueryClient, webPassword: string, telegramPin: string): Promise<void> {
     const webError = validateWebPassword(webPassword);
     if (webError) throw new Error(webError);
 
@@ -94,8 +94,33 @@ export async function createInitialAdminCredentials(webPassword: string, telegra
         throw new Error('网页密码不能与 Telegram Bot 4 位密码相同');
     }
 
-    await setSetting(WEB_PASSWORD_KEY, hashSecret(webPassword));
-    await setSetting(TELEGRAM_PIN_KEY, hashSecret(telegramPin));
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('tg-vault:initial-admin-setup'))`);
+    const existing = await client.query('SELECT value FROM system_settings WHERE key = $1 FOR UPDATE', [WEB_PASSWORD_KEY]);
+    if ((existing.rowCount || 0) > 0 && existing.rows[0]?.value) {
+        throw new Error('管理员密码已创建，不能重复初始化');
+    }
+    await client.query(
+        'INSERT INTO system_settings (key, value) VALUES ($1, $2)',
+        [WEB_PASSWORD_KEY, hashSecret(webPassword)],
+    );
+    await client.query(
+        'INSERT INTO system_settings (key, value) VALUES ($1, $2)',
+        [TELEGRAM_PIN_KEY, hashSecret(telegramPin)],
+    );
+}
+
+export async function createInitialAdminCredentials(webPassword: string, telegramPin: string): Promise<void> {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await createInitialAdminCredentialsWithClient(client, webPassword, telegramPin);
+        await client.query('COMMIT');
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+    }
 }
 
 function parseUserIds(value: string | null | undefined): number[] {
