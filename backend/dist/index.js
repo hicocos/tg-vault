@@ -11032,15 +11032,22 @@ function safeRmDir(dir) {
   } catch {
   }
 }
+function isYtDlpSidecarOrTemporaryFile(fileName) {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".part") || lower.endsWith(".ytdl") || lower.endsWith(".tmp") || lower.endsWith(".info.json") || lower.endsWith(".live_chat.json") || lower.endsWith(".description") || lower.endsWith(".annotations.xml");
+}
 function selectPrimaryOutputFile(taskDir) {
-  const entries = fs10.readdirSync(taskDir, { withFileTypes: true });
-  const files = entries.filter((e) => e.isFile()).map((e) => ({
-    name: e.name,
-    fullPath: path15.join(taskDir, e.name)
-  })).filter((f) => !f.name.endsWith(".part") && !f.name.endsWith(".ytdl") && !f.name.endsWith(".json") && !f.name.endsWith(".tmp")).map((f) => ({
-    ...f,
-    size: fs10.existsSync(f.fullPath) ? fs10.statSync(f.fullPath).size : 0
-  })).filter((f) => f.size > 0).sort((a, b) => b.size - a.size);
+  const collectFiles = (dir) => {
+    const entries = fs10.readdirSync(dir, { withFileTypes: true });
+    return entries.flatMap((entry) => {
+      const fullPath = path15.join(dir, entry.name);
+      if (entry.isDirectory()) return collectFiles(fullPath);
+      if (!entry.isFile() || isYtDlpSidecarOrTemporaryFile(entry.name)) return [];
+      const size = fs10.existsSync(fullPath) ? fs10.statSync(fullPath).size : 0;
+      return size > 0 ? [{ name: entry.name, fullPath, size }] : [];
+    });
+  };
+  const files = collectFiles(taskDir).sort((a, b) => b.size - a.size);
   if (files.length === 0) return null;
   return { filePath: files[0].fullPath, fileName: files[0].name, size: files[0].size };
 }
