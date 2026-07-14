@@ -4,6 +4,7 @@ root = Path(__file__).resolve().parents[1]
 schema = (root / 'src/db/schema.sql').read_text()
 db_index = (root / 'src/db/index.ts').read_text()
 files_route = (root / 'src/routes/files.ts').read_text()
+file_query = (root / 'src/services/fileQuery.ts').read_text()
 storage_route = (root / 'src/routes/storage.ts').read_text()
 frontend_api = (root.parent / 'frontend/src/services/api.ts').read_text()
 app = (root.parent / 'frontend/src/App.tsx').read_text()
@@ -17,8 +18,9 @@ checks = [
     ('idx_files_source_fav_created', schema),
     ('idx_files_source_folder_created', schema),
     ('ensureFilesPerformanceIndexes', db_index),
-    ('FILES_LIST_COLUMNS', files_route),
-    ('(created_at, id) <', files_route),
+    ('buildFilePageQuery', file_query),
+    ('id, name, stored_name, type, mime_type, size', file_query),
+    ('(created_at, id)', file_query),
     ('nextCursor', files_route),
     ('hasMore', files_route),
     ('/maintenance/download-items/cleanup', storage_route),

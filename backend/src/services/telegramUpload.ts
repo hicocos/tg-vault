@@ -43,6 +43,12 @@ import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js
 import { DownloadTaskQueue } from './downloadTaskQueue.js';
 import { saveAndIndexWithCompensation, compensateIndexedWriteAfterCancel } from './storageWrite.js';
 import { withStorageAccountOperationLease } from './storageAccountOperation.js';
+import {
+    beginTelegramWriteReconciliation,
+    markTelegramWriteIndexPresent,
+    markTelegramWriteObjectPresent,
+    updateTelegramWriteAfterCompensation,
+} from './telegramWriteReconciliation.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
@@ -78,6 +84,7 @@ function appendTelegramDebugLog(line: string) {
 
 export interface TelegramDownloadMessageRef {
     id: number;
+    itemId?: string;
     source?: Api.TypeEntityLike | string;
     origin?: 'channel' | 'comment';
     channelPostId?: number;
@@ -89,6 +96,8 @@ export interface TelegramDownloadMessageRef {
     groupIndex?: number;
     groupSize?: number;
     leaseToken?: string;
+    writeOperationId?: string;
+    jobId?: string;
 }
 
 export interface TelegramPersistedWrite {
@@ -1301,6 +1310,7 @@ interface FileUploadItem {
     storageTarget?: StorageTargetSnapshot;
     leaseSettled?: boolean;
     withLease?: <T>(operation: () => Promise<T>) => Promise<T>;
+    persistentRef?: TelegramDownloadMessageRef;
 }
 
 interface MediaGroupQueue {
@@ -1624,28 +1634,76 @@ async function processFileUpload(
                 );
                 if (permissionBeforeStore === 'cancelled' || signal?.aborted) throw new Error('下载任务已停止');
                 const save = async (): Promise<TelegramPersistedWrite> => {
-                    finalPath = await saveAndIndexWithCompensation(provider, localFilePath!, storedName!, file.mimeType, storageFolder, async savedPath => {
+                    const persistentRef = file.persistentRef;
+                    let operationId: string | undefined;
+                    let savedPath = '';
+                    let indexState: 'unknown' | 'present' | 'deleted' = 'unknown';
+                    if (persistentRef?.jobId && persistentRef.itemId && persistentRef.leaseToken) {
+                        operationId = await beginTelegramWriteReconciliation(pool, {
+                            jobId: persistentRef.jobId,
+                            itemId: persistentRef.itemId,
+                            childLeaseToken: persistentRef.leaseToken,
+                            provider: provider.name,
+                            accountId: activeAccountId,
+                        });
+                        persistentRef.writeOperationId = operationId;
+                    }
+                    try {
+                        savedPath = await provider.saveFile(localFilePath!, storedName!, file.mimeType, storageFolder);
+                        finalPath = savedPath;
+                        if (operationId) await markTelegramWriteObjectPresent(pool, operationId, savedPath);
                         const inserted = await query(`
                             INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                             RETURNING id
                         `, [file.fileName, storedName, fileType, file.mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
                         indexedFileId = String(inserted.rows[0].id);
-                    });
-                    if (!indexedFileId) throw new Error('Telegram 文件保存后缺少索引 ID');
-                    return { savedPath: finalPath, fileId: indexedFileId };
+                        indexState = 'present';
+                        if (operationId) await markTelegramWriteIndexPresent(pool, operationId, indexedFileId);
+                        return { savedPath: finalPath, fileId: indexedFileId };
+                    } catch (error) {
+                        if (!operationId) throw error;
+                        let objectState: 'unknown' | 'deleted' = savedPath ? 'unknown' : 'unknown';
+                        let compensatedIndexState: 'unknown' | 'deleted' = indexState === 'present' ? 'unknown' : 'deleted';
+                        const errors: string[] = [];
+                        if (savedPath) {
+                            try { await provider.deleteFile(savedPath); objectState = 'deleted'; }
+                            catch (cleanupError) { errors.push(`object: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
+                        }
+                        if (indexedFileId) {
+                            try {
+                                if ((await query('DELETE FROM files WHERE id = $1', [indexedFileId])).rowCount !== 1) throw new Error('索引补偿影响 0 行');
+                                compensatedIndexState = 'deleted';
+                            } catch (cleanupError) { errors.push(`index: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
+                        }
+                        await updateTelegramWriteAfterCompensation(pool, operationId, {
+                            objectState, indexState: compensatedIndexState,
+                            reason: errors.join('; ') || `保存失败且补偿已确认: ${error instanceof Error ? error.message : String(error)}`,
+                        });
+                        throw error;
+                    }
                 };
                 const leasedSave = () => withStorageAccountOperationLease(pool, activeAccountId, 'telegram_upload', save);
                 if (file.withLease) {
                     const persisted = await runLeaseProtectedTelegramSave(
                         file.withLease,
                         leasedSave,
-                        saved => compensateIndexedWriteAfterCancel({
-                            fileId: saved.fileId,
-                            savedPath: saved.savedPath,
-                            deleteIndex: async fileId => (await query('DELETE FROM files WHERE id = $1', [fileId])).rowCount === 1,
-                            deleteObject: savedPath => provider.deleteFile(savedPath),
-                        }),
+                        async saved => {
+                            const compensation = await compensateIndexedWriteAfterCancel({
+                                fileId: saved.fileId,
+                                savedPath: saved.savedPath,
+                                deleteIndex: async fileId => (await query('DELETE FROM files WHERE id = $1', [fileId])).rowCount === 1,
+                                deleteObject: savedPath => provider.deleteFile(savedPath),
+                            });
+                            if (file.persistentRef?.writeOperationId) {
+                                await updateTelegramWriteAfterCompensation(pool, file.persistentRef.writeOperationId, {
+                                    objectState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
+                                    indexState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
+                                    reason: compensation.status === 'compensated' ? 'child settlement 失败后的补偿已确认' : (compensation.error || '补偿结果不确定'),
+                                });
+                            }
+                            return compensation;
+                        },
                         async () => {
                             if (signal?.aborted) throw new Error('下载任务已停止');
                             const state = await waitForChannelExecutionPermission(
@@ -2348,6 +2406,7 @@ export async function downloadTelegramChannelRange(
                 groupIndex: item.groupIndex,
                 groupSize: item.groupSize,
                 storageTarget,
+                persistentRef: item.persistentRef,
                 withLease: withItemLease ? operation => withItemLease(item.persistentRef, operation) : undefined,
             };
             try {

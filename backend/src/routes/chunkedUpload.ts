@@ -17,7 +17,7 @@ import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/stora
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { acquireStorageAccountOperationLease, type StorageAccountOperationLease } from '../services/storageAccountOperation.js';
 import {
-    beginChunkCompletionReconciliation,
+    beginChunkCompletionReconciliation, claimChunkReconciliations, resolveClaimedChunkReconciliation,
     compensateChunkCompletionFailure,
     markChunkReconciliationIndexPresent,
     markChunkReconciliationObjectPresent,
@@ -54,6 +54,17 @@ const chunkStore = new ChunkUploadSessionStore(chunkRepository, {
     getDiskFreeBytes: async () => (await checkDiskSpace(path.resolve(CHUNK_DIR))).free,
 });
 const runChunkMaintenance = async () => {
+    const reconciliationLease = crypto.randomUUID();
+    const pending = await claimChunkReconciliations(pool, reconciliationLease, 100);
+    for (const row of pending) {
+        const target = storageManager.getTarget(row.provider, row.accountId);
+        await resolveClaimedChunkReconciliation({
+            db: pool,
+            leaseToken: reconciliationLease,
+            row,
+            deleteObject: storedPath => target.provider.deleteFile(storedPath),
+        }).catch(error => console.error(`分块 journal resolve 失败: ${row.operationId}`, error));
+    }
     const expiredIds = await chunkRepository.deleteExpiredSessions(100);
     await Promise.all(expiredIds.map(uploadId =>
         fsPromises.rm(path.join(CHUNK_DIR, uploadId), { recursive: true, force: true })

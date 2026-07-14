@@ -86,6 +86,14 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
     );
     if (uploadReference.rows.length > 0) throw new StorageAccountConflictError('upload');
 
+    const chunkReference = await client.query(
+        `SELECT upload_id FROM chunk_upload_sessions
+         WHERE target_account_id = $1 AND status IN ('open', 'completing')
+         LIMIT 1 FOR UPDATE`,
+        [accountId],
+    );
+    if (chunkReference.rows.length > 0) throw new StorageAccountConflictError('upload');
+
     const fileResult = await client.query('DELETE FROM files WHERE storage_account_id = $1', [accountId]);
     const deleted = await client.query(
         'DELETE FROM storage_accounts WHERE id = $1 AND is_active = false RETURNING id',

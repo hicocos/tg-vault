@@ -31,12 +31,15 @@ CREATE OR REPLACE TRIGGER storage_accounts_updated_at
 -- 存储账户使用租约：上传等外部副作用在账户删除期间必须持有未释放租约。
 CREATE TABLE IF NOT EXISTS storage_account_leases (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE RESTRICT,
+    storage_account_id UUID NOT NULL REFERENCES storage_accounts(id) ON DELETE CASCADE,
     purpose VARCHAR(50) NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     released_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE storage_account_leases DROP CONSTRAINT IF EXISTS storage_account_leases_storage_account_id_fkey;
+ALTER TABLE storage_account_leases ADD CONSTRAINT storage_account_leases_storage_account_id_fkey
+    FOREIGN KEY (storage_account_id) REFERENCES storage_accounts(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_storage_account_leases_active
     ON storage_account_leases(storage_account_id, expires_at)
     WHERE released_at IS NULL;
@@ -158,7 +161,7 @@ CREATE TABLE IF NOT EXISTS chunk_upload_sessions (
     received_bytes BIGINT NOT NULL DEFAULT 0 CHECK (received_bytes >= 0 AND received_bytes <= total_size),
     status VARCHAR(20) NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'completing', 'completed', 'cancelled', 'failed')),
     target_provider VARCHAR(50) NOT NULL,
-    target_account_id UUID REFERENCES storage_accounts(id),
+    target_account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     completion_token UUID,
     completion_expires_at TIMESTAMPTZ,
@@ -168,6 +171,9 @@ CREATE TABLE IF NOT EXISTS chunk_upload_sessions (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ALTER TABLE chunk_upload_sessions ADD COLUMN IF NOT EXISTS completion_expires_at TIMESTAMPTZ;
+ALTER TABLE chunk_upload_sessions DROP CONSTRAINT IF EXISTS chunk_upload_sessions_target_account_id_fkey;
+ALTER TABLE chunk_upload_sessions ADD CONSTRAINT chunk_upload_sessions_target_account_id_fkey
+    FOREIGN KEY (target_account_id) REFERENCES storage_accounts(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_owner ON chunk_upload_sessions(owner_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_budget ON chunk_upload_sessions(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_chunk_upload_sessions_completion_lease ON chunk_upload_sessions(status, completion_expires_at);
@@ -206,6 +212,14 @@ ALTER TABLE chunk_upload_reconciliations ADD CONSTRAINT chunk_upload_reconciliat
     FOREIGN KEY (upload_id) REFERENCES chunk_upload_sessions(upload_id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_chunk_upload_reconciliations_pending
     ON chunk_upload_reconciliations(status, created_at);
+ALTER TABLE chunk_upload_reconciliations ADD COLUMN IF NOT EXISTS resolution VARCHAR(30);
+ALTER TABLE chunk_upload_reconciliations ADD COLUMN IF NOT EXISTS lease_token UUID;
+ALTER TABLE chunk_upload_reconciliations ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE chunk_upload_reconciliations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_chunk_upload_reconciliations_claim
+    ON chunk_upload_reconciliations(status, lease_expires_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chunk_upload_reconciliations_pending_completion
+    ON chunk_upload_reconciliations(upload_id, completion_token) WHERE status = 'pending';
 
 CREATE OR REPLACE TRIGGER chunk_upload_sessions_updated_at
     BEFORE UPDATE ON chunk_upload_sessions
@@ -341,6 +355,37 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_download_items_job_peer_msg
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_job_status ON telegram_download_items(job_id, status);
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_recover ON telegram_download_items(status, locked_at);
 CREATE INDEX IF NOT EXISTS idx_tg_download_items_lease_expiry ON telegram_download_items(status, lease_expires_at);
+
+-- Telegram provider save/index 与 child settlement 的 write-ahead 对账 journal。
+CREATE TABLE IF NOT EXISTS telegram_write_reconciliations (
+    operation_id UUID PRIMARY KEY,
+    job_id UUID NOT NULL REFERENCES telegram_background_jobs(id) ON DELETE CASCADE,
+    item_id UUID NOT NULL REFERENCES telegram_download_items(id) ON DELETE CASCADE,
+    child_lease_token UUID NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
+    stored_path VARCHAR(2000),
+    file_id UUID,
+    object_state VARCHAR(20) NOT NULL CHECK (object_state IN ('unknown', 'present', 'deleted')),
+    index_state VARCHAR(20) NOT NULL CHECK (index_state IN ('unknown', 'present', 'deleted')),
+    reason TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
+    resolution VARCHAR(30),
+    lease_token UUID,
+    lease_expires_at TIMESTAMPTZ,
+    attempts INT NOT NULL DEFAULT 0,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE telegram_write_reconciliations ADD COLUMN IF NOT EXISTS resolution VARCHAR(30);
+ALTER TABLE telegram_write_reconciliations ADD COLUMN IF NOT EXISTS lease_token UUID;
+ALTER TABLE telegram_write_reconciliations ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE telegram_write_reconciliations ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_tg_write_reconciliations_claim
+    ON telegram_write_reconciliations(status, lease_expires_at, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_write_reconciliations_pending_item
+    ON telegram_write_reconciliations(item_id) WHERE status = 'pending';
 
 CREATE OR REPLACE TRIGGER telegram_download_items_updated_at
     BEFORE UPDATE ON telegram_download_items

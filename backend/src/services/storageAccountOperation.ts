@@ -1,7 +1,11 @@
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
 import { acquireStorageAccountLease, releaseStorageAccountLease } from './storageAccountLease.js';
 
-type OperationPool = Pick<Pool, 'connect' | 'query'>;
+type OperationPool = Pick<Pool, 'query'>;
+type OperationLeaseOptions = {
+    ttlMs?: number;
+    renewalIntervalMs?: number;
+};
 
 export interface StorageAccountOperationLease {
     readonly leaseId: string | null;
@@ -13,21 +17,13 @@ export async function withStorageAccountOperationLease<T>(
     accountId: string | null,
     purpose: string,
     operation: () => Promise<T>,
+    options: OperationLeaseOptions = {},
 ): Promise<T> {
-    const lease = await acquireStorageAccountOperationLease(pool, accountId, purpose);
-    let operationError: unknown;
+    const lease = await acquireStorageAccountOperationLease(pool, accountId, purpose, options);
     try {
         return await operation();
-    } catch (error) {
-        operationError = error;
-        throw error;
     } finally {
-        try {
-            await lease.release();
-        } catch (releaseError) {
-            if (!operationError) throw releaseError;
-            console.error('[StorageLease] release failed after operation failure:', releaseError);
-        }
+        await lease.release();
     }
 }
 
@@ -35,39 +31,13 @@ export async function acquireStorageAccountOperationLease(
     pool: OperationPool,
     accountId: string | null,
     purpose: string,
-    options: { ttlMs?: number; renewalIntervalMs?: number } = {},
+    options: OperationLeaseOptions = {},
 ): Promise<StorageAccountOperationLease> {
-    if (!accountId) {
-        return { leaseId: null, release: async () => undefined };
-    }
+    if (!accountId) return { leaseId: null, release: async () => undefined };
 
     const ttlMs = options.ttlMs ?? 30 * 60 * 1000;
     const renewalIntervalMs = options.renewalIntervalMs ?? Math.max(1_000, Math.floor(ttlMs / 3));
-    const setupClient = await pool.connect() as PoolClient;
-    let leaseId = '';
-    try {
-        await setupClient.query('BEGIN');
-        leaseId = await acquireStorageAccountLease(setupClient, accountId, purpose, ttlMs);
-        await setupClient.query('COMMIT');
-    } catch (error) {
-        await setupClient.query('ROLLBACK').catch(() => undefined);
-        throw error;
-    } finally {
-        setupClient.release();
-    }
-
-    // Keep a database row lock for the entire external operation. This blocks account deletion
-    // even if lease renewal is delayed; a process crash releases it automatically.
-    const lockClient = await pool.connect() as PoolClient;
-    try {
-        await lockClient.query('BEGIN');
-        await lockClient.query('SELECT id, type FROM storage_accounts WHERE id = $1 FOR KEY SHARE', [accountId]);
-    } catch (error) {
-        await lockClient.query('ROLLBACK').catch(() => undefined);
-        lockClient.release();
-        await releaseStorageAccountLease(pool, leaseId).catch(() => undefined);
-        throw error;
-    }
+    const leaseId = await acquireStorageAccountLease(pool, accountId, purpose, ttlMs);
 
     let released = false;
     let renewalInFlight: Promise<void> | null = null;
@@ -82,9 +52,7 @@ export async function acquireStorageAccountOperationLease(
              RETURNING id`,
             [leaseId, expiresAt],
         );
-        if ((result.rowCount || 0) !== 1) {
-            throw new Error(`storage account lease ${leaseId} was lost`);
-        }
+        if ((result.rowCount || 0) !== 1) throw new Error(`storage account lease ${leaseId} was lost`);
     };
     const timer = setInterval(() => {
         renewalInFlight = renew().catch(error => {
@@ -101,17 +69,14 @@ export async function acquireStorageAccountOperationLease(
             released = true;
             clearInterval(timer);
             await renewalInFlight;
-            let releaseError: unknown;
             try {
                 await releaseStorageAccountLease(pool, leaseId);
-                if (renewalError) throw renewalError;
             } catch (error) {
-                releaseError = error;
-            } finally {
-                await lockClient.query('COMMIT').catch(async () => { await lockClient.query('ROLLBACK').catch(() => undefined); });
-                lockClient.release();
+                // The external operation has already happened. Keep its result authoritative;
+                // the durable lease expires naturally and this error remains observable.
+                console.error('[StorageLease] release failed; durable lease will expire:', error);
             }
-            if (releaseError) throw releaseError;
+            if (renewalError) console.error('[StorageLease] operation completed after renewal failure:', renewalError);
         },
     };
 }

@@ -14,16 +14,16 @@ class ScriptedClient {
     }
 }
 
-test('acquire takes FOR KEY SHARE and persists a TTL lease before external upload work', async () => {
+test('acquire atomically persists a TTL lease only when the account exists', async () => {
     const client = new ScriptedClient([
-        { rows: [{ id: 'account', type: 's3' }] },
         { rows: [{ id: 'lease-id' }] },
     ]);
     const leaseId = await acquireStorageAccountLease(client as any, 'account', 'web_upload');
     assert.equal(leaseId, 'lease-id');
-    assert.match(client.calls[0].text, /FOR KEY SHARE/);
-    assert.match(client.calls[1].text, /INSERT INTO storage_account_leases/);
-    assert.deepEqual(client.calls[1].params.slice(1, 3), ['account', 'web_upload']);
+    assert.match(client.calls[0].text, /INSERT INTO storage_account_leases/);
+    assert.match(client.calls[0].text, /SELECT \$1, id/);
+    assert.match(client.calls[0].text, /FROM storage_accounts/);
+    assert.deepEqual(client.calls[0].params.slice(1, 3), ['account', 'web_upload']);
 });
 
 test('release only releases the exact lease', async () => {

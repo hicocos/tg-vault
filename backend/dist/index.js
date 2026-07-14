@@ -491,6 +491,13 @@ async function deleteStorageAccountWithClient(client2, accountId) {
     [accountId]
   );
   if (uploadReference.rows.length > 0) throw new StorageAccountConflictError("upload");
+  const chunkReference = await client2.query(
+    `SELECT upload_id FROM chunk_upload_sessions
+         WHERE target_account_id = $1 AND status IN ('open', 'completing')
+         LIMIT 1 FOR UPDATE`,
+    [accountId]
+  );
+  if (chunkReference.rows.length > 0) throw new StorageAccountConflictError("upload");
   const fileResult = await client2.query("DELETE FROM files WHERE storage_account_id = $1", [accountId]);
   const deleted = await client2.query(
     "DELETE FROM storage_accounts WHERE id = $1 AND is_active = false RETURNING id",
@@ -1948,7 +1955,7 @@ import fs12 from "fs";
 import path17 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto12 from "crypto";
+import crypto14 from "crypto";
 
 // src/utils/config.ts
 init_secretStore();
@@ -2989,7 +2996,7 @@ init_db();
 import { Api as Api4 } from "telegram";
 import fs7 from "fs";
 import path11 from "path";
-import crypto10 from "crypto";
+import crypto11 from "crypto";
 import bigInt from "big-integer";
 
 // src/utils/thumbnail.ts
@@ -4659,16 +4666,18 @@ async function saveAndIndexWithCompensation(provider, tempPath, storedName, mime
 init_storageAccountLifecycle();
 import crypto9 from "node:crypto";
 async function acquireStorageAccountLease(client2, accountId, purpose, ttlMs = 30 * 60 * 1e3) {
-  await lockStorageAccountForUse(client2, accountId);
   const leaseId = crypto9.randomUUID();
   const expiresAt = new Date(Date.now() + ttlMs);
   const result = await client2.query(
     `INSERT INTO storage_account_leases (id, storage_account_id, purpose, expires_at)
-         VALUES ($1, $2, $3, $4)
+         SELECT $1, id, $3, $4
+         FROM storage_accounts
+         WHERE id = $2
          RETURNING id`,
     [leaseId, accountId, purpose, expiresAt]
   );
-  return String(result.rows[0]?.id || leaseId);
+  if (!result.rows[0]) throw new StorageAccountNotFoundError();
+  return String(result.rows[0].id);
 }
 async function releaseStorageAccountLease(client2, leaseId) {
   await client2.query(
@@ -4678,51 +4687,19 @@ async function releaseStorageAccountLease(client2, leaseId) {
 }
 
 // src/services/storageAccountOperation.ts
-async function withStorageAccountOperationLease(pool2, accountId, purpose, operation) {
-  const lease = await acquireStorageAccountOperationLease(pool2, accountId, purpose);
-  let operationError;
+async function withStorageAccountOperationLease(pool2, accountId, purpose, operation, options = {}) {
+  const lease = await acquireStorageAccountOperationLease(pool2, accountId, purpose, options);
   try {
     return await operation();
-  } catch (error) {
-    operationError = error;
-    throw error;
   } finally {
-    try {
-      await lease.release();
-    } catch (releaseError) {
-      if (!operationError) throw releaseError;
-      console.error("[StorageLease] release failed after operation failure:", releaseError);
-    }
+    await lease.release();
   }
 }
 async function acquireStorageAccountOperationLease(pool2, accountId, purpose, options = {}) {
-  if (!accountId) {
-    return { leaseId: null, release: async () => void 0 };
-  }
+  if (!accountId) return { leaseId: null, release: async () => void 0 };
   const ttlMs = options.ttlMs ?? 30 * 60 * 1e3;
   const renewalIntervalMs = options.renewalIntervalMs ?? Math.max(1e3, Math.floor(ttlMs / 3));
-  const setupClient = await pool2.connect();
-  let leaseId = "";
-  try {
-    await setupClient.query("BEGIN");
-    leaseId = await acquireStorageAccountLease(setupClient, accountId, purpose, ttlMs);
-    await setupClient.query("COMMIT");
-  } catch (error) {
-    await setupClient.query("ROLLBACK").catch(() => void 0);
-    throw error;
-  } finally {
-    setupClient.release();
-  }
-  const lockClient = await pool2.connect();
-  try {
-    await lockClient.query("BEGIN");
-    await lockClient.query("SELECT id, type FROM storage_accounts WHERE id = $1 FOR KEY SHARE", [accountId]);
-  } catch (error) {
-    await lockClient.query("ROLLBACK").catch(() => void 0);
-    lockClient.release();
-    await releaseStorageAccountLease(pool2, leaseId).catch(() => void 0);
-    throw error;
-  }
+  const leaseId = await acquireStorageAccountLease(pool2, accountId, purpose, ttlMs);
   let released = false;
   let renewalInFlight = null;
   let renewalError = null;
@@ -4736,9 +4713,7 @@ async function acquireStorageAccountOperationLease(pool2, accountId, purpose, op
              RETURNING id`,
       [leaseId, expiresAt]
     );
-    if ((result.rowCount || 0) !== 1) {
-      throw new Error(`storage account lease ${leaseId} was lost`);
-    }
+    if ((result.rowCount || 0) !== 1) throw new Error(`storage account lease ${leaseId} was lost`);
   };
   const timer = setInterval(() => {
     renewalInFlight = renew().catch((error) => {
@@ -4754,21 +4729,169 @@ async function acquireStorageAccountOperationLease(pool2, accountId, purpose, op
       released = true;
       clearInterval(timer);
       await renewalInFlight;
-      let releaseError;
       try {
         await releaseStorageAccountLease(pool2, leaseId);
-        if (renewalError) throw renewalError;
       } catch (error) {
-        releaseError = error;
-      } finally {
-        await lockClient.query("COMMIT").catch(async () => {
-          await lockClient.query("ROLLBACK").catch(() => void 0);
-        });
-        lockClient.release();
+        console.error("[StorageLease] release failed; durable lease will expire:", error);
       }
-      if (releaseError) throw releaseError;
+      if (renewalError) console.error("[StorageLease] operation completed after renewal failure:", renewalError);
     }
   };
+}
+
+// src/services/telegramWriteReconciliation.ts
+import crypto10 from "node:crypto";
+async function beginTelegramWriteReconciliation(db, input) {
+  const operationId = crypto10.randomUUID();
+  const result = await db.query(
+    `INSERT INTO telegram_write_reconciliations
+         (operation_id, job_id, item_id, child_lease_token, provider, account_id,
+          object_state, index_state, reason, status, created_at, updated_at)
+         SELECT $1,$2,$3,$4,$5,$6,'unknown','unknown','Telegram \u5916\u90E8\u5199\u8FDB\u884C\u4E2D','pending',NOW(),NOW()
+         WHERE EXISTS (
+             SELECT 1 FROM telegram_download_items i
+             WHERE i.id = $3::uuid AND i.job_id = $2::uuid AND i.status = 'downloading' AND i.lease_token = $4::uuid
+         )
+         RETURNING operation_id`,
+    [operationId, input.jobId, input.itemId, input.childLeaseToken, input.provider, input.accountId]
+  );
+  if (result.rowCount !== 1) throw new Error("Telegram write journal \u521B\u5EFA\u5931\u8D25\u6216 child lease \u5DF2\u4E22\u5931");
+  return operationId;
+}
+async function markTelegramWriteObjectPresent(db, operationId, storedPath) {
+  const result = await db.query(
+    `UPDATE telegram_write_reconciliations
+         SET stored_path = $2, object_state = 'present', updated_at = NOW()
+         WHERE operation_id = $1 AND status = 'pending'`,
+    [operationId, storedPath]
+  );
+  if (result.rowCount !== 1) throw new Error("Telegram write journal \u5BF9\u8C61\u72B6\u6001\u66F4\u65B0\u5931\u8D25");
+}
+async function markTelegramWriteIndexPresent(db, operationId, fileId) {
+  const result = await db.query(
+    `UPDATE telegram_write_reconciliations
+         SET file_id = $2, index_state = 'present', updated_at = NOW()
+         WHERE operation_id = $1 AND status = 'pending'`,
+    [operationId, fileId]
+  );
+  if (result.rowCount !== 1) throw new Error("Telegram write journal \u7D22\u5F15\u72B6\u6001\u66F4\u65B0\u5931\u8D25");
+}
+async function updateTelegramWriteAfterCompensation(db, operationId, evidence) {
+  const resolved = evidence.objectState === "deleted" && evidence.indexState === "deleted";
+  const result = await db.query(
+    `UPDATE telegram_write_reconciliations
+         SET object_state = $2, index_state = $3, reason = $4,
+             status = CASE WHEN $5::boolean THEN 'resolved' ELSE 'pending' END,
+             resolution = CASE WHEN $5::boolean THEN 'compensated' ELSE resolution END,
+             resolved_at = CASE WHEN $5::boolean THEN NOW() ELSE NULL END,
+             lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+         WHERE operation_id = $1 AND status = 'pending'
+         RETURNING operation_id`,
+    [operationId, evidence.objectState, evidence.indexState, evidence.reason.slice(0, 2e3), resolved]
+  );
+  if (result.rowCount !== 1) throw new Error("Telegram write journal \u8865\u507F\u72B6\u6001\u66F4\u65B0\u5931\u8D25");
+}
+async function resolveTelegramWriteCommittedWithQuery(db, operationId, childLeaseToken) {
+  const result = await db.query(
+    `UPDATE telegram_write_reconciliations
+         SET status = 'resolved', resolution = 'committed', reason = 'Telegram child \u4E0E\u5916\u90E8\u5199\u5DF2\u63D0\u4EA4',
+             resolved_at = NOW(), lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+         WHERE operation_id = $1 AND child_lease_token = $2::uuid AND status = 'pending'
+           AND object_state = 'present' AND index_state = 'present'
+         RETURNING operation_id`,
+    [operationId, childLeaseToken]
+  );
+  if (result.rowCount !== 1) throw new Error("Telegram child terminal+journal resolve \u5F71\u54CD 0 \u884C");
+}
+async function claimTelegramWriteReconciliations(db, leaseToken, limit = 100) {
+  const result = await db.query(
+    `WITH candidates AS (
+             SELECT r.operation_id
+             FROM telegram_write_reconciliations r
+             WHERE r.status = 'pending'
+               AND r.resolution IS DISTINCT FROM 'operator_required'
+               AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= NOW())
+             ORDER BY r.created_at
+             FOR UPDATE SKIP LOCKED
+             LIMIT $2
+         )
+         UPDATE telegram_write_reconciliations r
+         SET lease_token = $1::uuid, lease_expires_at = NOW() + INTERVAL '5 minutes',
+             attempts = r.attempts + 1, updated_at = NOW()
+         FROM candidates c, telegram_download_items i
+         WHERE r.operation_id = c.operation_id AND i.id = r.item_id
+         RETURNING r.*, i.status AS item_status`,
+    [leaseToken, Math.max(1, Math.min(limit, 1e3))]
+  );
+  return result.rows.map((row) => ({
+    operationId: String(row.operation_id),
+    jobId: String(row.job_id),
+    itemId: String(row.item_id),
+    childLeaseToken: String(row.child_lease_token),
+    provider: String(row.provider),
+    accountId: row.account_id ? String(row.account_id) : null,
+    storedPath: row.stored_path ? String(row.stored_path) : null,
+    fileId: row.file_id ? String(row.file_id) : null,
+    objectState: row.object_state,
+    indexState: row.index_state,
+    itemStatus: String(row.item_status)
+  }));
+}
+async function resolveClaimedTelegramWrite(input) {
+  const { db, row, leaseToken } = input;
+  if (row.itemStatus === "success" && row.fileId && row.objectState === "present" && row.indexState === "present") {
+    const result = await db.query(
+      `UPDATE telegram_write_reconciliations SET status = 'resolved', resolution = 'committed', reason = '\u91CD\u542F\u626B\u63CF\u786E\u8BA4 child \u5DF2\u6210\u529F',
+             resolved_at = NOW(), lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+      [row.operationId, leaseToken]
+    );
+    return result.rowCount === 1 ? "resolved" : "pending";
+  }
+  if (row.objectState === "unknown" && !row.storedPath) {
+    await db.query(
+      `UPDATE telegram_write_reconciliations SET resolution = 'operator_required', reason = '\u5BF9\u8C61\u7ED3\u679C\u672A\u77E5\u4E14\u7F3A\u5C11\u7CBE\u786E stored_path\uFF0C\u7981\u6B62\u76F2\u76EE\u91CD\u8BD5',
+             lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+      [row.operationId, leaseToken]
+    );
+    return "operator-required";
+  }
+  let objectState = row.objectState;
+  let indexState = row.indexState;
+  const errors = [];
+  if (row.storedPath && objectState !== "deleted") {
+    try {
+      await input.deleteObject(row.storedPath);
+      objectState = "deleted";
+    } catch (error) {
+      objectState = "unknown";
+      errors.push(`object: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (row.fileId && indexState !== "deleted") {
+    try {
+      const deleted = await db.query("DELETE FROM files WHERE id = $1", [row.fileId]);
+      if (deleted.rowCount !== 0 && deleted.rowCount !== 1) throw new Error("\u7D22\u5F15\u8865\u507F\u5F71\u54CD\u884C\u6570\u5F02\u5E38");
+      indexState = "deleted";
+    } catch (error) {
+      indexState = "unknown";
+      errors.push(`index: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (!row.fileId && indexState === "unknown") {
+    errors.push("index: \u7F3A\u5C11\u7CBE\u786E file_id");
+  }
+  const resolved = objectState === "deleted" && indexState === "deleted";
+  await db.query(
+    `UPDATE telegram_write_reconciliations SET object_state = $3, index_state = $4,
+         status = CASE WHEN $5::boolean THEN 'resolved' ELSE 'pending' END,
+         resolution = CASE WHEN $5::boolean THEN 'compensated' ELSE resolution END,
+         reason = $6, resolved_at = CASE WHEN $5::boolean THEN NOW() ELSE NULL END,
+         lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+         WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+    [row.operationId, leaseToken, objectState, indexState, resolved, errors.join("; ") || "\u91CD\u542F\u626B\u63CF\u8865\u507F\u5DF2\u786E\u8BA4"]
+  );
+  return resolved ? "resolved" : "pending";
 }
 
 // src/services/telegramUpload.ts
@@ -4902,7 +5025,7 @@ async function getDiskWatermarkState(requiredBytes = 0) {
 }
 async function waitForDiskWatermark(requiredBytes = 0, signal) {
   const startedAt = Date.now();
-  const blockerId = crypto10.randomUUID();
+  const blockerId = crypto11.randomUUID();
   let announcedPause = false;
   try {
     while (true) {
@@ -5582,10 +5705,10 @@ function cancelDownloadTaskGroup(groupId, chatId, userId) {
   return downloadQueue.cancelGroup(groupId, { chatId, userId }, "\u7528\u6237\u901A\u8FC7\u4EFB\u52A1\u4E2D\u5FC3\u53D6\u6D88\u4EFB\u52A1");
 }
 function ordinaryGroupId(prefix, chatId, identity) {
-  return `${prefix}${crypto10.createHash("sha256").update(`${chatId}:${identity}`).digest("base64url").slice(0, 22)}`;
+  return `${prefix}${crypto11.createHash("sha256").update(`${chatId}:${identity}`).digest("base64url").slice(0, 22)}`;
 }
 function channelExecutionGroupId(key) {
-  return `j${crypto10.createHash("sha256").update(key).digest("base64url").slice(0, 22)}`;
+  return `j${crypto11.createHash("sha256").update(key).digest("base64url").slice(0, 22)}`;
 }
 function getChannelExecutionGroup(jobId) {
   return downloadQueue.getGroup(channelExecutionGroupId(jobId), {}, true);
@@ -5686,7 +5809,7 @@ var mediaGroupDebouncer = createTelegramMediaGroupDebouncer({
 });
 async function downloadAndSaveFile(client2, message, originalFileName, targetDir, onProgress, signal) {
   const ext = path11.extname(originalFileName) || "";
-  const tempStoredName = `${crypto10.randomUUID()}${ext}`;
+  const tempStoredName = `${crypto11.randomUUID()}${ext}`;
   let saveDir = targetDir || UPLOAD_DIR;
   if (!fs7.existsSync(saveDir)) {
     try {
@@ -5902,28 +6025,83 @@ async function processFileUpload(client2, file, queue, groupId, getExecutionCont
         );
         if (permissionBeforeStore === "cancelled" || signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
         const save = async () => {
-          finalPath = await saveAndIndexWithCompensation(provider, localFilePath, storedName, file.mimeType, storageFolder, async (savedPath) => {
+          const persistentRef = file.persistentRef;
+          let operationId;
+          let savedPath = "";
+          let indexState = "unknown";
+          if (persistentRef?.jobId && persistentRef.itemId && persistentRef.leaseToken) {
+            operationId = await beginTelegramWriteReconciliation(pool, {
+              jobId: persistentRef.jobId,
+              itemId: persistentRef.itemId,
+              childLeaseToken: persistentRef.leaseToken,
+              provider: provider.name,
+              accountId: activeAccountId
+            });
+            persistentRef.writeOperationId = operationId;
+          }
+          try {
+            savedPath = await provider.saveFile(localFilePath, storedName, file.mimeType, storageFolder);
+            finalPath = savedPath;
+            if (operationId) await markTelegramWriteObjectPresent(pool, operationId, savedPath);
             const inserted = await query(`
                             INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                             RETURNING id
                         `, [file.fileName, storedName, fileType, file.mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
             indexedFileId = String(inserted.rows[0].id);
-          });
-          if (!indexedFileId) throw new Error("Telegram \u6587\u4EF6\u4FDD\u5B58\u540E\u7F3A\u5C11\u7D22\u5F15 ID");
-          return { savedPath: finalPath, fileId: indexedFileId };
+            indexState = "present";
+            if (operationId) await markTelegramWriteIndexPresent(pool, operationId, indexedFileId);
+            return { savedPath: finalPath, fileId: indexedFileId };
+          } catch (error) {
+            if (!operationId) throw error;
+            let objectState = savedPath ? "unknown" : "unknown";
+            let compensatedIndexState = indexState === "present" ? "unknown" : "deleted";
+            const errors = [];
+            if (savedPath) {
+              try {
+                await provider.deleteFile(savedPath);
+                objectState = "deleted";
+              } catch (cleanupError) {
+                errors.push(`object: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+              }
+            }
+            if (indexedFileId) {
+              try {
+                if ((await query("DELETE FROM files WHERE id = $1", [indexedFileId])).rowCount !== 1) throw new Error("\u7D22\u5F15\u8865\u507F\u5F71\u54CD 0 \u884C");
+                compensatedIndexState = "deleted";
+              } catch (cleanupError) {
+                errors.push(`index: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+              }
+            }
+            await updateTelegramWriteAfterCompensation(pool, operationId, {
+              objectState,
+              indexState: compensatedIndexState,
+              reason: errors.join("; ") || `\u4FDD\u5B58\u5931\u8D25\u4E14\u8865\u507F\u5DF2\u786E\u8BA4: ${error instanceof Error ? error.message : String(error)}`
+            });
+            throw error;
+          }
         };
         const leasedSave = () => withStorageAccountOperationLease(pool, activeAccountId, "telegram_upload", save);
         if (file.withLease) {
           const persisted = await runLeaseProtectedTelegramSave(
             file.withLease,
             leasedSave,
-            (saved) => compensateIndexedWriteAfterCancel({
-              fileId: saved.fileId,
-              savedPath: saved.savedPath,
-              deleteIndex: async (fileId) => (await query("DELETE FROM files WHERE id = $1", [fileId])).rowCount === 1,
-              deleteObject: (savedPath) => provider.deleteFile(savedPath)
-            }),
+            async (saved) => {
+              const compensation = await compensateIndexedWriteAfterCancel({
+                fileId: saved.fileId,
+                savedPath: saved.savedPath,
+                deleteIndex: async (fileId) => (await query("DELETE FROM files WHERE id = $1", [fileId])).rowCount === 1,
+                deleteObject: (savedPath) => provider.deleteFile(savedPath)
+              });
+              if (file.persistentRef?.writeOperationId) {
+                await updateTelegramWriteAfterCompensation(pool, file.persistentRef.writeOperationId, {
+                  objectState: compensation.status === "compensated" ? "deleted" : "unknown",
+                  indexState: compensation.status === "compensated" ? "deleted" : "unknown",
+                  reason: compensation.status === "compensated" ? "child settlement \u5931\u8D25\u540E\u7684\u8865\u507F\u5DF2\u786E\u8BA4" : compensation.error || "\u8865\u507F\u7ED3\u679C\u4E0D\u786E\u5B9A"
+                });
+              }
+              return compensation;
+            },
             async () => {
               if (signal?.aborted) throw new Error("\u4E0B\u8F7D\u4EFB\u52A1\u5DF2\u505C\u6B62");
               const state = await waitForChannelExecutionPermission(
@@ -6478,6 +6656,7 @@ async function downloadTelegramChannelRange(botClient, requestMessage, source, s
         groupIndex: item.groupIndex,
         groupSize: item.groupSize,
         storageTarget,
+        persistentRef: item.persistentRef,
         withLease: withItemLease ? (operation) => withItemLease(item.persistentRef, operation) : void 0
       };
       try {
@@ -7031,6 +7210,7 @@ init_storage();
 init_db();
 init_storage();
 import { Api as Api5 } from "telegram";
+import crypto12 from "node:crypto";
 import { getPeerId } from "telegram/Utils.js";
 init_storageCooldown();
 init_storageAccountLifecycle();
@@ -7371,6 +7551,9 @@ async function withTelegramDownloadRefLease(transactionPool, jobId, ref, operati
     const result = await operation();
     const settlement = await settleTelegramDownloadRefWithQuery(client2.query.bind(client2), jobId, ref, "success");
     if (settlement !== "settled") throw new TelegramDownloadLeaseLostError(jobId, ref);
+    if (ref.writeOperationId) {
+      await resolveTelegramWriteCommittedWithQuery(client2, ref.writeOperationId, ref.leaseToken);
+    }
     await client2.query("COMMIT");
     return result;
   } catch (error) {
@@ -7766,6 +7949,10 @@ async function claimPendingDownloadRefs(jobId, limit = TG_JOB_DOWNLOAD_BATCH_SIZ
                AND j.cancelled_at IS NULL
                AND j.finished_at IS NULL
                AND j.status NOT IN ('cancelled', 'paused', 'cooling')
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = i.id AND r.status = 'pending'
+               )
              ORDER BY i.created_at ASC
              FOR UPDATE OF i SKIP LOCKED
              LIMIT $3
@@ -7775,13 +7962,14 @@ async function claimPendingDownloadRefs(jobId, limit = TG_JOB_DOWNLOAD_BATCH_SIZ
              lease_expires_at = NOW() + INTERVAL '10 minutes', updated_at = NOW()
          FROM candidates c
          WHERE i.id = c.id AND i.status = 'pending'
-         RETURNING i.source, i.source_peer, i.origin, i.message_id, i.grouped_id, i.channel_post_id,
+         RETURNING i.id, i.source, i.source_peer, i.origin, i.message_id, i.grouped_id, i.channel_post_id,
                    i.file_name, i.mime_type, i.generated_name, i.total_size, i.folder_override,
                    i.shared_caption, i.group_index, i.group_size, i.lease_token`,
     [jobId, TG_JOB_MAX_ATTEMPTS, limit]
   );
   return result.rows.filter((row) => row.file_name && row.mime_type).map((row) => ({
     id: Number(row.message_id),
+    itemId: String(row.id),
     source: row.source_peer || row.source,
     origin: row.origin === "comment" ? "comment" : "channel",
     channelPostId: row.channel_post_id || void 0,
@@ -7940,7 +8128,7 @@ async function downloadClaimedRefs(botClient, requestMessage, jobId, source, ref
       taskSignal,
       ownerUserId,
       storageTarget,
-      (ref, operation) => withTelegramDownloadRefLease(pool, jobId, ref, async () => {
+      (ref, operation) => withTelegramDownloadRefLease(pool, jobId, Object.assign(ref, { jobId }), async () => {
         const persisted = await operation();
         if (taskSignal.aborted) throw new Error("Telegram \u4E0B\u8F7D lease heartbeat \u5931\u8D25\uFF0C\u5DF2\u505C\u6B62\u4FDD\u5B58");
         return persisted;
@@ -8378,6 +8566,10 @@ async function retryTelegramBackgroundJobWithQuery(runQuery, userId, selector, c
                  completed_at = NULL, last_error = NULL, error = NULL, updated_at = NOW()
              FROM locked_job u
              WHERE i.job_id = u.id AND i.status = 'failed'
+ AND NOT EXISTS (
+     SELECT 1 FROM telegram_write_reconciliations r
+     WHERE r.item_id = i.id AND r.status = 'pending'
+ )
              RETURNING i.job_id
          ), updated_job AS (
              UPDATE telegram_background_jobs j
@@ -8637,6 +8829,10 @@ async function repairTelegramJobInvariantsWithQuery(runQuery = query) {
              WHERE i.job_id = x.id
                AND i.status = 'downloading'
                AND (i.locked_at IS NULL OR i.locked_at < NOW() - INTERVAL '30 minutes')
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = i.id AND r.status = 'pending'
+               )
              RETURNING i.job_id
          ), repaired AS (
              UPDATE telegram_background_jobs j
@@ -8669,6 +8865,17 @@ async function recoverInterruptedTelegramJobs(botClient) {
     const lockResult = await client2.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-job-recovery')) AS locked`);
     lockHeld = Boolean(lockResult.rows[0]?.locked);
     if (!lockHeld) return;
+    const reconciliationLease = crypto12.randomUUID();
+    const pendingWrites = await claimTelegramWriteReconciliations(pool, reconciliationLease, 100);
+    for (const pendingWrite of pendingWrites) {
+      const target = storageManager.getTarget(pendingWrite.provider, pendingWrite.accountId);
+      await resolveClaimedTelegramWrite({
+        db: pool,
+        leaseToken: reconciliationLease,
+        row: pendingWrite,
+        deleteObject: (storedPath) => target.provider.deleteFile(storedPath)
+      }).catch((error) => console.error(`\u267B\uFE0F Telegram write journal resolve \u5931\u8D25: ${pendingWrite.operationId}`, error));
+    }
     const repaired = await repairTelegramJobInvariantsWithQuery();
     if (repaired > 0) console.warn(`\u267B\uFE0F \u5DF2\u4FEE\u590D ${repaired} \u4E2A Telegram \u7236\u5B50\u4EFB\u52A1\u72B6\u6001\u4E0D\u4E00\u81F4`);
     await clearExpiredStorageCooldowns();
@@ -8687,6 +8894,10 @@ async function recoverInterruptedTelegramJobs(botClient) {
              SET status = 'pending', locked_at = NULL, updated_at = NOW()
              WHERE status = 'downloading'
                AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = telegram_download_items.id AND r.status = 'pending'
+               )
                AND EXISTS (
                    SELECT 1 FROM telegram_background_jobs j
                    WHERE j.id = telegram_download_items.job_id
@@ -9258,7 +9469,7 @@ function channelTaskCenterItem(row) {
 }
 
 // src/services/destructiveConfirmation.ts
-import crypto11 from "crypto";
+import crypto13 from "crypto";
 var DestructiveConfirmationStore = class {
   confirmations = /* @__PURE__ */ new Map();
   ttlMs;
@@ -9267,7 +9478,7 @@ var DestructiveConfirmationStore = class {
   constructor(options = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.tokenFactory = options.tokenFactory ?? (() => crypto11.randomBytes(18).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto13.randomBytes(18).toString("base64url"));
   }
   issue(binding) {
     const token = this.tokenFactory();
@@ -12824,7 +13035,7 @@ function generateSignature(fileId, typeOrExpires, expires) {
     throw new Error("Missing signed URL expiration timestamp");
   }
   const data = `${fileId}:${type}:${expiresTimestamp}`;
-  return crypto12.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
+  return crypto14.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -12852,7 +13063,7 @@ function verifySignedUrl(req) {
   try {
     const received = Buffer.from(sign, "hex");
     const expected = Buffer.from(expectedSign, "hex");
-    if (received.length !== expected.length || !crypto12.timingSafeEqual(received, expected)) {
+    if (received.length !== expected.length || !crypto14.timingSafeEqual(received, expected)) {
       console.log("[SignedURL] Signature mismatch:", { id, type });
       return false;
     }
@@ -13746,9 +13957,9 @@ function logOperationalEvent(event, requestId, data) {
 }
 
 // src/services/batchDeleteConfirmation.ts
-import crypto13 from "node:crypto";
+import crypto15 from "node:crypto";
 function hashAuthToken(token) {
-  return crypto13.createHash("sha256").update(token).digest("hex");
+  return crypto15.createHash("sha256").update(token).digest("hex");
 }
 function normalizeFileIds(fileIds) {
   return [...new Set(fileIds)].sort();
@@ -13761,7 +13972,7 @@ var BatchDeleteConfirmationStore = class {
   constructor(options = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.tokenFactory = options.tokenFactory ?? (() => crypto13.randomBytes(24).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto15.randomBytes(24).toString("base64url"));
   }
   issue(input) {
     const confirmationToken = this.tokenFactory();
@@ -14259,12 +14470,12 @@ import os3 from "os";
 import path19 from "path";
 import fs14 from "fs";
 import axios3 from "axios";
-import crypto15 from "crypto";
+import crypto17 from "crypto";
 
 // src/services/oauthFlowStore.ts
 init_db();
 init_credentialCrypto();
-import crypto14 from "node:crypto";
+import crypto16 from "node:crypto";
 var OAuthFlowError = class extends Error {
   code = "OAUTH_FLOW_INVALID";
   constructor() {
@@ -14273,7 +14484,7 @@ var OAuthFlowError = class extends Error {
   }
 };
 function sha256(value) {
-  return crypto14.createHash("sha256").update(value).digest("hex");
+  return crypto16.createHash("sha256").update(value).digest("hex");
 }
 function parsePendingConfig(value) {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -14290,8 +14501,8 @@ var OAuthFlowStore = class {
     this.db = options.db ?? pool;
     this.ttlMs = options.ttlMs ?? 10 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.stateFactory = options.stateFactory ?? (() => crypto14.randomBytes(32).toString("base64url"));
-    this.nonceFactory = options.nonceFactory ?? (() => crypto14.randomBytes(24).toString("base64url"));
+    this.stateFactory = options.stateFactory ?? (() => crypto16.randomBytes(32).toString("base64url"));
+    this.nonceFactory = options.nonceFactory ?? (() => crypto16.randomBytes(24).toString("base64url"));
   }
   async ensureSchema() {
     if (!this.schemaPromise) {
@@ -14444,7 +14655,7 @@ var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router5 = Router5();
 var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
 function sendOAuthSuccessPage(res, input) {
-  const nonce = crypto15.randomBytes(16).toString("base64");
+  const nonce = crypto17.randomBytes(16).toString("base64");
   res.setHeader("Content-Security-Policy", [
     "default-src 'self'",
     "style-src 'unsafe-inline'",
@@ -14902,7 +15113,7 @@ var storage_default = router5;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router6 } from "express";
-import crypto18 from "node:crypto";
+import crypto20 from "node:crypto";
 import fs16 from "node:fs";
 import fsPromises2 from "node:fs/promises";
 import path21 from "node:path";
@@ -14912,16 +15123,102 @@ import checkDiskSpaceModule3 from "check-disk-space";
 init_storage();
 
 // src/services/chunkUploadReconciliation.ts
-import crypto16 from "node:crypto";
-async function beginChunkCompletionReconciliation(db, input) {
-  const operationId = crypto16.randomUUID();
+import crypto18 from "node:crypto";
+async function claimChunkReconciliations(db, leaseToken, limit = 100) {
+  const result = await db.query(
+    `WITH candidates AS (
+             SELECT r.operation_id FROM chunk_upload_reconciliations r
+             WHERE r.status = 'pending'
+               AND r.resolution IS DISTINCT FROM 'operator_required'
+               AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= NOW())
+             ORDER BY r.created_at FOR UPDATE SKIP LOCKED LIMIT $2
+         )
+         UPDATE chunk_upload_reconciliations r
+         SET lease_token = $1::uuid, lease_expires_at = NOW() + INTERVAL '5 minutes', attempts = r.attempts + 1, updated_at = NOW()
+         FROM candidates c, chunk_upload_sessions s
+         WHERE r.operation_id = c.operation_id AND s.upload_id = r.upload_id
+         RETURNING r.*, s.status AS session_status, s.completed_file_id`,
+    [leaseToken, Math.max(1, Math.min(limit, 1e3))]
+  );
+  return result.rows.map((row) => ({
+    operationId: String(row.operation_id),
+    uploadId: String(row.upload_id),
+    completionToken: String(row.completion_token),
+    provider: String(row.provider),
+    accountId: row.account_id ? String(row.account_id) : null,
+    storedPath: row.stored_path ? String(row.stored_path) : null,
+    fileId: row.file_id ? String(row.file_id) : null,
+    objectState: row.object_state,
+    indexState: row.index_state,
+    sessionStatus: String(row.session_status),
+    completedFileId: row.completed_file_id ? String(row.completed_file_id) : null
+  }));
+}
+async function resolveClaimedChunkReconciliation(input) {
+  const { db, row, leaseToken } = input;
+  if (row.sessionStatus === "completed" && row.completedFileId === row.fileId && row.objectState === "present" && row.indexState === "present") {
+    const result = await db.query(
+      `UPDATE chunk_upload_reconciliations SET status = 'resolved', resolution = 'committed', reason = '\u91CD\u542F\u626B\u63CF\u786E\u8BA4 session \u5DF2\u5B8C\u6210',
+             resolved_at = NOW(), lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+      [row.operationId, leaseToken]
+    );
+    return result.rowCount === 1 ? "resolved" : "pending";
+  }
+  if (row.objectState === "unknown" && !row.storedPath) {
+    await db.query(
+      `UPDATE chunk_upload_reconciliations SET resolution = 'operator_required', reason = '\u5BF9\u8C61\u7ED3\u679C\u672A\u77E5\u4E14\u7F3A\u5C11\u7CBE\u786E stored_path\uFF0C\u7981\u6B62\u76F2\u76EE\u91CD\u8BD5',
+             lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+      [row.operationId, leaseToken]
+    );
+    return "operator-required";
+  }
+  let objectState = row.objectState;
+  let indexState = row.indexState;
+  const errors = [];
+  if (row.storedPath && objectState !== "deleted") {
+    try {
+      await input.deleteObject(row.storedPath);
+      objectState = "deleted";
+    } catch (error) {
+      objectState = "unknown";
+      errors.push(`object: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (row.fileId && indexState !== "deleted") {
+    try {
+      const deleted = await db.query("DELETE FROM files WHERE id = $1", [row.fileId]);
+      if (deleted.rowCount !== 0 && deleted.rowCount !== 1) throw new Error("\u7D22\u5F15\u8865\u507F\u5F71\u54CD\u884C\u6570\u5F02\u5E38");
+      indexState = "deleted";
+    } catch (error) {
+      indexState = "unknown";
+      errors.push(`index: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (!row.fileId && indexState === "unknown") errors.push("index: \u7F3A\u5C11\u7CBE\u786E file_id");
+  const resolved = objectState === "deleted" && indexState === "deleted";
   await db.query(
+    `UPDATE chunk_upload_reconciliations SET object_state = $3, index_state = $4,
+         status = CASE WHEN $5::boolean THEN 'resolved' ELSE 'pending' END,
+         resolution = CASE WHEN $5::boolean THEN 'compensated' ELSE resolution END, reason = $6,
+         resolved_at = CASE WHEN $5::boolean THEN NOW() ELSE NULL END, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
+         WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
+    [row.operationId, leaseToken, objectState, indexState, resolved, errors.join("; ") || "\u91CD\u542F\u626B\u63CF\u8865\u507F\u5DF2\u786E\u8BA4"]
+  );
+  return resolved ? "resolved" : "pending";
+}
+async function beginChunkCompletionReconciliation(db, input) {
+  const operationId = crypto18.randomUUID();
+  const result = await db.query(
     `INSERT INTO chunk_upload_reconciliations
          (operation_id, upload_id, completion_token, provider, account_id, object_state, index_state, reason, status, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,'unknown','unknown','\u5206\u5757\u5B8C\u6210\u526F\u4F5C\u7528\u8FDB\u884C\u4E2D','pending',NOW(),NOW())`,
+         VALUES ($1,$2,$3,$4,$5,'unknown','unknown','\u5206\u5757\u5B8C\u6210\u526F\u4F5C\u7528\u8FDB\u884C\u4E2D','pending',NOW(),NOW())
+         ON CONFLICT (upload_id, completion_token) WHERE status = 'pending'
+         DO UPDATE SET updated_at = NOW()
+         RETURNING operation_id`,
     [operationId, input.uploadId, input.completionToken, input.provider, input.accountId]
   );
-  return operationId;
+  return String(result.rows?.[0]?.operation_id || operationId);
 }
 async function markChunkReconciliationObjectPresent(db, operationId, storedPath) {
   const result = await db.query(
@@ -15001,7 +15298,7 @@ async function compensateChunkCompletionFailure(input) {
 }
 
 // src/services/chunkUploadSessions.ts
-import crypto17 from "node:crypto";
+import crypto19 from "node:crypto";
 import fs15 from "node:fs";
 import fsPromises from "node:fs/promises";
 import path20 from "node:path";
@@ -15014,9 +15311,9 @@ var ChunkUploadProtocolError = class extends Error {
 };
 async function writeChunkAtomically(input) {
   await fsPromises.mkdir(path20.dirname(input.finalPath), { recursive: true });
-  const committedPath = `${input.finalPath}.${crypto17.randomUUID()}.chunk`;
+  const committedPath = `${input.finalPath}.${crypto19.randomUUID()}.chunk`;
   const temporaryPath = `${committedPath}.part`;
-  const hash = crypto17.createHash("sha256");
+  const hash = crypto19.createHash("sha256");
   let size = 0;
   const counter = new (await import("node:stream")).Transform({
     transform(chunk, _encoding, callback) {
@@ -15046,7 +15343,7 @@ async function verifyChunkIntegrity(chunk, expectedDirectory, maxChunkBytes) {
   if (stat.size !== chunk.size || stat.size < 1 || stat.size > maxChunkBytes) {
     throw new ChunkUploadProtocolError("ChunkSizeMismatchError", `\u5206\u5757 ${chunk.index} \u5927\u5C0F\u65E0\u6548`);
   }
-  const hash = crypto17.createHash("sha256");
+  const hash = crypto19.createHash("sha256");
   await pipeline(fs15.createReadStream(chunkPath), new (await import("node:stream")).Writable({
     write(buffer, _encoding, callback) {
       hash.update(buffer);
@@ -15513,6 +15810,17 @@ var chunkStore = new ChunkUploadSessionStore(chunkRepository, {
   getDiskFreeBytes: async () => (await checkDiskSpace3(path21.resolve(CHUNK_DIR))).free
 });
 var runChunkMaintenance = async () => {
+  const reconciliationLease = crypto20.randomUUID();
+  const pending = await claimChunkReconciliations(pool, reconciliationLease, 100);
+  for (const row of pending) {
+    const target = storageManager.getTarget(row.provider, row.accountId);
+    await resolveClaimedChunkReconciliation({
+      db: pool,
+      leaseToken: reconciliationLease,
+      row,
+      deleteObject: (storedPath) => target.provider.deleteFile(storedPath)
+    }).catch((error) => console.error(`\u5206\u5757 journal resolve \u5931\u8D25: ${row.operationId}`, error));
+  }
   const expiredIds = await chunkRepository.deleteExpiredSessions(100);
   await Promise.all(expiredIds.map(
     (uploadId) => fsPromises2.rm(path21.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error(`\u6E05\u7406\u8FC7\u671F\u5206\u5757\u76EE\u5F55\u5931\u8D25: ${uploadId}`, error))
@@ -15533,7 +15841,7 @@ router6.use(rateLimit3({
 function ownerId(req) {
   const token = getAuthToken(req);
   if (!token) throw new ChunkUploadProtocolError("ChunkOwnerError", "\u7F3A\u5C11\u8BA4\u8BC1\u4F1A\u8BDD");
-  return crypto18.createHash("sha256").update(token).digest("hex");
+  return crypto20.createHash("sha256").update(token).digest("hex");
 }
 function decodeFilename2(filename) {
   try {
@@ -15581,7 +15889,7 @@ router6.post("/init", async (req, res) => {
     const target = storageManager.getActiveTarget();
     const now = /* @__PURE__ */ new Date();
     const session = {
-      uploadId: crypto18.randomUUID(),
+      uploadId: crypto20.randomUUID(),
       ownerId: ownerId(req),
       filename: decodeFilename2(filename).slice(0, 255),
       mimeType: mimeType.slice(0, 100),
@@ -15658,7 +15966,7 @@ router6.post("/chunk", async (req, res) => {
   }
 });
 async function mergeChunks(uploadId, chunks, targetPath, expectedBytes) {
-  const temporary = `${targetPath}.${crypto18.randomUUID()}.part`;
+  const temporary = `${targetPath}.${crypto20.randomUUID()}.part`;
   await fsPromises2.mkdir(path21.dirname(targetPath), { recursive: true });
   const output = fs16.createWriteStream(temporary, { flags: "wx" });
   try {
@@ -15717,7 +16025,7 @@ router6.post("/complete", async (req, res) => {
     if (current.status === "failed") {
       return res.status(409).json({ error: "\u4E0A\u6B21\u5B8C\u6210\u5931\u8D25\uFF0C\u8BF7\u5148\u91CD\u8BD5\u4E0A\u4F20\u4F1A\u8BDD", retryable: true, lastError: current.lastError });
     }
-    token = crypto18.randomUUID();
+    token = crypto20.randomUUID();
     const claim = await chunkStore.claimCompletion(uploadId, owner, token, new Date(Date.now() + COMPLETION_LEASE_MS));
     if (!claim) return res.status(409).json({ error: "\u4E0A\u4F20\u672A\u5B8C\u6574\u3001\u5DF2\u7531\u5176\u4ED6\u8BF7\u6C42\u5904\u7406\u6216\u72B6\u6001\u4E0D\u53EF\u5B8C\u6210" });
     completionHeartbeat = setInterval(() => {
@@ -15927,7 +16235,7 @@ var chunkedUpload_default = router6;
 // src/index.ts
 init_db();
 import helmet from "helmet";
-import crypto19 from "node:crypto";
+import crypto21 from "node:crypto";
 dotenv3.config();
 var app = express();
 app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
@@ -15969,7 +16277,7 @@ app.use(cors({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
 app.use((req, res, next) => {
   const provided = normalizeRequestId(req.headers["x-request-id"]);
-  const requestId = provided || crypto19.randomUUID();
+  const requestId = provided || crypto21.randomUUID();
   res.locals.requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
   next();

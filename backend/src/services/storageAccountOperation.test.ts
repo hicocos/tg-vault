@@ -32,27 +32,35 @@ class ScriptedPool {
     renewalCount() { return this.renewals; }
 }
 
-test('cloud operation lease commits before work, renews, and releases the exact durable lease', async () => {
+test('cloud operation atomically creates, renews, and releases the exact durable lease', async () => {
     const pool = new ScriptedPool();
     const lease = await acquireStorageAccountOperationLease(pool as any, 'account-1', 'web_upload', {
         ttlMs: 40,
         renewalIntervalMs: 5,
     });
 
-    const commitIndex = pool.calls.findIndex(call => call.text === 'COMMIT');
     const insertIndex = pool.calls.findIndex(call => /INSERT INTO storage_account_leases/.test(call.text));
-    assert.ok(insertIndex >= 0 && commitIndex > insertIndex);
-    assert.equal(pool.releaseCalls, 1);
-    assert.equal(pool.calls.filter(call => /SELECT id, type FROM storage_accounts/.test(call.text)).length, 2);
+    assert.ok(insertIndex >= 0);
+    assert.equal(pool.releaseCalls, 0);
+    assert.equal(pool.calls.filter(call => /SELECT id, type FROM storage_accounts/.test(call.text)).length, 0);
 
     await new Promise(resolve => setTimeout(resolve, 16));
     assert.ok(pool.renewalCount() >= 1);
 
     await lease.release();
-    assert.equal(pool.released, true);
-    assert.equal(pool.releaseCalls, 2);
+    assert.equal(pool.released, false);
+    assert.equal(pool.releaseCalls, 0);
     const release = pool.calls.find(call => /SET released_at/.test(call.text));
     assert.deepEqual(release?.params, ['lease-1']);
+});
+
+test('parallel operations use no long-lived pool clients', async () => {
+    const pool = new ScriptedPool();
+    const leases = await Promise.all(Array.from({ length: 20 }, () =>
+        acquireStorageAccountOperationLease(pool as any, 'account-1', 'web_upload')));
+    assert.equal(pool.releaseCalls, 0);
+    await Promise.all(leases.map(lease => lease.release()));
+    assert.equal(pool.releaseCalls, 0);
 });
 
 test('local operation does not create an account lease', async () => {
@@ -73,4 +81,52 @@ test('operation wrapper always releases the durable lease after success or failu
         /save failed/,
     );
     assert.equal(failedPool.calls.filter(call => /SET released_at/.test(call.text)).length, 1);
+});
+
+test('renewal failure is observable but does not turn successful work into failure', async () => {
+    const pool = new ScriptedPool();
+    const originalQuery = pool.query.bind(pool);
+    pool.query = async (text: string, params: unknown[] = []) => {
+        if (/SET expires_at/.test(text)) throw new Error('renewal unavailable');
+        return originalQuery(text, params);
+    };
+    const errors: unknown[][] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+        const lease = await acquireStorageAccountOperationLease(pool as any, 'account-1', 'web_upload', {
+            ttlMs: 30,
+            renewalIntervalMs: 5,
+        });
+        await new Promise(resolve => setTimeout(resolve, 12));
+        await lease.release();
+        assert.ok(errors.some(args => String(args[0]).includes('renewal failed')));
+        assert.ok(errors.some(args => String(args[0]).includes('completed after renewal failure')));
+    } finally {
+        console.error = originalConsoleError;
+    }
+});
+
+test('cleanup failure is observable but does not replace a successful external operation', async () => {
+    const pool = new ScriptedPool();
+    const originalQuery = pool.query.bind(pool);
+    pool.query = async (text: string, params: unknown[] = []) => {
+        if (/SET released_at/.test(text)) throw new Error('release unavailable');
+        return originalQuery(text, params);
+    };
+    const errors: unknown[][] = [];
+    const originalConsoleError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+        const result = await withStorageAccountOperationLease(
+            pool as any,
+            'account-1',
+            'telegram_upload',
+            async () => 'stored',
+        );
+        assert.equal(result, 'stored');
+        assert.ok(errors.some(args => String(args[0]).includes('release failed')));
+    } finally {
+        console.error = originalConsoleError;
+    }
 });

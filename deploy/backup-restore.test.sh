@@ -13,6 +13,11 @@ if [[ "$1 $2 $3" == "compose ps -q" ]]; then
   echo backend-container
 elif [[ "$1" == inspect && "$2" == --format=* ]]; then
   echo test_file-storage
+elif [[ "$1 $2" == "compose stop" ]]; then
+  if [[ -n "${DOCKER_STOP_SIGNAL:-}" ]]; then
+    kill -s "$DOCKER_STOP_SIGNAL" "$PPID"
+  fi
+  [[ "${DOCKER_STOP_FAIL:-0}" != 1 ]]
 elif [[ "$1 $2 $3" == "compose config --services" ]]; then
   printf 'postgres\nbackend\nfrontend\n'
 elif [[ "$*" == *"psql"* && "$*" == *"pg_database_size"* ]]; then
@@ -63,6 +68,34 @@ space_code=$?
 set -e
 [[ "$space_code" -ne 0 ]]
 ! grep -q 'compose stop .*backend' "$DOCKER_CALLS"
+
+# A stop command may return non-zero after stopping backend; it must still be restarted.
+: > "$DOCKER_CALLS"
+set +e
+(
+  cd "$ROOT"
+  BACKUP_DIR="$TMP/stop-failure" DOCKER_STOP_FAIL=1 ./deploy/backup.sh
+) >/dev/null 2>&1
+stop_code=$?
+set -e
+[[ "$stop_code" -ne 0 ]]
+grep -q 'compose stop .*backend' "$DOCKER_CALLS"
+grep -q 'compose start backend' "$DOCKER_CALLS"
+
+# INT/TERM during stop must also restart backend exactly once.
+for signal in INT TERM; do
+  : > "$DOCKER_CALLS"
+  set +e
+  (
+    cd "$ROOT"
+    BACKUP_DIR="$TMP/stop-signal-$signal" DOCKER_STOP_SIGNAL="$signal" ./deploy/backup.sh
+  ) >/dev/null 2>&1
+  signal_code=$?
+  set -e
+  [[ "$signal_code" -ne 0 ]]
+  grep -q 'compose stop .*backend' "$DOCKER_CALLS"
+  [[ $(grep -c 'compose start backend' "$DOCKER_CALLS") -eq 1 ]]
+done
 
 # Continue assertions for the successful backup above.
 grep -q '^consistency=backend-stopped$' "$BACKUP/manifest.txt"

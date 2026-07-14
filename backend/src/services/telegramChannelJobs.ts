@@ -1,4 +1,5 @@
 import { Api, TelegramClient } from 'telegram';
+import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { getPeerId } from 'telegram/Utils.js';
 import { pool, query } from '../db/index.js';
@@ -17,6 +18,7 @@ import { getSetting } from '../utils/settings.js';
 import { extractFileInfo, getEstimatedFileSize, type TelegramFileInfo } from '../utils/telegramMedia.js';
 import { annotateTelegramMediaGroup } from '../utils/telegramMediaGroup.js';
 import { lockStorageAccountForUse } from './storageAccountLifecycle.js';
+import { resolveTelegramWriteCommittedWithQuery, claimTelegramWriteReconciliations, resolveClaimedTelegramWrite } from './telegramWriteReconciliation.js';
 
 const SUBSCRIPTION_INTERVAL_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_SUBSCRIPTION_INTERVAL_MS || '300000', 10) || 300_000);
 const SUBSCRIPTION_SCAN_LIMIT = Math.max(1, parseInt(process.env.TELEGRAM_SUBSCRIPTION_SCAN_LIMIT || '100', 10) || 100);
@@ -532,6 +534,9 @@ export async function withTelegramDownloadRefLease<T>(
         const result = await operation();
         const settlement = await settleTelegramDownloadRefWithQuery(client.query.bind(client), jobId, ref, 'success');
         if (settlement !== 'settled') throw new TelegramDownloadLeaseLostError(jobId, ref);
+        if (ref.writeOperationId) {
+            await resolveTelegramWriteCommittedWithQuery(client, ref.writeOperationId, ref.leaseToken);
+        }
         await client.query('COMMIT');
         return result;
     } catch (error) {
@@ -988,6 +993,10 @@ async function claimPendingDownloadRefs(jobId: string, limit = TG_JOB_DOWNLOAD_B
                AND j.cancelled_at IS NULL
                AND j.finished_at IS NULL
                AND j.status NOT IN ('cancelled', 'paused', 'cooling')
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = i.id AND r.status = 'pending'
+               )
              ORDER BY i.created_at ASC
              FOR UPDATE OF i SKIP LOCKED
              LIMIT $3
@@ -997,7 +1006,7 @@ async function claimPendingDownloadRefs(jobId: string, limit = TG_JOB_DOWNLOAD_B
              lease_expires_at = NOW() + INTERVAL '10 minutes', updated_at = NOW()
          FROM candidates c
          WHERE i.id = c.id AND i.status = 'pending'
-         RETURNING i.source, i.source_peer, i.origin, i.message_id, i.grouped_id, i.channel_post_id,
+         RETURNING i.id, i.source, i.source_peer, i.origin, i.message_id, i.grouped_id, i.channel_post_id,
                    i.file_name, i.mime_type, i.generated_name, i.total_size, i.folder_override,
                    i.shared_caption, i.group_index, i.group_size, i.lease_token`,
         [jobId, TG_JOB_MAX_ATTEMPTS, limit]
@@ -1006,6 +1015,7 @@ async function claimPendingDownloadRefs(jobId: string, limit = TG_JOB_DOWNLOAD_B
         .filter(row => row.file_name && row.mime_type)
         .map(row => ({
             id: Number(row.message_id),
+            itemId: String(row.id),
             source: row.source_peer || row.source,
             origin: row.origin === 'comment' ? 'comment' : 'channel',
             channelPostId: row.channel_post_id || undefined,
@@ -1170,7 +1180,7 @@ async function downloadClaimedRefs(botClient: TelegramClient, requestMessage: Ap
             if (settlement === 'lease-lost') throw new TelegramDownloadLeaseLostError(jobId, ref);
             await notifyProgress(jobId, options);
         }, jobId, () => ensureJobCanRun(jobId), taskSignal, ownerUserId, storageTarget,
-        (ref, operation) => withTelegramDownloadRefLease(pool as unknown as TelegramTransactionPool, jobId, ref, async () => {
+        (ref, operation) => withTelegramDownloadRefLease(pool as unknown as TelegramTransactionPool, jobId, Object.assign(ref, { jobId }), async () => {
             const persisted = await operation();
             if (taskSignal.aborted) throw new Error('Telegram 下载 lease heartbeat 失败，已停止保存');
             return persisted;
@@ -1669,6 +1679,10 @@ export async function retryTelegramBackgroundJobWithQuery(runQuery: TelegramJobQ
                  completed_at = NULL, last_error = NULL, error = NULL, updated_at = NOW()
              FROM locked_job u
              WHERE i.job_id = u.id AND i.status = 'failed'
+ AND NOT EXISTS (
+     SELECT 1 FROM telegram_write_reconciliations r
+     WHERE r.item_id = i.id AND r.status = 'pending'
+ )
              RETURNING i.job_id
          ), updated_job AS (
              UPDATE telegram_background_jobs j
@@ -1959,6 +1973,10 @@ export async function repairTelegramJobInvariantsWithQuery(runQuery: TelegramJob
              WHERE i.job_id = x.id
                AND i.status = 'downloading'
                AND (i.locked_at IS NULL OR i.locked_at < NOW() - INTERVAL '30 minutes')
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = i.id AND r.status = 'pending'
+               )
              RETURNING i.job_id
          ), repaired AS (
              UPDATE telegram_background_jobs j
@@ -1992,6 +2010,17 @@ export async function recoverInterruptedTelegramJobs(botClient: TelegramClient):
         const lockResult = await client.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-job-recovery')) AS locked`);
         lockHeld = Boolean(lockResult.rows[0]?.locked);
         if (!lockHeld) return;
+        const reconciliationLease = crypto.randomUUID();
+        const pendingWrites = await claimTelegramWriteReconciliations(pool, reconciliationLease, 100);
+        for (const pendingWrite of pendingWrites) {
+            const target = storageManager.getTarget(pendingWrite.provider, pendingWrite.accountId);
+            await resolveClaimedTelegramWrite({
+                db: pool,
+                leaseToken: reconciliationLease,
+                row: pendingWrite,
+                deleteObject: storedPath => target.provider.deleteFile(storedPath),
+            }).catch(error => console.error(`♻️ Telegram write journal resolve 失败: ${pendingWrite.operationId}`, error));
+        }
         const repaired = await repairTelegramJobInvariantsWithQuery();
         if (repaired > 0) console.warn(`♻️ 已修复 ${repaired} 个 Telegram 父子任务状态不一致`);
         await clearExpiredStorageCooldowns();
@@ -2010,6 +2039,10 @@ export async function recoverInterruptedTelegramJobs(botClient: TelegramClient):
              SET status = 'pending', locked_at = NULL, updated_at = NOW()
              WHERE status = 'downloading'
                AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_write_reconciliations r
+                   WHERE r.item_id = telegram_download_items.id AND r.status = 'pending'
+               )
                AND EXISTS (
                    SELECT 1 FROM telegram_background_jobs j
                    WHERE j.id = telegram_download_items.job_id

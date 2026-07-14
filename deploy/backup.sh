@@ -40,17 +40,26 @@ if (( AVAILABLE_BYTES < REQUIRED_BYTES )); then
   exit 1
 fi
 
+restart_backend() {
+  if [[ "$BACKEND_WAS_RUNNING" == true ]]; then
+    BACKEND_WAS_RUNNING=false
+    docker compose start backend
+  fi
+}
+abort_backup() {
+  local signal=$1
+  restart_backend
+  trap - "$signal"
+  kill -s "$signal" "$$"
+}
+trap restart_backend EXIT
+trap 'abort_backup INT' INT
+trap 'abort_backup TERM' TERM
+
 if [[ "$BACKEND_WAS_RUNNING" == true ]]; then
   echo "进入备份维护窗口：停止 backend，阻止上传、删除和后台任务跨越快照边界。"
   docker compose stop -t "${BACKUP_BACKEND_STOP_TIMEOUT:-35}" backend
 fi
-
-restart_backend() {
-  if [[ "$BACKEND_WAS_RUNNING" == true ]]; then
-    docker compose start backend
-  fi
-}
-trap restart_backend EXIT
 
 docker compose exec -T postgres pg_dump -U tgvault -d tgvault -Fc > "$DB_FILE"
 docker run --rm \
@@ -72,8 +81,7 @@ docker run --rm \
 
 chmod -R go-rwx "$DEST"
 restart_backend
-BACKEND_WAS_RUNNING=false
-trap - EXIT
+trap - EXIT INT TERM
 
 echo "备份已创建：$DEST"
 echo "一致性策略：backend-stopped（DB dump 与 /data 归档期间无应用写入）。"
