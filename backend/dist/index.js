@@ -14843,7 +14843,7 @@ router5.post("/maintenance/download-items/cleanup", requireAuth, async (req, res
     const retentionDays = Math.min(365, Math.max(1, parseInt(String(req.body?.retentionDays ?? "7"), 10) || 7));
     const result = await query(
       `DELETE FROM telegram_download_items
-             WHERE status = 'completed'
+             WHERE status IN ('success', 'failed', 'skipped')
                AND COALESCE(completed_at, updated_at, created_at) < NOW() - ($1::int * INTERVAL '1 day')`,
       [retentionDays]
     );
