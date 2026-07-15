@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { FileText, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "./Button";
 import { cn } from "../../lib/utils";
-import { useEffect, useState } from "react";
+import { getUploadQueueOutcome } from "./uploadQueueOutcome";
 
 export interface QueueItem {
     id: string;
@@ -22,16 +22,7 @@ interface UploadQueueModalProps {
 }
 
 export const UploadQueueModal = ({ isOpen, onClose, items, onCancel, onRetry }: UploadQueueModalProps) => {
-    const [isComplete, setIsComplete] = useState(false);
-
-    // 检查是否全部完成
-    useEffect(() => {
-        if (items.length > 0 && items.every(item => item.status === 'completed' || item.status === 'error' || item.status === 'cancelled')) {
-            setIsComplete(true);
-        } else {
-            setIsComplete(false);
-        }
-    }, [items]);
+    const outcome = getUploadQueueOutcome(items);
 
     // 计算总体完成进度
     const completedCount = items.filter(i => i.status === 'completed' || i.status === 'error' || i.status === 'cancelled').length;
@@ -63,11 +54,17 @@ export const UploadQueueModal = ({ isOpen, onClose, items, onCancel, onRetry }: 
                 <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-muted/30">
                     <div className="flex flex-col gap-1">
                         <h3 className="font-semibold text-lg flex items-center gap-2">
-                            {isComplete
+                            {outcome.kind === 'success'
                                 ? <CheckCircle2 className="w-5 h-5 text-green-500" />
+                                : outcome.kind === 'partial'
+                                    ? <AlertCircle className="w-5 h-5 text-amber-500" />
+                                    : outcome.kind === 'failed'
+                                        ? <AlertCircle className="w-5 h-5 text-red-500" />
+                                        : outcome.kind === 'cancelled'
+                                            ? <AlertCircle className="w-5 h-5 text-muted-foreground" />
                                 : <Loader2 className="w-5 h-5 text-primary animate-spin" />
                             }
-                            {isComplete ? "上传完成" : "正在上传..."}
+                            {outcome.title}
                         </h3>
                         <p className="text-xs text-muted-foreground">
                             {completedCount} / {totalCount} 个文件
@@ -141,7 +138,7 @@ export const UploadQueueModal = ({ isOpen, onClose, items, onCancel, onRetry }: 
                 </div>
 
                 {/* 底部 - 只有在全部完成时显示关闭按钮 */}
-                {isComplete && (
+                {outcome.settled && (
                     <div className="p-4 border-t border-border bg-muted/30 flex justify-end">
                         <Button onClick={onClose} className="w-full sm:w-auto min-w-[100px]">
                             关闭

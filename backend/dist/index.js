@@ -1955,7 +1955,7 @@ import fs12 from "fs";
 import path17 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto14 from "crypto";
+import crypto15 from "crypto";
 
 // src/utils/config.ts
 init_secretStore();
@@ -2150,6 +2150,7 @@ import { NewMessage } from "telegram/events/index.js";
 import { Raw } from "telegram/events/index.js";
 import fs11 from "fs";
 import path16 from "path";
+import crypto14 from "crypto";
 
 // src/services/telegramState.ts
 init_db();
@@ -7781,27 +7782,39 @@ async function updateTelegramSubscriptionFolder(userId, selector, folderOverride
   );
   return result.rows[0] || null;
 }
-async function unsubscribeTelegramChannel(userId, selector) {
+async function findTelegramSubscription(userId, selector) {
   const trimmed = selector.trim();
   if (/^[0-9a-f-]{4,36}$/i.test(trimmed)) {
     const subscriptionId = await resolveUniqueTelegramSubscriptionId(userId, trimmed);
     if (!subscriptionId) return null;
     const result2 = await query(
-      `UPDATE telegram_channel_subscriptions
-             SET enabled = false, disabled_reason = COALESCE(disabled_reason, '\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
-             WHERE user_id = $1 AND id = $2::uuid
-             RETURNING source, source_original, title`,
+      `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at, updated_at
+             FROM telegram_channel_subscriptions
+             WHERE user_id = $1 AND id = $2::uuid`,
       [userId, subscriptionId]
     );
     return result2.rows[0] || null;
   }
   const normalizedSelector = /^@|^https?:\/\//i.test(trimmed) || /^-?\d+$/.test(trimmed) ? normalizeSource(trimmed) : trimmed;
   const result = await query(
-    `UPDATE telegram_channel_subscriptions
-         SET enabled = false, disabled_reason = COALESCE(disabled_reason, '\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
+    `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at, updated_at
+         FROM telegram_channel_subscriptions
          WHERE user_id = $1 AND (source = $2 OR source_original = $2)
-         RETURNING source, source_original, title`,
+         ORDER BY updated_at DESC
+         LIMIT 2`,
     [userId, normalizedSelector]
+  );
+  return result.rows.length === 1 ? result.rows[0] : null;
+}
+async function unsubscribeTelegramChannel(userId, selector) {
+  const target = await findTelegramSubscription(userId, selector);
+  if (!target) return null;
+  const result = await query(
+    `UPDATE telegram_channel_subscriptions
+         SET enabled = false, disabled_reason = '\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605', disabled_at = NOW(), updated_at = NOW()
+         WHERE user_id = $1 AND id = $2::uuid
+         RETURNING source, source_original, title`,
+    [userId, target.id]
   );
   return result.rows[0] || null;
 }
@@ -11260,6 +11273,42 @@ async function assertPublicStorageEndpoint(rawUrl) {
   return parsed;
 }
 
+// src/services/telegramSubscriptionVisibility.ts
+var TELEGRAM_USER_CANCELLED_SUBSCRIPTION_REASON = "\u7528\u6237\u624B\u52A8\u53D6\u6D88\u8BA2\u9605";
+function isTelegramSubscriptionVisibleInManagement(row) {
+  return row.enabled || row.disabled_reason !== TELEGRAM_USER_CANCELLED_SUBSCRIPTION_REASON;
+}
+
+// src/services/telegramSubscriptionManagement.ts
+var TELEGRAM_SUBSCRIPTION_PAGE_SIZE = 5;
+function buildTelegramSubscriptionPage(rows, requestedPage = 0) {
+  const totalPages = Math.max(1, Math.ceil(rows.length / TELEGRAM_SUBSCRIPTION_PAGE_SIZE));
+  const page = Math.min(Math.max(0, Math.floor(requestedPage || 0)), totalPages - 1);
+  const startIndex = page * TELEGRAM_SUBSCRIPTION_PAGE_SIZE;
+  return {
+    page,
+    totalPages,
+    startIndex,
+    visibleRows: rows.slice(startIndex, startIndex + TELEGRAM_SUBSCRIPTION_PAGE_SIZE)
+  };
+}
+function parseTelegramSubscriptionCallback(data) {
+  let match = data.match(/^tsub_page_(\d{1,6})$/);
+  if (match) return { kind: "page", page: Number(match[1]) };
+  match = data.match(/^tsub_(view|folder|clear|cancel)_([0-9a-f-]{36})(?:_(\d{1,6}))?$/i);
+  if (match) {
+    return {
+      kind: "action",
+      action: match[1],
+      id: match[2],
+      page: Number(match[3] || 0)
+    };
+  }
+  match = data.match(/^tsub_(confirm|back)_([A-Za-z0-9_-]{1,64})$/);
+  if (match) return { kind: match[1], token: match[2] };
+  return null;
+}
+
 // src/services/telegramBot.ts
 var SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || "./data/telegram_session.txt";
 var client = null;
@@ -11294,6 +11343,8 @@ function buildTelegramCommentsKeyboard() {
   });
 }
 var telegramWizardStates = /* @__PURE__ */ new Map();
+var pendingSubscriptionCancels = /* @__PURE__ */ new Map();
+var TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS = 2 * 60 * 1e3;
 var telegramRateBuckets = /* @__PURE__ */ new Map();
 var TELEGRAM_MESSAGE_RATE_WINDOW_MS = Math.max(1e4, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || "60000", 10) || 6e4);
 var TELEGRAM_MESSAGE_RATE_MAX = Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || "30", 10) || 30);
@@ -11517,8 +11568,8 @@ async function startTelegramWizard(message, senderId, kind) {
   const state = { kind, step: kind === "tg_download" ? "mode" : "source" };
   telegramWizardStates.set(senderId, state);
   if (kind === "tg_sub_manage") {
-    const rows = await listTelegramSubscriptions(senderId, true);
-    await message.reply({ message: buildSubscriptionManagePanel(rows), buttons: buildSubscriptionActionKeyboard(rows) });
+    const rows = await listManageableTelegramSubscriptions(senderId);
+    await message.reply({ message: buildSubscriptionManagePanel(rows, 0), buttons: buildSubscriptionActionKeyboard(rows, 0) });
     return;
   }
   await message.reply({
@@ -11566,23 +11617,15 @@ async function handleTelegramWizardMessage(message, senderId, text) {
     state.source = sourceParts.join(" ") || input;
     if (state.kind === "tg_sub_manage") {
       if (/^\d+$/.test(input)) {
-        const rows = await listTelegramSubscriptions(senderId, true);
+        const rows = await listManageableTelegramSubscriptions(senderId);
         const index = parseInt(input, 10) - 1;
         const target = rows[index];
         if (!target) {
           await message.reply({ message: "\u274C \u6CA1\u6709\u8FD9\u4E2A\u5E8F\u53F7\uFF0C\u8BF7\u56DE\u590D\u5217\u8868\u4E2D\u7684\u5E8F\u53F7\uFF0C\u6216\u53D1\u9001\u9891\u9053\u7528\u6237\u540D/\u94FE\u63A5\u6765\u65B0\u589E\u8BA2\u9605\u3002" });
           return true;
         }
-        const sub = await unsubscribeTelegramChannel(senderId, target.id);
         telegramWizardStates.delete(senderId);
-        const rowsAfterCancel = await listTelegramSubscriptions(senderId, true);
-        await message.reply({
-          message: [
-            sub ? `\u2705 \u5DF2\u53D6\u6D88\u8BA2\u9605 ${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605",
-            "",
-            buildSubscriptionManagePanel(rowsAfterCancel)
-          ].join("\n")
-        });
+        await sendSubscriptionCancelConfirmation(message, senderId, target, 0);
         return true;
       }
       if (!input.startsWith("@") && !/^https?:\/\/t\.me\//i.test(input) && !/^-?\d+$/.test(input)) {
@@ -11616,16 +11659,16 @@ async function handleTelegramWizardMessage(message, senderId, text) {
       try {
         if (state.subscriptionId) {
           const sub = await updateTelegramSubscriptionFolder(senderId, state.subscriptionId, state.customFolder || null);
-          const rowsAfterUpdate = await listTelegramSubscriptions(senderId, true);
+          const rowsAfterUpdate = await listManageableTelegramSubscriptions(senderId);
           await message.reply({
             message: [
               sub ? `\u2705 \u5DF2\u66F4\u65B0\u8BA2\u9605\u76EE\u5F55\uFF1A${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605",
               sub && state.customFolder ? `\u{1F4C1} \u4E13\u5C5E\u76EE\u5F55\uFF1A${state.customFolder}
 ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B",
               "",
-              buildSubscriptionManagePanel(rowsAfterUpdate)
+              buildSubscriptionManagePanel(rowsAfterUpdate, 0)
             ].filter(Boolean).join("\n"),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate)
+            buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, 0)
           });
         } else {
           const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), state.source, state.customFolder);
@@ -11709,21 +11752,31 @@ ${buildPathPreviewLine(state.customFolder)}` : "\u{1F4C1} \u672C\u8BA2\u9605\u4F
   }
   return true;
 }
-function buildSubscriptionActionKeyboard(rows) {
-  if (rows.length === 0) return void 0;
+async function listManageableTelegramSubscriptions(userId) {
+  const rows = await listTelegramSubscriptions(userId, true);
+  return rows.filter(isTelegramSubscriptionVisibleInManagement);
+}
+function buildSubscriptionActionKeyboard(rows, requestedPage = 0) {
+  const page = buildTelegramSubscriptionPage(rows, requestedPage);
+  if (page.visibleRows.length === 0) return void 0;
+  const actionRows = page.visibleRows.flatMap((row, localIndex) => [
+    new Api7.KeyboardButtonRow({
+      buttons: [new Api7.KeyboardButtonCallback({ text: `${page.startIndex + localIndex + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}_${page.page}`) })]
+    }),
+    new Api7.KeyboardButtonRow({
+      buttons: [
+        new Api7.KeyboardButtonCallback({ text: "\u270F\uFE0F \u4FEE\u6539\u4E13\u5C5E\u76EE\u5F55", data: Buffer.from(`tsub_folder_${row.id}_${page.page}`) }),
+        new Api7.KeyboardButtonCallback({ text: "\u{1F9F9} \u6E05\u9664\u76EE\u5F55", data: Buffer.from(`tsub_clear_${row.id}_${page.page}`) }),
+        new Api7.KeyboardButtonCallback({ text: "\u53D6\u6D88\u8BA2\u9605", data: Buffer.from(`tsub_cancel_${row.id}_${page.page}`) })
+      ]
+    })
+  ]);
+  const navigation = [];
+  if (page.page > 0) navigation.push(new Api7.KeyboardButtonCallback({ text: "\u25C0\uFE0F \u4E0A\u4E00\u9875", data: Buffer.from(`tsub_page_${page.page - 1}`) }));
+  navigation.push(new Api7.KeyboardButtonCallback({ text: "\u{1F504} \u5237\u65B0", data: Buffer.from(`tsub_page_${page.page}`) }));
+  if (page.page + 1 < page.totalPages) navigation.push(new Api7.KeyboardButtonCallback({ text: "\u4E0B\u4E00\u9875 \u25B6\uFE0F", data: Buffer.from(`tsub_page_${page.page + 1}`) }));
   return new Api7.ReplyInlineMarkup({
-    rows: rows.slice(0, 8).flatMap((row, index) => [
-      new Api7.KeyboardButtonRow({
-        buttons: [new Api7.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })]
-      }),
-      new Api7.KeyboardButtonRow({
-        buttons: [
-          new Api7.KeyboardButtonCallback({ text: "\u270F\uFE0F \u4FEE\u6539\u4E13\u5C5E\u76EE\u5F55", data: Buffer.from(`tsub_folder_${row.id}`) }),
-          new Api7.KeyboardButtonCallback({ text: "\u{1F9F9} \u6E05\u9664\u76EE\u5F55", data: Buffer.from(`tsub_clear_${row.id}`) }),
-          new Api7.KeyboardButtonCallback({ text: "\u53D6\u6D88\u8BA2\u9605", data: Buffer.from(`tsub_cancel_${row.id}`) })
-        ]
-      })
-    ])
+    rows: [...actionRows, new Api7.KeyboardButtonRow({ buttons: navigation })]
   });
 }
 function buildSubscriptionDisplayLines(row, index) {
@@ -11737,13 +11790,15 @@ function buildSubscriptionDisplayLines(row, index) {
     !row.enabled && row.disabled_at ? `   \u6682\u505C\u65F6\u95F4\uFF1A${new Date(row.disabled_at).toLocaleString("zh-CN", { hour12: false })}` : null
   ].filter(Boolean).join("\n");
 }
-function buildSubscriptionManagePanel(rows) {
+function buildSubscriptionManagePanel(rows, requestedPage = 0) {
+  const page = buildTelegramSubscriptionPage(rows, requestedPage);
   return [
     "\u{1F4E1} **\u9891\u9053\u8BA2\u9605\u7BA1\u7406**",
+    ...page.totalPages > 1 ? [`\u7B2C ${page.page + 1}/${page.totalPages} \u9875 \xB7 \u5171 ${rows.length} \u4E2A\u8BA2\u9605`] : [],
     "",
-    rows.length > 0 ? rows.map((row, index) => buildSubscriptionDisplayLines(row, index)).join("\n") : "\u5F53\u524D\u6CA1\u6709\u8BA2\u9605\u3002",
+    page.visibleRows.length > 0 ? page.visibleRows.map((row, index) => buildSubscriptionDisplayLines(row, page.startIndex + index)).join("\n") : "\u5F53\u524D\u6CA1\u6709\u8BA2\u9605\u3002",
     "",
-    rows.length > 0 ? "\u53EF\u76F4\u63A5\u70B9\u51FB\u8BA2\u9605\u4E0B\u65B9\u6309\u94AE\u4FEE\u6539/\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55\u6216\u53D6\u6D88\u8BA2\u9605\uFF1B\u5DF2\u6682\u505C\u8BA2\u9605\u4F1A\u4FDD\u7559\u63D0\u9192\uFF0C\u91CD\u65B0\u6DFB\u52A0\u540C\u4E00\u6765\u6E90\u53EF\u6062\u590D\u3002" : "\u56DE\u590D\u9891\u9053\u7528\u6237\u540D\u6216\u94FE\u63A5\u53EF\u65B0\u589E\u8BA2\u9605\u3002",
+    rows.length > 0 ? "\u53EF\u76F4\u63A5\u70B9\u51FB\u8BA2\u9605\u4E0B\u65B9\u6309\u94AE\u4FEE\u6539/\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55\u6216\u53D6\u6D88\u8BA2\u9605\uFF1B\u7CFB\u7EDF\u81EA\u52A8\u6682\u505C\u7684\u8BA2\u9605\u4F1A\u4FDD\u7559\u63D0\u9192\uFF0C\u91CD\u65B0\u6DFB\u52A0\u540C\u4E00\u6765\u6E90\u53EF\u6062\u590D\u3002" : "\u56DE\u590D\u9891\u9053\u7528\u6237\u540D\u6216\u94FE\u63A5\u53EF\u65B0\u589E\u8BA2\u9605\u3002",
     "\u56DE\u590D\u9891\u9053\u7528\u6237\u540D\u6216\u94FE\u63A5\u4E5F\u53EF\u65B0\u589E\u8BA2\u9605\u3002",
     "\u4F8B\u5982\uFF1A`@channel_username`\u3001`https://t.me/channel_username` \u6216\u5DF2\u52A0\u5165\u7684 `https://t.me/+hash` \u79C1\u5BC6\u94FE\u63A5",
     "",
@@ -11762,6 +11817,69 @@ function formatSubscriptionList(rows) {
       `   ID: ${String(row.id).slice(0, 8)}`
     ].join("\n"))
   ].join("\n");
+}
+function telegramSubscriptionPeerKey(peer) {
+  const value = peer?.userId || peer?.chatId || peer?.channelId;
+  return String(value?.toString?.() || value || peer?.toString?.() || "").replace(/^-100/, "").replace(/^-/, "");
+}
+function buildSubscriptionCancelConfirm(target, token) {
+  return {
+    text: [
+      "\u26A0\uFE0F **\u786E\u8BA4\u53D6\u6D88\u8FD9\u4E2A\u9891\u9053\u8BA2\u9605\uFF1F**",
+      "",
+      `\u{1F4CC} ${target.title || target.source_original || target.source}`,
+      `\u6765\u6E90\uFF1A${target.source_original || target.source}`,
+      target.folder_override ? `\u4E13\u5C5E\u76EE\u5F55\uFF1A${target.folder_override}` : "\u4FDD\u5B58\u7B56\u7565\uFF1A\u9ED8\u8BA4\u81EA\u52A8\u5206\u7C7B",
+      `\u5F53\u524D\u6E38\u6807\uFF1Alast_id=${target.last_message_id || 0}`,
+      "",
+      "\u786E\u8BA4\u540E\u4F1A\u505C\u6B62\u81EA\u52A8\u540C\u6B65\uFF0C\u5E76\u4ECE\u8BA2\u9605\u7BA1\u7406\u5217\u8868\u4E2D\u79FB\u9664\uFF1B\u5DF2\u4FDD\u5B58\u7684\u6587\u4EF6\u4E0D\u4F1A\u5220\u9664\u3002"
+    ].join("\n"),
+    buttons: new Api7.ReplyInlineMarkup({
+      rows: [new Api7.KeyboardButtonRow({
+        buttons: [
+          new Api7.KeyboardButtonCallback({ text: "\u26A0\uFE0F \u786E\u8BA4\u53D6\u6D88", data: Buffer.from(`tsub_confirm_${token}`) }),
+          new Api7.KeyboardButtonCallback({ text: "\u8FD4\u56DE\u8BA2\u9605\u5217\u8868", data: Buffer.from(`tsub_back_${token}`) })
+        ]
+      })]
+    })
+  };
+}
+async function sendSubscriptionCancelConfirmation(message, userId, target, page) {
+  const token = crypto14.randomBytes(12).toString("base64url");
+  const confirm = buildSubscriptionCancelConfirm(target, token);
+  const sent = await message.reply({ message: confirm.text, buttons: confirm.buttons });
+  const messageId = Number(sent.id);
+  pendingSubscriptionCancels.set(token, {
+    userId,
+    peerKey: telegramSubscriptionPeerKey(sent.peerId || message.peerId),
+    messageId,
+    subscriptionId: String(target.id),
+    page,
+    expiresAt: Date.now() + TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS
+  });
+}
+async function editSubscriptionCancelConfirmation(update, userId, target, page) {
+  const token = crypto14.randomBytes(12).toString("base64url");
+  pendingSubscriptionCancels.set(token, {
+    userId,
+    peerKey: telegramSubscriptionPeerKey(update.peer),
+    messageId: Number(update.msgId),
+    subscriptionId: String(target.id),
+    page,
+    expiresAt: Date.now() + TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS
+  });
+  const confirm = buildSubscriptionCancelConfirm(target, token);
+  await client.editMessage(update.peer, { message: Number(update.msgId), text: confirm.text, buttons: confirm.buttons });
+}
+function getPendingSubscriptionCancel(update, token, userId) {
+  const pending = pendingSubscriptionCancels.get(token);
+  if (!pending) return null;
+  if (pending.expiresAt < Date.now()) {
+    pendingSubscriptionCancels.delete(token);
+    return null;
+  }
+  if (pending.userId !== userId || pending.peerKey !== telegramSubscriptionPeerKey(update.peer) || pending.messageId !== Number(update.msgId)) return null;
+  return pending;
 }
 function generatePasswordKeyboard(currentLength) {
   const display = "\u25CF".repeat(currentLength) + "-".repeat(Math.max(0, 4 - currentLength));
@@ -12054,16 +12172,65 @@ async function handleTelegramSubscriptionCallback(update, data) {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
     return;
   }
-  const match = data.match(/^tsub_(view|folder|clear|cancel)_(.+)$/);
-  if (!match) return;
-  const [, action, id] = match;
-  const rows = await listTelegramSubscriptions(userId, true);
-  const target = rows.find((row) => String(row.id) === id);
+  const parsed = parseTelegramSubscriptionCallback(data);
+  if (!parsed) {
+    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u6309\u94AE\u65E0\u6548\u6216\u5DF2\u8FC7\u671F", alert: true }));
+    return;
+  }
+  const rows = await listManageableTelegramSubscriptions(userId);
+  if (parsed.kind === "page") {
+    const page = buildTelegramSubscriptionPage(rows, parsed.page);
+    await client.editMessage(update.peer, {
+      message: update.msgId,
+      text: buildSubscriptionManagePanel(rows, page.page),
+      buttons: buildSubscriptionActionKeyboard(rows, page.page)
+    });
+    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u5217\u8868\u5DF2\u5237\u65B0" }));
+    return;
+  }
+  if (parsed.kind === "confirm" || parsed.kind === "back") {
+    const pending = getPendingSubscriptionCancel(update, parsed.token, userId);
+    if (!pending) {
+      await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u53D6\u6D88\u786E\u8BA4\u65E0\u6548\u6216\u5DF2\u8FC7\u671F\uFF0C\u8BF7\u5237\u65B0\u8BA2\u9605\u5217\u8868", alert: true }));
+      return;
+    }
+    pendingSubscriptionCancels.delete(parsed.token);
+    if (parsed.kind === "confirm") {
+      const target2 = rows.find((row) => String(row.id) === pending.subscriptionId);
+      const sub = target2 ? await unsubscribeTelegramChannel(userId, pending.subscriptionId) : null;
+      const rowsAfterCancel = await listManageableTelegramSubscriptions(userId);
+      const page2 = buildTelegramSubscriptionPage(rowsAfterCancel, pending.page);
+      await client.editMessage(update.peer, {
+        message: update.msgId,
+        text: [
+          sub ? `\u2705 \u5DF2\u53D6\u6D88\u8BA2\u9605 ${sub.title || sub.source}` : "\u274C \u8BA2\u9605\u4E0D\u5B58\u5728\u6216\u5DF2\u7ECF\u53D6\u6D88",
+          "",
+          buildSubscriptionManagePanel(rowsAfterCancel, page2.page)
+        ].join("\n"),
+        buttons: buildSubscriptionActionKeyboard(rowsAfterCancel, page2.page)
+      });
+      await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: sub ? "\u5DF2\u53D6\u6D88\u8BA2\u9605" : "\u8BA2\u9605\u4E0D\u5B58\u5728\u6216\u5DF2\u7ECF\u53D6\u6D88", alert: true }));
+      return;
+    }
+    const page = buildTelegramSubscriptionPage(rows, pending.page);
+    await client.editMessage(update.peer, {
+      message: update.msgId,
+      text: buildSubscriptionManagePanel(rows, page.page),
+      buttons: buildSubscriptionActionKeyboard(rows, page.page)
+    });
+    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u8FD4\u56DE\u8BA2\u9605\u5217\u8868" }));
+    return;
+  }
+  if (parsed.kind !== "action") {
+    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u6309\u94AE\u65E0\u6548\u6216\u5DF2\u8FC7\u671F", alert: true }));
+    return;
+  }
+  const target = rows.find((row) => String(row.id) === parsed.id);
   if (!target) {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BA2\u9605\u4E0D\u5B58\u5728\u6216\u5DF2\u53D6\u6D88", alert: true }));
     return;
   }
-  if (action === "view") {
+  if (parsed.action === "view") {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({
       queryId: update.queryId,
       message: target.folder_override ? `\u4E13\u5C5E\u76EE\u5F55\uFF1A${target.folder_override}` : "\u5F53\u524D\u4F7F\u7528\u9ED8\u8BA4\u4FDD\u5B58\u8DEF\u5F84",
@@ -12071,7 +12238,7 @@ async function handleTelegramSubscriptionCallback(update, data) {
     }));
     return;
   }
-  if (action === "folder") {
+  if (parsed.action === "folder") {
     const state = {
       kind: "tg_sub_manage",
       step: "path",
@@ -12085,26 +12252,21 @@ async function handleTelegramSubscriptionCallback(update, data) {
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BF7\u53D1\u9001\u65B0\u7684\u4E13\u5C5E\u76EE\u5F55" }));
     return;
   }
-  if (action === "clear") {
-    await updateTelegramSubscriptionFolder(userId, id, null);
-    const rowsAfterClear = await listTelegramSubscriptions(userId, true);
+  if (parsed.action === "clear") {
+    await updateTelegramSubscriptionFolder(userId, parsed.id, null);
+    const rowsAfterClear = await listManageableTelegramSubscriptions(userId);
+    const page = buildTelegramSubscriptionPage(rowsAfterClear, parsed.page);
     await client.editMessage(update.peer, {
       message: update.msgId,
-      text: buildSubscriptionManagePanel(rowsAfterClear),
-      buttons: buildSubscriptionActionKeyboard(rowsAfterClear)
+      text: buildSubscriptionManagePanel(rowsAfterClear, page.page),
+      buttons: buildSubscriptionActionKeyboard(rowsAfterClear, page.page)
     });
     await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u6E05\u9664\u4E13\u5C5E\u76EE\u5F55" }));
     return;
   }
-  if (action === "cancel") {
-    await unsubscribeTelegramChannel(userId, id);
-    const rowsAfterCancel = await listTelegramSubscriptions(userId, true);
-    await client.editMessage(update.peer, {
-      message: update.msgId,
-      text: buildSubscriptionManagePanel(rowsAfterCancel),
-      buttons: buildSubscriptionActionKeyboard(rowsAfterCancel)
-    });
-    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u5DF2\u53D6\u6D88\u8BA2\u9605", alert: true }));
+  if (parsed.action === "cancel") {
+    await editSubscriptionCancelConfirmation(update, userId, target, parsed.page);
+    await client.invoke(new Api7.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: "\u8BF7\u786E\u8BA4\u662F\u5426\u53D6\u6D88\u8BA2\u9605" }));
   }
 }
 async function initTelegramBot() {
@@ -12390,7 +12552,7 @@ ${buildPathPreviewLine(appliedPath.folder)}
             await message.reply({ message: MSG.AUTH_REQUIRED });
             return;
           }
-          const rows = await listTelegramSubscriptions(senderId, true);
+          const rows = await listManageableTelegramSubscriptions(senderId);
           await message.reply({ message: formatSubscriptionList(rows) });
           return;
         }
@@ -12424,8 +12586,12 @@ ${buildPathPreviewLine(appliedPath.folder)}
             await message.reply({ message: "\u274C \u7528\u6CD5\uFF1A/tg_unsub @\u9891\u9053 \u6216 /tg_unsub <\u8BA2\u9605ID\u524D\u7F00>" });
             return;
           }
-          const sub = await unsubscribeTelegramChannel(senderId, selector);
-          await message.reply({ message: sub ? `\u2705 \u5DF2\u53D6\u6D88\u8BA2\u9605 ${sub.title || sub.source}` : "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605" });
+          const target = await findTelegramSubscription(senderId, selector);
+          if (!target || !isTelegramSubscriptionVisibleInManagement(target)) {
+            await message.reply({ message: "\u274C \u672A\u627E\u5230\u8BE5\u8BA2\u9605" });
+            return;
+          }
+          await sendSubscriptionCancelConfirmation(message, senderId, target, 0);
           return;
         }
         if (text.startsWith("/tg_download ") || text.startsWith("/tg_dl ")) {
@@ -13068,7 +13234,7 @@ function generateSignature(fileId, typeOrExpires, expires) {
     throw new Error("Missing signed URL expiration timestamp");
   }
   const data = `${fileId}:${type}:${expiresTimestamp}`;
-  return crypto14.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
+  return crypto15.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -13096,7 +13262,7 @@ function verifySignedUrl(req) {
   try {
     const received = Buffer.from(sign, "hex");
     const expected = Buffer.from(expectedSign, "hex");
-    if (received.length !== expected.length || !crypto14.timingSafeEqual(received, expected)) {
+    if (received.length !== expected.length || !crypto15.timingSafeEqual(received, expected)) {
       console.log("[SignedURL] Signature mismatch:", { id, type });
       return false;
     }
@@ -13990,9 +14156,9 @@ function logOperationalEvent(event, requestId, data) {
 }
 
 // src/services/batchDeleteConfirmation.ts
-import crypto15 from "node:crypto";
+import crypto16 from "node:crypto";
 function hashAuthToken(token) {
-  return crypto15.createHash("sha256").update(token).digest("hex");
+  return crypto16.createHash("sha256").update(token).digest("hex");
 }
 function normalizeFileIds(fileIds) {
   return [...new Set(fileIds)].sort();
@@ -14005,7 +14171,7 @@ var BatchDeleteConfirmationStore = class {
   constructor(options = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.tokenFactory = options.tokenFactory ?? (() => crypto15.randomBytes(24).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto16.randomBytes(24).toString("base64url"));
   }
   issue(input) {
     const confirmationToken = this.tokenFactory();
@@ -14503,12 +14669,12 @@ import os3 from "os";
 import path19 from "path";
 import fs14 from "fs";
 import axios3 from "axios";
-import crypto17 from "crypto";
+import crypto18 from "crypto";
 
 // src/services/oauthFlowStore.ts
 init_db();
 init_credentialCrypto();
-import crypto16 from "node:crypto";
+import crypto17 from "node:crypto";
 var OAuthFlowError = class extends Error {
   code = "OAUTH_FLOW_INVALID";
   constructor() {
@@ -14517,7 +14683,7 @@ var OAuthFlowError = class extends Error {
   }
 };
 function sha256(value) {
-  return crypto16.createHash("sha256").update(value).digest("hex");
+  return crypto17.createHash("sha256").update(value).digest("hex");
 }
 function parsePendingConfig(value) {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -14534,8 +14700,8 @@ var OAuthFlowStore = class {
     this.db = options.db ?? pool;
     this.ttlMs = options.ttlMs ?? 10 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.stateFactory = options.stateFactory ?? (() => crypto16.randomBytes(32).toString("base64url"));
-    this.nonceFactory = options.nonceFactory ?? (() => crypto16.randomBytes(24).toString("base64url"));
+    this.stateFactory = options.stateFactory ?? (() => crypto17.randomBytes(32).toString("base64url"));
+    this.nonceFactory = options.nonceFactory ?? (() => crypto17.randomBytes(24).toString("base64url"));
   }
   async ensureSchema() {
     if (!this.schemaPromise) {
@@ -14688,7 +14854,7 @@ var checkDiskSpace2 = checkDiskSpaceModule2.default || checkDiskSpaceModule2;
 var router5 = Router5();
 var UPLOAD_DIR6 = process.env.UPLOAD_DIR || "./data/uploads";
 function sendOAuthSuccessPage(res, input) {
-  const nonce = crypto17.randomBytes(16).toString("base64");
+  const nonce = crypto18.randomBytes(16).toString("base64");
   res.setHeader("Content-Security-Policy", [
     "default-src 'self'",
     "style-src 'unsafe-inline'",
@@ -15167,7 +15333,7 @@ var storage_default = router5;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router6 } from "express";
-import crypto20 from "node:crypto";
+import crypto21 from "node:crypto";
 import fs16 from "node:fs";
 import fsPromises2 from "node:fs/promises";
 import path21 from "node:path";
@@ -15177,7 +15343,7 @@ import checkDiskSpaceModule3 from "check-disk-space";
 init_storage();
 
 // src/services/chunkUploadReconciliation.ts
-import crypto18 from "node:crypto";
+import crypto19 from "node:crypto";
 async function claimChunkReconciliations(db, leaseToken, limit = 100) {
   const result = await db.query(
     `WITH candidates AS (
@@ -15262,7 +15428,7 @@ async function resolveClaimedChunkReconciliation(input) {
   return resolved ? "resolved" : "pending";
 }
 async function beginChunkCompletionReconciliation(db, input) {
-  const operationId = crypto18.randomUUID();
+  const operationId = crypto19.randomUUID();
   const result = await db.query(
     `INSERT INTO chunk_upload_reconciliations
          (operation_id, upload_id, completion_token, provider, account_id, object_state, index_state, reason, status, created_at, updated_at)
@@ -15352,7 +15518,7 @@ async function compensateChunkCompletionFailure(input) {
 }
 
 // src/services/chunkUploadSessions.ts
-import crypto19 from "node:crypto";
+import crypto20 from "node:crypto";
 import fs15 from "node:fs";
 import fsPromises from "node:fs/promises";
 import path20 from "node:path";
@@ -15365,9 +15531,9 @@ var ChunkUploadProtocolError = class extends Error {
 };
 async function writeChunkAtomically(input) {
   await fsPromises.mkdir(path20.dirname(input.finalPath), { recursive: true });
-  const committedPath = `${input.finalPath}.${crypto19.randomUUID()}.chunk`;
+  const committedPath = `${input.finalPath}.${crypto20.randomUUID()}.chunk`;
   const temporaryPath = `${committedPath}.part`;
-  const hash = crypto19.createHash("sha256");
+  const hash = crypto20.createHash("sha256");
   let size = 0;
   const counter = new (await import("node:stream")).Transform({
     transform(chunk, _encoding, callback) {
@@ -15397,7 +15563,7 @@ async function verifyChunkIntegrity(chunk, expectedDirectory, maxChunkBytes) {
   if (stat.size !== chunk.size || stat.size < 1 || stat.size > maxChunkBytes) {
     throw new ChunkUploadProtocolError("ChunkSizeMismatchError", `\u5206\u5757 ${chunk.index} \u5927\u5C0F\u65E0\u6548`);
   }
-  const hash = crypto19.createHash("sha256");
+  const hash = crypto20.createHash("sha256");
   await pipeline(fs15.createReadStream(chunkPath), new (await import("node:stream")).Writable({
     write(buffer, _encoding, callback) {
       hash.update(buffer);
@@ -15864,7 +16030,7 @@ var chunkStore = new ChunkUploadSessionStore(chunkRepository, {
   getDiskFreeBytes: async () => (await checkDiskSpace3(path21.resolve(CHUNK_DIR))).free
 });
 var runChunkMaintenance = async () => {
-  const reconciliationLease = crypto20.randomUUID();
+  const reconciliationLease = crypto21.randomUUID();
   const pending = await claimChunkReconciliations(pool, reconciliationLease, 100);
   for (const row of pending) {
     const target = storageManager.getTarget(row.provider, row.accountId);
@@ -15895,7 +16061,7 @@ router6.use(rateLimit3({
 function ownerId(req) {
   const token = getAuthToken(req);
   if (!token) throw new ChunkUploadProtocolError("ChunkOwnerError", "\u7F3A\u5C11\u8BA4\u8BC1\u4F1A\u8BDD");
-  return crypto20.createHash("sha256").update(token).digest("hex");
+  return crypto21.createHash("sha256").update(token).digest("hex");
 }
 function decodeFilename2(filename) {
   try {
@@ -15943,7 +16109,7 @@ router6.post("/init", async (req, res) => {
     const target = storageManager.getActiveTarget();
     const now = /* @__PURE__ */ new Date();
     const session = {
-      uploadId: crypto20.randomUUID(),
+      uploadId: crypto21.randomUUID(),
       ownerId: ownerId(req),
       filename: decodeFilename2(filename).slice(0, 255),
       mimeType: mimeType.slice(0, 100),
@@ -16020,7 +16186,7 @@ router6.post("/chunk", async (req, res) => {
   }
 });
 async function mergeChunks(uploadId, chunks, targetPath, expectedBytes) {
-  const temporary = `${targetPath}.${crypto20.randomUUID()}.part`;
+  const temporary = `${targetPath}.${crypto21.randomUUID()}.part`;
   await fsPromises2.mkdir(path21.dirname(targetPath), { recursive: true });
   const output = fs16.createWriteStream(temporary, { flags: "wx" });
   try {
@@ -16079,7 +16245,7 @@ router6.post("/complete", async (req, res) => {
     if (current.status === "failed") {
       return res.status(409).json({ error: "\u4E0A\u6B21\u5B8C\u6210\u5931\u8D25\uFF0C\u8BF7\u5148\u91CD\u8BD5\u4E0A\u4F20\u4F1A\u8BDD", retryable: true, lastError: current.lastError });
     }
-    token = crypto20.randomUUID();
+    token = crypto21.randomUUID();
     const claim = await chunkStore.claimCompletion(uploadId, owner, token, new Date(Date.now() + COMPLETION_LEASE_MS));
     if (!claim) return res.status(409).json({ error: "\u4E0A\u4F20\u672A\u5B8C\u6574\u3001\u5DF2\u7531\u5176\u4ED6\u8BF7\u6C42\u5904\u7406\u6216\u72B6\u6001\u4E0D\u53EF\u5B8C\u6210" });
     completionHeartbeat = setInterval(() => {
@@ -16289,7 +16455,7 @@ var chunkedUpload_default = router6;
 // src/index.ts
 init_db();
 import helmet from "helmet";
-import crypto21 from "node:crypto";
+import crypto22 from "node:crypto";
 dotenv3.config();
 var app = express();
 app.set("trust proxy", process.env.TRUST_PROXY || "loopback");
@@ -16331,7 +16497,7 @@ app.use(cors({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
 app.use((req, res, next) => {
   const provided = normalizeRequestId(req.headers["x-request-id"]);
-  const requestId = provided || crypto21.randomUUID();
+  const requestId = provided || crypto22.randomUUID();
   res.locals.requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
   next();

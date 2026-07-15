@@ -784,16 +784,15 @@ export async function updateTelegramSubscriptionFolder(userId: number, selector:
     return result.rows[0] || null;
 }
 
-export async function unsubscribeTelegramChannel(userId: number, selector: string) {
+export async function findTelegramSubscription(userId: number, selector: string) {
     const trimmed = selector.trim();
     if (/^[0-9a-f-]{4,36}$/i.test(trimmed)) {
         const subscriptionId = await resolveUniqueTelegramSubscriptionId(userId, trimmed);
         if (!subscriptionId) return null;
         const result = await query(
-            `UPDATE telegram_channel_subscriptions
-             SET enabled = false, disabled_reason = COALESCE(disabled_reason, '用户手动取消订阅'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
-             WHERE user_id = $1 AND id = $2::uuid
-             RETURNING source, source_original, title`,
+            `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at, updated_at
+             FROM telegram_channel_subscriptions
+             WHERE user_id = $1 AND id = $2::uuid`,
             [userId, subscriptionId],
         );
         return result.rows[0] || null;
@@ -802,11 +801,25 @@ export async function unsubscribeTelegramChannel(userId: number, selector: strin
         ? normalizeSource(trimmed)
         : trimmed;
     const result = await query(
-        `UPDATE telegram_channel_subscriptions
-         SET enabled = false, disabled_reason = COALESCE(disabled_reason, '用户手动取消订阅'), disabled_at = COALESCE(disabled_at, NOW()), updated_at = NOW()
+        `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at, updated_at
+         FROM telegram_channel_subscriptions
          WHERE user_id = $1 AND (source = $2 OR source_original = $2)
-         RETURNING source, source_original, title`,
+         ORDER BY updated_at DESC
+         LIMIT 2`,
         [userId, normalizedSelector]
+    );
+    return result.rows.length === 1 ? result.rows[0] : null;
+}
+
+export async function unsubscribeTelegramChannel(userId: number, selector: string) {
+    const target = await findTelegramSubscription(userId, selector);
+    if (!target) return null;
+    const result = await query(
+        `UPDATE telegram_channel_subscriptions
+         SET enabled = false, disabled_reason = '用户手动取消订阅', disabled_at = NOW(), updated_at = NOW()
+         WHERE user_id = $1 AND id = $2::uuid
+         RETURNING source, source_original, title`,
+        [userId, target.id],
     );
     return result.rows[0] || null;
 }

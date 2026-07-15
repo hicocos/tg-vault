@@ -4,6 +4,7 @@ import { NewMessage, NewMessageEvent } from 'telegram/events/index.js';
 import { Raw } from 'telegram/events/index.js';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { storageManager } from '../services/storage.js';
 import { authenticatedUsers, passwordInputState, isAuthenticatedAsync, loadAuthenticatedUsers, persistAuthenticatedUser, userStates, TelegramUserState } from './telegramState.js';
 import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../utils/security.js';
@@ -13,6 +14,7 @@ import { handleYtDlpCommand } from './ytDlpDownload.js';
 import {
     enqueueTelegramDateDownload,
     enqueueTelegramTagDownload,
+    findTelegramSubscription,
     listTelegramSubscriptions,
     type TelegramJobProgressSummary,
     startTelegramJobRecoveryWorker,
@@ -28,6 +30,8 @@ import { query } from '../db/index.js';
 import { getConfiguredTelegramAllowedUsers, addTelegramAllowedUser, countAuthenticatedTelegramUsers, shouldAutoAllowFirstTelegramUser, verifyTelegramPin } from '../utils/authSettings.js';
 import { assertPublicHttpUrl } from '../utils/networkSecurity.js';
 import { rememberRecentTelegramPathPersistent, buildPathPreviewLine, applyPendingTelegramPathInputPersistent, getPendingTelegramPathInput, clearPendingTelegramPathInput } from '../utils/telegramPathSettings.js';
+import { isTelegramSubscriptionVisibleInManagement } from './telegramSubscriptionVisibility.js';
+import { buildTelegramSubscriptionPage, parseTelegramSubscriptionCallback } from './telegramSubscriptionManagement.js';
 
 // Session File Path
 const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || './data/telegram_session.txt';
@@ -85,6 +89,15 @@ function buildTelegramCommentsKeyboard(): Api.ReplyInlineMarkup {
 }
 
 const telegramWizardStates = new Map<number, TelegramWizardState>();
+const pendingSubscriptionCancels = new Map<string, {
+    userId: number;
+    peerKey: string;
+    messageId: number;
+    subscriptionId: string;
+    page: number;
+    expiresAt: number;
+}>();
+const TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS = 2 * 60 * 1000;
 
 interface RateBucket {
     windowStartedAt: number;
@@ -376,8 +389,8 @@ async function startTelegramWizard(message: Api.Message, senderId: number, kind:
     const state: TelegramWizardState = { kind, step: kind === 'tg_download' ? 'mode' : 'source' };
     telegramWizardStates.set(senderId, state);
     if (kind === 'tg_sub_manage') {
-        const rows = await listTelegramSubscriptions(senderId, true);
-        await message.reply({ message: buildSubscriptionManagePanel(rows), buttons: buildSubscriptionActionKeyboard(rows) });
+        const rows = await listManageableTelegramSubscriptions(senderId);
+        await message.reply({ message: buildSubscriptionManagePanel(rows, 0), buttons: buildSubscriptionActionKeyboard(rows, 0) });
         return;
     }
     await message.reply({
@@ -429,23 +442,15 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
         state.source = sourceParts.join(' ') || input;
         if (state.kind === 'tg_sub_manage') {
             if (/^\d+$/.test(input)) {
-                const rows = await listTelegramSubscriptions(senderId, true);
+                const rows = await listManageableTelegramSubscriptions(senderId);
                 const index = parseInt(input, 10) - 1;
                 const target = rows[index];
                 if (!target) {
                     await message.reply({ message: '❌ 没有这个序号，请回复列表中的序号，或发送频道用户名/链接来新增订阅。' });
                     return true;
                 }
-                const sub = await unsubscribeTelegramChannel(senderId, target.id);
                 telegramWizardStates.delete(senderId);
-                const rowsAfterCancel = await listTelegramSubscriptions(senderId, true);
-                await message.reply({
-                    message: [
-                        sub ? `✅ 已取消订阅 ${sub.title || sub.source}` : '❌ 未找到该订阅',
-                        '',
-                        buildSubscriptionManagePanel(rowsAfterCancel),
-                    ].join('\n')
-                });
+                await sendSubscriptionCancelConfirmation(message, senderId, target, 0);
                 return true;
             }
 
@@ -481,15 +486,15 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
             try {
                 if (state.subscriptionId) {
                     const sub = await updateTelegramSubscriptionFolder(senderId, state.subscriptionId, state.customFolder || null);
-                    const rowsAfterUpdate = await listTelegramSubscriptions(senderId, true);
+                    const rowsAfterUpdate = await listManageableTelegramSubscriptions(senderId);
                     await message.reply({
                         message: [
                             sub ? `✅ 已更新订阅目录：${sub.title || sub.source}` : '❌ 未找到该订阅',
                             sub && state.customFolder ? `📁 专属目录：${state.customFolder}\n${buildPathPreviewLine(state.customFolder)}` : '📁 保存策略：默认自动分类',
                             '',
-                            buildSubscriptionManagePanel(rowsAfterUpdate),
+                            buildSubscriptionManagePanel(rowsAfterUpdate, 0),
                         ].filter(Boolean).join('\n'),
-                        buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate),
+                        buttons: buildSubscriptionActionKeyboard(rowsAfterUpdate, 0),
                     });
                 } else {
                     const sub = await subscribeTelegramChannel(senderId, message.chatId?.toString(), state.source!, state.customFolder);
@@ -580,21 +585,32 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
     return true;
 }
 
-function buildSubscriptionActionKeyboard(rows: any[]): Api.ReplyInlineMarkup | undefined {
-    if (rows.length === 0) return undefined;
+async function listManageableTelegramSubscriptions(userId: number): Promise<any[]> {
+    const rows = await listTelegramSubscriptions(userId, true);
+    return rows.filter(isTelegramSubscriptionVisibleInManagement);
+}
+
+function buildSubscriptionActionKeyboard(rows: any[], requestedPage = 0): Api.ReplyInlineMarkup | undefined {
+    const page = buildTelegramSubscriptionPage(rows, requestedPage);
+    if (page.visibleRows.length === 0) return undefined;
+    const actionRows = page.visibleRows.flatMap((row, localIndex) => [
+        new Api.KeyboardButtonRow({
+            buttons: [new Api.KeyboardButtonCallback({ text: `${page.startIndex + localIndex + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}_${page.page}`) })],
+        }),
+        new Api.KeyboardButtonRow({
+            buttons: [
+                new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}_${page.page}`) }),
+                new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}_${page.page}`) }),
+                new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}_${page.page}`) }),
+            ],
+        }),
+    ]);
+    const navigation: Api.TypeKeyboardButton[] = [];
+    if (page.page > 0) navigation.push(new Api.KeyboardButtonCallback({ text: '◀️ 上一页', data: Buffer.from(`tsub_page_${page.page - 1}`) }));
+    navigation.push(new Api.KeyboardButtonCallback({ text: '🔄 刷新', data: Buffer.from(`tsub_page_${page.page}`) }));
+    if (page.page + 1 < page.totalPages) navigation.push(new Api.KeyboardButtonCallback({ text: '下一页 ▶️', data: Buffer.from(`tsub_page_${page.page + 1}`) }));
     return new Api.ReplyInlineMarkup({
-        rows: rows.slice(0, 8).flatMap((row, index) => [
-            new Api.KeyboardButtonRow({
-                buttons: [new Api.KeyboardButtonCallback({ text: `${index + 1}. ${row.title || row.source}`, data: Buffer.from(`tsub_view_${row.id}`) })],
-            }),
-            new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: '✏️ 修改专属目录', data: Buffer.from(`tsub_folder_${row.id}`) }),
-                    new Api.KeyboardButtonCallback({ text: '🧹 清除目录', data: Buffer.from(`tsub_clear_${row.id}`) }),
-                    new Api.KeyboardButtonCallback({ text: '取消订阅', data: Buffer.from(`tsub_cancel_${row.id}`) }),
-                ],
-            }),
-        ]),
+        rows: [...actionRows, new Api.KeyboardButtonRow({ buttons: navigation })],
     });
 }
 
@@ -612,15 +628,17 @@ function buildSubscriptionDisplayLines(row: any, index: number): string {
     ].filter(Boolean).join('\n');
 }
 
-function buildSubscriptionManagePanel(rows: any[]): string {
+function buildSubscriptionManagePanel(rows: any[], requestedPage = 0): string {
+    const page = buildTelegramSubscriptionPage(rows, requestedPage);
     return [
         '📡 **频道订阅管理**',
+        ...(page.totalPages > 1 ? [`第 ${page.page + 1}/${page.totalPages} 页 · 共 ${rows.length} 个订阅`] : []),
         '',
-        rows.length > 0
-            ? rows.map((row, index) => buildSubscriptionDisplayLines(row, index)).join('\n')
+        page.visibleRows.length > 0
+            ? page.visibleRows.map((row, index) => buildSubscriptionDisplayLines(row, page.startIndex + index)).join('\n')
             : '当前没有订阅。',
         '',
-        rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅；已暂停订阅会保留提醒，重新添加同一来源可恢复。' : '回复频道用户名或链接可新增订阅。',
+        rows.length > 0 ? '可直接点击订阅下方按钮修改/清除专属目录或取消订阅；系统自动暂停的订阅会保留提醒，重新添加同一来源可恢复。' : '回复频道用户名或链接可新增订阅。',
         '回复频道用户名或链接也可新增订阅。',
         '例如：`@channel_username`、`https://t.me/channel_username` 或已加入的 `https://t.me/+hash` 私密链接',
         '',
@@ -640,6 +658,74 @@ function formatSubscriptionList(rows: any[]): string {
             `   ID: ${String(row.id).slice(0, 8)}`,
         ].join('\n')),
     ].join('\n');
+}
+
+function telegramSubscriptionPeerKey(peer: any): string {
+    const value = peer?.userId || peer?.chatId || peer?.channelId;
+    return String(value?.toString?.() || value || peer?.toString?.() || '').replace(/^-100/, '').replace(/^-/, '');
+}
+
+function buildSubscriptionCancelConfirm(target: any, token: string): { text: string; buttons: Api.ReplyInlineMarkup } {
+    return {
+        text: [
+            '⚠️ **确认取消这个频道订阅？**',
+            '',
+            `📌 ${target.title || target.source_original || target.source}`,
+            `来源：${target.source_original || target.source}`,
+            target.folder_override ? `专属目录：${target.folder_override}` : '保存策略：默认自动分类',
+            `当前游标：last_id=${target.last_message_id || 0}`,
+            '',
+            '确认后会停止自动同步，并从订阅管理列表中移除；已保存的文件不会删除。',
+        ].join('\n'),
+        buttons: new Api.ReplyInlineMarkup({
+            rows: [new Api.KeyboardButtonRow({
+                buttons: [
+                    new Api.KeyboardButtonCallback({ text: '⚠️ 确认取消', data: Buffer.from(`tsub_confirm_${token}`) }),
+                    new Api.KeyboardButtonCallback({ text: '返回订阅列表', data: Buffer.from(`tsub_back_${token}`) }),
+                ],
+            })],
+        }),
+    };
+}
+
+async function sendSubscriptionCancelConfirmation(message: Api.Message, userId: number, target: any, page: number): Promise<void> {
+    const token = crypto.randomBytes(12).toString('base64url');
+    const confirm = buildSubscriptionCancelConfirm(target, token);
+    const sent = await message.reply({ message: confirm.text, buttons: confirm.buttons }) as Api.Message;
+    const messageId = Number(sent.id);
+    pendingSubscriptionCancels.set(token, {
+        userId,
+        peerKey: telegramSubscriptionPeerKey(sent.peerId || message.peerId),
+        messageId,
+        subscriptionId: String(target.id),
+        page,
+        expiresAt: Date.now() + TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS,
+    });
+}
+
+async function editSubscriptionCancelConfirmation(update: Api.UpdateBotCallbackQuery, userId: number, target: any, page: number): Promise<void> {
+    const token = crypto.randomBytes(12).toString('base64url');
+    pendingSubscriptionCancels.set(token, {
+        userId,
+        peerKey: telegramSubscriptionPeerKey(update.peer),
+        messageId: Number(update.msgId),
+        subscriptionId: String(target.id),
+        page,
+        expiresAt: Date.now() + TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS,
+    });
+    const confirm = buildSubscriptionCancelConfirm(target, token);
+    await client!.editMessage(update.peer, { message: Number(update.msgId), text: confirm.text, buttons: confirm.buttons });
+}
+
+function getPendingSubscriptionCancel(update: Api.UpdateBotCallbackQuery, token: string, userId: number) {
+    const pending = pendingSubscriptionCancels.get(token);
+    if (!pending) return null;
+    if (pending.expiresAt < Date.now()) {
+        pendingSubscriptionCancels.delete(token);
+        return null;
+    }
+    if (pending.userId !== userId || pending.peerKey !== telegramSubscriptionPeerKey(update.peer) || pending.messageId !== Number(update.msgId)) return null;
+    return pending;
 }
 
 // Generate Password Keyboard
@@ -962,17 +1048,70 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
     }
-    const match = data.match(/^tsub_(view|folder|clear|cancel)_(.+)$/);
-    if (!match) return;
-    const [, action, id] = match;
-    const rows = await listTelegramSubscriptions(userId, true);
-    const target = rows.find(row => String(row.id) === id);
+    const parsed = parseTelegramSubscriptionCallback(data);
+    if (!parsed) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅按钮无效或已过期', alert: true }));
+        return;
+    }
+    const rows = await listManageableTelegramSubscriptions(userId);
+
+    if (parsed.kind === 'page') {
+        const page = buildTelegramSubscriptionPage(rows, parsed.page);
+        await client.editMessage(update.peer, {
+            message: update.msgId,
+            text: buildSubscriptionManagePanel(rows, page.page),
+            buttons: buildSubscriptionActionKeyboard(rows, page.page),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅列表已刷新' }));
+        return;
+    }
+
+    if (parsed.kind === 'confirm' || parsed.kind === 'back') {
+        const pending = getPendingSubscriptionCancel(update, parsed.token, userId);
+        if (!pending) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '取消确认无效或已过期，请刷新订阅列表', alert: true }));
+            return;
+        }
+        pendingSubscriptionCancels.delete(parsed.token);
+        if (parsed.kind === 'confirm') {
+            const target = rows.find(row => String(row.id) === pending.subscriptionId);
+            const sub = target ? await unsubscribeTelegramChannel(userId, pending.subscriptionId) : null;
+            const rowsAfterCancel = await listManageableTelegramSubscriptions(userId);
+            const page = buildTelegramSubscriptionPage(rowsAfterCancel, pending.page);
+            await client.editMessage(update.peer, {
+                message: update.msgId,
+                text: [
+                    sub ? `✅ 已取消订阅 ${sub.title || sub.source}` : '❌ 订阅不存在或已经取消',
+                    '',
+                    buildSubscriptionManagePanel(rowsAfterCancel, page.page),
+                ].join('\n'),
+                buttons: buildSubscriptionActionKeyboard(rowsAfterCancel, page.page),
+            });
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: sub ? '已取消订阅' : '订阅不存在或已经取消', alert: true }));
+            return;
+        }
+        const page = buildTelegramSubscriptionPage(rows, pending.page);
+        await client.editMessage(update.peer, {
+            message: update.msgId,
+            text: buildSubscriptionManagePanel(rows, page.page),
+            buttons: buildSubscriptionActionKeyboard(rows, page.page),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已返回订阅列表' }));
+        return;
+    }
+
+    if (parsed.kind !== 'action') {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅按钮无效或已过期', alert: true }));
+        return;
+    }
+
+    const target = rows.find(row => String(row.id) === parsed.id);
     if (!target) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '订阅不存在或已取消', alert: true }));
         return;
     }
 
-    if (action === 'view') {
+    if (parsed.action === 'view') {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
             message: target.folder_override ? `专属目录：${target.folder_override}` : '当前使用默认保存路径',
@@ -981,7 +1120,7 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         return;
     }
 
-    if (action === 'folder') {
+    if (parsed.action === 'folder') {
         const state: TelegramWizardState = {
             kind: 'tg_sub_manage',
             step: 'path',
@@ -996,27 +1135,22 @@ async function handleTelegramSubscriptionCallback(update: Api.UpdateBotCallbackQ
         return;
     }
 
-    if (action === 'clear') {
-        await updateTelegramSubscriptionFolder(userId, id, null);
-        const rowsAfterClear = await listTelegramSubscriptions(userId, true);
+    if (parsed.action === 'clear') {
+        await updateTelegramSubscriptionFolder(userId, parsed.id, null);
+        const rowsAfterClear = await listManageableTelegramSubscriptions(userId);
+        const page = buildTelegramSubscriptionPage(rowsAfterClear, parsed.page);
         await client.editMessage(update.peer, {
             message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsAfterClear),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterClear),
+            text: buildSubscriptionManagePanel(rowsAfterClear, page.page),
+            buttons: buildSubscriptionActionKeyboard(rowsAfterClear, page.page),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已清除专属目录' }));
         return;
     }
 
-    if (action === 'cancel') {
-        await unsubscribeTelegramChannel(userId, id);
-        const rowsAfterCancel = await listTelegramSubscriptions(userId, true);
-        await client.editMessage(update.peer, {
-            message: update.msgId,
-            text: buildSubscriptionManagePanel(rowsAfterCancel),
-            buttons: buildSubscriptionActionKeyboard(rowsAfterCancel),
-        });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消订阅', alert: true }));
+    if (parsed.action === 'cancel') {
+        await editSubscriptionCancelConfirmation(update, userId, target, parsed.page);
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请确认是否取消订阅' }));
     }
 }
 
@@ -1348,7 +1482,7 @@ export async function initTelegramBot(): Promise<void> {
                         await message.reply({ message: MSG.AUTH_REQUIRED });
                         return;
                     }
-                    const rows = await listTelegramSubscriptions(senderId, true);
+                    const rows = await listManageableTelegramSubscriptions(senderId);
                     await message.reply({ message: formatSubscriptionList(rows) });
                     return;
                 }
@@ -1382,8 +1516,12 @@ export async function initTelegramBot(): Promise<void> {
                         await message.reply({ message: '❌ 用法：/tg_unsub @频道 或 /tg_unsub <订阅ID前缀>' });
                         return;
                     }
-                    const sub = await unsubscribeTelegramChannel(senderId, selector);
-                    await message.reply({ message: sub ? `✅ 已取消订阅 ${sub.title || sub.source}` : '❌ 未找到该订阅' });
+                    const target = await findTelegramSubscription(senderId, selector);
+                    if (!target || !isTelegramSubscriptionVisibleInManagement(target)) {
+                        await message.reply({ message: '❌ 未找到该订阅' });
+                        return;
+                    }
+                    await sendSubscriptionCancelConfirmation(message, senderId, target, 0);
                     return;
                 }
 
