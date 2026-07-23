@@ -29,6 +29,21 @@ export async function lockStorageAccountForUse(client: LifecycleClient, accountI
     return result.rows[0] as { id: string; type: string };
 }
 
+export async function lockStorageTargetForUse(
+    client: LifecycleClient,
+    provider: string,
+    accountId: string | null,
+): Promise<{ provider: string; accountId: string | null }> {
+    if (provider === 'local') {
+        if (accountId) throw new Error('本地存储目标不能绑定云存储账户');
+        return { provider, accountId: null };
+    }
+    if (!accountId) throw new Error('云存储上传目标缺少账户');
+    const account = await lockStorageAccountForUse(client, accountId);
+    if (account.type !== provider) throw new Error('上传目标账户与 provider 不匹配');
+    return { provider, accountId };
+}
+
 export async function switchStorageAccountWithClient(client: LifecycleClient, accountId: string): Promise<string> {
     const account = await client.query(
         'SELECT id, type FROM storage_accounts WHERE id = $1 FOR UPDATE',
@@ -78,6 +93,18 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
     );
     if (taskReference.rows.length > 0) throw new StorageAccountConflictError('job');
 
+    const transferReference = await client.query(
+        `SELECT id FROM transfer_tasks
+         WHERE target_account_id = $1
+           AND (
+               status IN ('pending', 'running', 'paused', 'interrupted', 'retry_required')
+               OR retryable = true
+           )
+         LIMIT 1 FOR UPDATE`,
+        [accountId],
+    );
+    if (transferReference.rows.length > 0) throw new StorageAccountConflictError('job');
+
     const uploadReference = await client.query(
         `SELECT id FROM storage_account_leases
          WHERE storage_account_id = $1 AND released_at IS NULL
@@ -92,6 +119,9 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
          UNION ALL
          SELECT operation_id FROM chunk_upload_reconciliations
          WHERE account_id = $1 AND status = 'pending'
+         UNION ALL
+         SELECT operation_id FROM ytdlp_write_reconciliations
+         WHERE account_id = $1 AND status = 'pending'
          LIMIT 1`,
         [accountId],
     );
@@ -99,11 +129,18 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
 
     const chunkReference = await client.query(
         `SELECT upload_id FROM chunk_upload_sessions
-         WHERE target_account_id = $1 AND status IN ('open', 'completing')
+         WHERE target_account_id = $1 AND status IN ('open', 'completing', 'failed')
          LIMIT 1 FOR UPDATE`,
         [accountId],
     );
     if (chunkReference.rows.length > 0) throw new StorageAccountConflictError('upload');
+
+    await client.query(
+        `UPDATE transfer_tasks
+         SET target_account_id = NULL, updated_at = NOW()
+         WHERE target_account_id = $1 AND status IN ('completed', 'cancelled') AND retryable = false`,
+        [accountId],
+    );
 
     const fileResult = await client.query('DELETE FROM files WHERE storage_account_id = $1', [accountId]);
     const deleted = await client.query(

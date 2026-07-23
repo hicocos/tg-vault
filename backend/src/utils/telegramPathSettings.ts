@@ -1,6 +1,7 @@
 import { Api } from 'telegram';
 import { sanitizeFilename } from './telegramUtils.js';
 import { getSetting, setSetting } from './settings.js';
+import { clearTelegramPathStateRows, consumeTelegramOncePath, getTelegramSessionPath, previewTelegramPersistentPath, setTelegramPathStateRow } from './telegramPathStateStore.js';
 
 interface ChatPathState {
     nextFolder?: string;
@@ -115,6 +116,7 @@ export function setNextTelegramPath(chatId: string, folder: string): string {
 
 export async function setNextTelegramPathPersistent(chatId: string, folder: string): Promise<string> {
     const normalized = await rememberRecentTelegramPathPersistent(chatId, folder);
+    await setTelegramPathStateRow(undefined, chatId, 'once', normalized, new Date(Date.now() + 24 * 60 * 60 * 1000));
     const state = chatPathState.get(chatId) || {};
     state.nextFolder = normalized;
     chatPathState.set(chatId, state);
@@ -131,10 +133,16 @@ export function setSessionTelegramPath(chatId: string, folder: string): string {
 
 export async function setSessionTelegramPathPersistent(chatId: string, folder: string): Promise<string> {
     const normalized = await rememberRecentTelegramPathPersistent(chatId, folder);
+    await setTelegramPathStateRow(undefined, chatId, 'session', normalized, new Date(Date.now() + 7 * 24 * 60 * 60 * 1000));
     const state = chatPathState.get(chatId) || {};
     state.sessionFolder = normalized;
     chatPathState.set(chatId, state);
     return normalized;
+}
+
+export async function clearTelegramPathStatePersistent(chatId: string): Promise<void> {
+    clearTelegramPathState(chatId);
+    await clearTelegramPathStateRows(undefined, chatId);
 }
 
 export function clearTelegramPathState(chatId: string): void {
@@ -203,6 +211,29 @@ export async function buildPendingPathPromptPersistent(mode: PendingPathInputMod
             : '说明：会影响当前聊天后续下载，直到发送 `/pc` 或点击清除。',
         '发送“取消”可退出本次设置。',
     ].join('\n');
+}
+
+export async function resolveTelegramStorageFolderPersistent(chatId: string, automaticFolder: string | null | undefined): Promise<string | null> {
+    const once = await consumeTelegramOncePath(undefined, chatId);
+    if (once) {
+        const state = chatPathState.get(chatId);
+        if (state) delete state.nextFolder;
+        return once;
+    }
+    const session = await getTelegramSessionPath(undefined, chatId);
+    return session || automaticFolder || null;
+}
+
+export async function resolveTelegramTaskStorageFolderPersistent(chatId: string, automaticFolder: string | null | undefined): Promise<{ folder: string | null; custom: boolean }> {
+    const once = await consumeTelegramOncePath(undefined, chatId);
+    if (once) return { folder: once, custom: true };
+    const session = await getTelegramSessionPath(undefined, chatId);
+    return session ? { folder: session, custom: true } : { folder: automaticFolder || null, custom: false };
+}
+
+export async function previewTelegramStorageFolderPersistent(chatId: string, automaticFolder: string | null | undefined): Promise<string | null> {
+    const state = await previewTelegramPersistentPath(chatId);
+    return state.once || state.session || automaticFolder || null;
 }
 
 export function resolveTelegramStorageFolder(chatId: string, automaticFolder: string | null | undefined): string | null {

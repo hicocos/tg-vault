@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw } from "lucide-react";
+import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, Copy, Check } from "lucide-react";
 import type { FileData } from "./FileCard";
 import { Button } from "./Button";
 import { useEffect, useRef, useState } from "react";
@@ -96,6 +96,7 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
     const [scale, setScale] = useState(1);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
+    const [idCopied, setIdCopied] = useState(false);
     const touchStartXRef = useRef<number | null>(null);
     const openedAtRef = useRef<number>(0);
     const [mobileMenu, setMobileMenu] = useState<{
@@ -134,6 +135,7 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
             setScale(1);
             setImageLoaded(false);
             setImageError(false);
+            setIdCopied(false);
         }
 
         return () => {
@@ -175,6 +177,14 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
         e.stopPropagation();
         if (!file) return;
         window.open(`${API_BASE}/api/files/${file.id}/original`, '_blank', 'noopener,noreferrer');
+    };
+
+    const handleCopyId = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!file) return;
+        await navigator.clipboard.writeText(file.id);
+        setIdCopied(true);
+        window.setTimeout(() => setIdCopied(false), 1500);
     };
 
     const handleTouchStart = (e: React.TouchEvent) => {
@@ -315,6 +325,18 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                             <div className="text-white min-w-0">
                                 <h3 className="font-medium text-sm truncate max-w-[50vw]">{file.name}</h3>
                                 <p className="text-xs text-white/60">{file.size} • {file.date}</p>
+                                <div className="mt-1 flex max-w-[58vw] items-center gap-1 text-[10px] text-white/60">
+                                    <span className="font-mono break-all" title={file.id}>ID: {file.id}</span>
+                                    <button
+                                        type="button"
+                                        className="shrink-0 rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
+                                        onClick={handleCopyId}
+                                        title={idCopied ? '已复制文件 ID' : '复制文件 ID'}
+                                        aria-label={idCopied ? '文件 ID 已复制' : '复制文件 ID'}
+                                    >
+                                        {idCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                                    </button>
+                                </div>
                             </div>
                         </div>
 

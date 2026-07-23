@@ -7,6 +7,11 @@ const lifecycle = fs.readFileSync(new URL('./storageAccountLifecycle.ts', import
 assert.match(deleteRoute, /pool\.connect\(\)/);
 assert.match(deleteRoute, /BEGIN/);
 assert.match(deleteRoute, /deleteStorageAccountWithClient/);
+assert.match(source, /file_fingerprint/);
+assert.match(source, /context: String\(snapshot\.file_fingerprint\)/);
+assert.match(source, /SELECT id FROM storage_accounts WHERE id = \$1 FOR UPDATE/);
+assert.match(source, /context: String\(fingerprint\.rows\[0\]\?\.value \|\| ''\)/);
+assert.ok(deleteRoute.indexOf('webDestructiveConfirmationStore.consume') < deleteRoute.indexOf('deleteStorageAccountWithClient(client, id)'));
 assert.match(deleteRoute, /COMMIT/);
 assert.match(deleteRoute, /ROLLBACK/);
 assert.match(lifecycle, /FOR UPDATE/);

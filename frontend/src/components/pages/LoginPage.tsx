@@ -180,6 +180,8 @@ export const LoginPage = ({ onLogin, setupRequired = false, onSetup }: LoginPage
                                         type="button"
                                         onClick={() => setShowPassword(!showPassword)}
                                         className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                                        aria-label={showPassword ? '隐藏密码' : '显示密码'}
+                                        title={showPassword ? '隐藏密码' : '显示密码'}
                                     >
                                         {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                                     </button>
@@ -235,7 +237,7 @@ export const LoginPage = ({ onLogin, setupRequired = false, onSetup }: LoginPage
                                 ) : (
                                     <>
                                         <LogIn className="w-5 h-5" />
-                                        <span>{setupRequired ? '创建管理员并进入' : '下一步'}</span>
+                                        <span>{setupRequired ? '创建管理员并进入' : '登录'}</span>
                                     </>
                                 )}
                             </motion.button>

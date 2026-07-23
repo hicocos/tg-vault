@@ -45,14 +45,16 @@ export const FileCard = ({
 
     // Context menu state
     const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+    const [downloadError, setDownloadError] = useState<string | null>(null);
 
     const handleDownload = async (e?: React.MouseEvent) => {
         e?.stopPropagation();
         try {
+            setDownloadError(null);
             await fileApi.downloadFile(file.id, file.name);
         } catch (error: any) {
             console.error("下载失败", error);
-            window.alert(error?.message || "下载失败");
+            setDownloadError(error?.message || "下载失败");
         }
     };
 
@@ -244,6 +246,11 @@ export const FileCard = ({
                         </Button>
                     )}
                 </div>
+                {downloadError && (
+                    <p role="alert" className="border-t border-red-200 bg-red-50 px-3.5 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+                        {downloadError}
+                    </p>
+                )}
             </motion.div>
 
             {/* Context Menu */}

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Folder, Settings, Menu, Image as ImageIcon, Video, Music, FileText, ChevronRight, X, Star, Download } from "lucide-react";
+import { Folder, Settings, Menu, Image as ImageIcon, Video, Music, FileText, ChevronRight, X, Star, Download, LogOut, ListChecks } from "lucide-react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
@@ -43,7 +43,7 @@ const SidebarItem = ({ icon: Icon, label, isActive, onClick, collapsed, hasSubIt
     );
 };
 
-export const AppLayout = ({ children, onCategoryChange, storageStats }: { children: React.ReactNode; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null }) => {
+export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }: { children: React.ReactNode; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null; onLogout?: () => void | Promise<void> }) => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
     const [activeTab, setActiveTab] = useState("all");
@@ -77,7 +77,8 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
         },
         { id: "document", icon: FileText, label: t("sidebar.categories.docs") },
         { id: "ytdlp", icon: Download, label: "YT-DLP" },
-        { id: "favorites", icon: Star, label: t("sidebar.favorites") || "Favorites" },
+        { id: "favorites", icon: Star, label: t("sidebar.favorites") },
+        { id: "tasks", icon: ListChecks, label: t("sidebar.tasks") },
         { id: "settings", icon: Settings, label: t("sidebar.settings") },
     ];
 
@@ -141,11 +142,19 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
                         <div className="flex items-center justify-between">
                             <LanguageToggle />
                             {!mobile && (
-                                <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto text-muted-foreground" onClick={() => setIsSidebarOpen(false)}>
+                                <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto text-muted-foreground" onClick={() => setIsSidebarOpen(false)} aria-label="收起侧栏" title="收起侧栏">
                                     <Menu className="h-4 w-4" />
                                 </Button>
                             )}
                         </div>
+                        <Button
+                            variant="ghost"
+                            className="w-full justify-start gap-2 text-muted-foreground hover:text-destructive"
+                            onClick={() => void onLogout?.()}
+                        >
+                            <LogOut className="h-4 w-4" />
+                            {t("sidebar.logout")}
+                        </Button>
                     </div>
                 )}
             </div>
@@ -179,8 +188,11 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
 
                 {!isSidebarOpen && (
                     <div className="flex flex-col items-center py-4 gap-4 border-t border-border/40">
-                        <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(true)}>
+                        <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(true)} aria-label="展开侧栏" title="展开侧栏">
                             <Menu className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" title={t("sidebar.logout")} aria-label={t("sidebar.logout")} onClick={() => void onLogout?.()}>
+                            <LogOut className="h-4 w-4" />
                         </Button>
                     </div>
                 )}
@@ -209,7 +221,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
                                     <img src="/logo.png?v=tg-vault" alt="Logo" className="h-10 w-10 rounded-xl object-contain shadow-sm" />
                                     <span className="font-bold text-xl">{t("app.title")}</span>
                                 </div>
-                                <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(false)}>
+                                <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(false)} aria-label="关闭导航菜单" title="关闭导航菜单">
                                     <X className="h-5 w-5" />
                                 </Button>
                             </div>
@@ -227,13 +239,13 @@ export const AppLayout = ({ children, onCategoryChange, storageStats }: { childr
                         <img src="/logo.png?v=tg-vault" alt="Logo" className="h-10 w-10 rounded-xl object-contain shadow-sm" />
                         <div className="flex flex-col justify-center h-full pt-4 pb-4">
                             <h1 className="text-xl font-bold tracking-tight text-foreground">{t("app.title")}</h1>
-                            <p className="text-xs text-muted-foreground hidden sm:block">Home / {categories.find(c => c.id === activeTab)?.label || activeTab}</p>
+                            <p className="text-xs text-muted-foreground">{categories.find(c => c.id === activeTab)?.label || activeTab}</p>
                         </div>
                     </div>
 
                     {/* Mobile Menu Toggle */}
                     <div className="md:hidden">
-                        <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(true)}>
+                        <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(true)} aria-label="打开导航菜单" title="打开导航菜单">
                             <Menu className="h-6 w-6" />
                         </Button>
                     </div>

@@ -159,6 +159,39 @@ class AuthService {
         this.clearToken();
     }
 
+    async changePassword(currentPassword: string, newPassword: string): Promise<{ success: boolean; error?: string }> {
+        try {
+            const response = await fetch(`${API_BASE}/api/auth/change-password`, {
+                credentials: 'include',
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...this.getAuthHeaders() },
+                body: JSON.stringify({ currentPassword, newPassword }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) return { success: false, error: data.error || '修改密码失败' };
+            this.clearToken();
+            return { success: true };
+        } catch {
+            return { success: false, error: '网络错误' };
+        }
+    }
+
+    async revokeAllSessions(): Promise<{ success: boolean; error?: string }> {
+        try {
+            const response = await fetch(`${API_BASE}/api/auth/revoke-all`, {
+                credentials: 'include',
+                method: 'POST',
+                headers: this.getAuthHeaders(),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) return { success: false, error: data.error || '退出所有设备失败' };
+            this.clearToken();
+            return { success: true };
+        } catch {
+            return { success: false, error: '网络错误' };
+        }
+    }
+
     // 获取 2FA 设置信息
     async get2FASetupInfo(): Promise<{ qrDataUrl: string; enabled: boolean }> {
         try {

@@ -1,9 +1,10 @@
 import { Router, Request, Response } from 'express';
+import { buildStorageCapabilities } from '../utils/storageProductContract.js';
 import { query } from '../db/index.js';
 import fs from 'fs';
 import path from 'path';
 import { getSignedUrl } from '../middleware/signedUrl.js';
-import { getScopedFileById, removePhysicalFile, updateScopedFileById } from '../utils/fileScope.js';
+import { getCurrentStorageScope, getScopedFileById, nextParam, removePhysicalFile, updateScopedFileById } from '../utils/fileScope.js';
 import { createFileDeletionService } from '../services/fileDeletion.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
 import { getAuthToken } from './auth.js';
@@ -16,6 +17,7 @@ import {
     normalizeFileQuery,
     type FileQueryScope,
 } from '../services/fileQuery.js';
+import { normalizeFolderPath } from '../utils/folderPath.js';
 
 const router = Router();
 
@@ -209,9 +211,11 @@ router.post('/folders', async (req: Request, res: Response) => {
             return res.status(400).json({ error: '文件夹名称不能为空' });
         }
 
-        const trimmedName = folderName.trim();
-        if (/[\/\\:*?"<>|]/.test(trimmedName)) {
-            return res.status(400).json({ error: '文件夹名包含非法字符' });
+        let trimmedName: string;
+        try {
+            trimmedName = normalizeFolderPath(folderName);
+        } catch (error) {
+            return res.status(400).json({ error: error instanceof Error ? error.message : '文件夹路径无效' });
         }
 
         const { storageManager } = await import('../services/storage.js');
@@ -272,6 +276,12 @@ router.post('/folders/favorite', async (req: Request, res: Response) => {
         if (!folderName || typeof folderName !== 'string') {
             return res.status(400).json({ error: '参数错误' });
         }
+        let normalizedFolder: string;
+        try {
+            normalizedFolder = normalizeFolderPath(folderName);
+        } catch (error) {
+            return res.status(400).json({ error: error instanceof Error ? error.message : '文件夹路径无效' });
+        }
 
         const { storageManager } = await import('../services/storage.js');
         const activeAccountId = storageManager.getActiveAccountId();
@@ -282,13 +292,21 @@ router.post('/folders/favorite', async (req: Request, res: Response) => {
         let params: any[] = [];
 
         if (provider.name === 'local') {
-            selectQuery = 'SELECT COUNT(*)::int as cnt, BOOL_AND(is_favorite)::boolean as all_fav FROM files WHERE source = \'local\' AND folder = $1';
-            updateQuery = 'UPDATE files SET is_favorite = $1, updated_at = NOW() WHERE source = \'local\' AND folder = $2';
-            params = [folderName];
+            selectQuery = `SELECT COUNT(*)::int as cnt, BOOL_AND(is_favorite)::boolean as all_fav
+                           FROM files WHERE source = 'local'
+                           AND (folder = $1 OR LEFT(folder, LENGTH($1) + 1) = $1 || '/')`;
+            updateQuery = `UPDATE files SET is_favorite = $1, updated_at = NOW()
+                           WHERE source = 'local'
+                           AND (folder = $2 OR LEFT(folder, LENGTH($2) + 1) = $2 || '/')`;
+            params = [normalizedFolder];
         } else {
-            selectQuery = 'SELECT COUNT(*)::int as cnt, BOOL_AND(is_favorite)::boolean as all_fav FROM files WHERE storage_account_id = $1 AND folder = $2';
-            updateQuery = 'UPDATE files SET is_favorite = $1, updated_at = NOW() WHERE storage_account_id = $2 AND folder = $3';
-            params = [activeAccountId, folderName];
+            selectQuery = `SELECT COUNT(*)::int as cnt, BOOL_AND(is_favorite)::boolean as all_fav
+                           FROM files WHERE storage_account_id = $1
+                           AND (folder = $2 OR LEFT(folder, LENGTH($2) + 1) = $2 || '/')`;
+            updateQuery = `UPDATE files SET is_favorite = $1, updated_at = NOW()
+                           WHERE storage_account_id = $2
+                           AND (folder = $3 OR LEFT(folder, LENGTH($3) + 1) = $3 || '/')`;
+            params = [activeAccountId, normalizedFolder];
         }
 
         const selectResult = await query(selectQuery, params);
@@ -302,9 +320,9 @@ router.post('/folders/favorite', async (req: Request, res: Response) => {
         const newFavorite = !allFav;
 
         if (provider.name === 'local') {
-            await query(updateQuery, [newFavorite, folderName]);
+            await query(updateQuery, [newFavorite, normalizedFolder]);
         } else {
-            await query(updateQuery, [newFavorite, activeAccountId, folderName]);
+            await query(updateQuery, [newFavorite, activeAccountId, normalizedFolder]);
         }
 
         res.json({ success: true, isFavorite: newFavorite });
@@ -725,10 +743,22 @@ router.patch('/:id([0-9a-fA-F-]{36})/move', async (req: Request, res: Response) 
             return res.status(400).json({ error: '文件夹名称格式错误' });
         }
 
-        const trimmedFolder = folder ? folder.trim() : null;
+        let trimmedFolder: string | null = null;
+        try {
+            trimmedFolder = folder ? normalizeFolderPath(folder) : null;
+        } catch (error) {
+            return res.status(400).json({ error: error instanceof Error ? error.message : '文件夹路径无效' });
+        }
 
-        if (trimmedFolder && /[\/\\:*?"<>|]/.test(trimmedFolder)) {
-            return res.status(400).json({ error: '文件夹名包含非法字符' });
+        if (trimmedFolder) {
+            const scope = await getCurrentStorageScope();
+            const folderParam = nextParam(scope, 1);
+            const exists = await query(
+                `SELECT 1 FROM files WHERE ${scope.clause}
+                 AND (folder = ${folderParam} OR LEFT(folder, LENGTH(${folderParam}) + 1) = ${folderParam} || '/') LIMIT 1`,
+                [...scope.params, trimmedFolder],
+            );
+            if (!exists.rows[0]) return res.status(404).json({ error: '目标文件夹不存在' });
         }
 
         const file = await getScopedFileById(id);
@@ -757,10 +787,15 @@ router.post('/:id([0-9a-fA-F-]{36})/share', async (req: Request, res: Response) 
             return res.status(404).json({ error: '文件不存在' });
         }
 
-        // 检查存储源是否支持分享
-        const supportedSources = ['onedrive', 'google_drive'];
-        if (!supportedSources.includes(file.source)) {
-            return res.status(400).json({ error: '当前存储源暂不支持文件分享' });
+        const capabilities = buildStorageCapabilities(String(file.source));
+        if (!capabilities.share) {
+            return res.status(400).json({ error: '当前存储源暂不支持文件分享', code: 'SHARE_UNSUPPORTED' });
+        }
+        if (password && !capabilities.sharePassword) {
+            return res.status(400).json({ error: '当前存储源不支持分享密码', code: 'SHARE_PASSWORD_UNSUPPORTED' });
+        }
+        if (expiration && !capabilities.shareExpiration) {
+            return res.status(400).json({ error: '当前存储源不支持分享过期时间', code: 'SHARE_EXPIRATION_UNSUPPORTED' });
         }
 
         const { storageManager } = await import('../services/storage.js');

@@ -9,9 +9,10 @@ interface CreateFolderModalProps {
     isOpen: boolean;
     onClose: () => void;
     onConfirm: (folderName: string) => void;
+    currentFolder?: string | null;
 }
 
-export const CreateFolderModal = ({ isOpen, onClose, onConfirm }: CreateFolderModalProps) => {
+export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }: CreateFolderModalProps) => {
     useTranslation();
     const [folderName, setFolderName] = useState("");
 
@@ -62,7 +63,7 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm }: CreateFolderMo
                                 创建文件夹
                             </h3>
                             <p className="text-sm text-muted-foreground mt-1.5">
-                                请输入新文件夹的名称
+                                将创建在：{currentFolder || '根目录'}
                             </p>
                         </div>
                     </div>

@@ -16,6 +16,7 @@ export class BoundedUploadQueue<TInput, TResult> {
     private readonly tasks = new Map<string, StoredTask<TInput, TResult>>();
     private readonly pending: StoredTask<TInput, TResult>[] = [];
     private active = 0;
+    private paused = false;
 
     private readonly concurrency: number;
     private readonly worker: (input: TInput, signal: AbortSignal) => Promise<TResult>;
@@ -55,6 +56,28 @@ export class BoundedUploadQueue<TInput, TResult> {
         for (const id of this.tasks.keys()) this.cancel(id);
     }
 
+    reset(): void {
+        this.cancelAll();
+        this.paused = false;
+        for (const [id, task] of this.tasks) {
+            if (task.state === 'settled') this.tasks.delete(id);
+        }
+    }
+
+    pause(): void {
+        this.paused = true;
+    }
+
+    resume(): void {
+        if (!this.paused) return;
+        this.paused = false;
+        this.pump();
+    }
+
+    isPaused(): boolean {
+        return this.paused;
+    }
+
     private add(id: string, input: TInput, replacing = false): Promise<TResult> {
         if (replacing) this.tasks.delete(id);
         return new Promise<TResult>((resolve, reject) => {
@@ -66,6 +89,7 @@ export class BoundedUploadQueue<TInput, TResult> {
     }
 
     private pump(): void {
+        if (this.paused) return;
         while (this.active < this.concurrency && this.pending.length > 0) {
             const task = this.pending.shift()!;
             const controller = new AbortController();

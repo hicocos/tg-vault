@@ -10,9 +10,11 @@ interface FolderPromptModalProps {
     onClose: () => void;
     onConfirm: (folderName: string) => void;
     onCancel: () => void;
+    onRoot?: () => void;
+    currentFolder?: string | null;
 }
 
-export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel }: FolderPromptModalProps) => {
+export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot, currentFolder }: FolderPromptModalProps) => {
     useTranslation();
     const [folderName, setFolderName] = useState("");
 
@@ -65,7 +67,7 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel }: Fold
                                 是否创建文件夹？
                             </h3>
                             <p className="text-sm text-muted-foreground mt-1.5">
-                                为本次上传的多文件创建一个文件夹进行管理
+                                当前目标：{currentFolder || '根目录'}
                             </p>
                         </div>
                     </div>
@@ -106,8 +108,21 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel }: Fold
                             className="flex-1 h-10 px-5 text-sm font-medium border-border/80 hover:bg-muted"
                             onClick={handleNoFolder}
                         >
-                            不需要文件夹
+                            上传到当前位置
                         </Button>
+                        {currentFolder && onRoot && (
+                            <Button
+                                variant="ghost"
+                                className="flex-1 h-10 px-5 text-sm font-medium"
+                                onClick={() => {
+                                    onRoot();
+                                    setFolderName("");
+                                    onClose();
+                                }}
+                            >
+                                上传到根目录
+                            </Button>
+                        )}
                     </div>
                 </motion.div>
             </div>

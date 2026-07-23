@@ -24,14 +24,17 @@ import { DuplicateMode, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { startPeriodicCleanup, stopPeriodicCleanup } from './orphanCleanup.js';
 import { safeUnlink } from '../utils/localPath.js';
 import { getCurrentStorageScope, nextParam, removePhysicalFile } from '../utils/fileScope.js';
-import { buildTaskCancelConfirm, buildTaskCenterDetail, buildTaskCenterPage, channelTaskCenterItem, ordinaryTaskCenterItem, parseTaskCenterCallback, type TaskCenterButton, type TaskCenterItem, type TaskCenterSourceType, type TaskCenterView } from './telegramTaskCenter.js';
+import { canonicalTelegramChatKey, telegramChatKeyFromPeerParts } from '../utils/telegramChatKey.js';
+import { buildTaskCancelConfirm, buildTaskCenterDetail, buildTaskCenterPage, channelTaskCenterItem, ordinaryTaskCenterItem, parseTaskCenterCallback, ytdlpTaskCenterItem, type TaskCenterButton, type TaskCenterItem, type TaskCenterSourceType, type TaskCenterView } from './telegramTaskCenter.js';
+import { listTransferTasks } from './transferTasks.js';
+import { cancelYtDlpTask, retryYtDlpTask } from './ytDlpDownload.js';
 import { DestructiveConfirmationStore } from './destructiveConfirmation.js';
 import {
     buildPathSettingsKeyboard,
     buildPathSettingsText,
     buildPendingPathPromptPersistent,
     buildPathPreviewLine,
-    clearTelegramPathState,
+    clearTelegramPathStatePersistent,
     getRecentTelegramPathsPersistent,
     setPendingTelegramPathInput,
     setNextTelegramPathPersistent,
@@ -69,8 +72,23 @@ interface PendingStorageClearSnapshot {
     orphanPaths: string[];
 }
 
+interface PendingBulkTaskCancellation {
+    actorId: number;
+    chatId: string;
+    messageId: number;
+}
+
+interface BulkTaskImpact {
+    ordinaryTasks: number;
+    ordinaryActiveFiles: number;
+    ordinaryPendingFiles: number;
+    channelTasks: number;
+    ytdlpTasks: number;
+}
+
 const pendingDeleteConfirmations = new Map<string, PendingDeleteInfo>();
 const pendingStorageClearSnapshots = new Map<string, PendingStorageClearSnapshot>();
+const pendingBulkTaskCancellations = new Map<string, PendingBulkTaskCancellation>();
 const destructiveConfirmations = new DestructiveConfirmationStore();
 
 function buildDeleteConfirmKeyboard(confirmId: string): Api.ReplyInlineMarkup {
@@ -79,6 +97,17 @@ function buildDeleteConfirmKeyboard(confirmId: string): Api.ReplyInlineMarkup {
             buttons: [
                 new Api.KeyboardButtonCallback({ text: '⚠️ 确认删除', data: Buffer.from(`del_confirm_${confirmId}`) }),
                 new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from(`del_cancel_${confirmId}`) }),
+            ],
+        })],
+    });
+}
+
+function buildBulkTaskCancelKeyboard(confirmId: string): Api.ReplyInlineMarkup {
+    return new Api.ReplyInlineMarkup({
+        rows: [new Api.KeyboardButtonRow({
+            buttons: [
+                new Api.KeyboardButtonCallback({ text: '⚠️ 确认取消全部', data: Buffer.from(`bulk_task_confirm_${confirmId}`) }),
+                new Api.KeyboardButtonCallback({ text: '返回', data: Buffer.from(`bulk_task_cancel_${confirmId}`) }),
             ],
         })],
     });
@@ -415,40 +444,28 @@ function buildCleanupSettingsKeyboard(enabled: boolean): Api.ReplyInlineMarkup {
 
 function buildCleanupSettingsText(enabled: boolean): string {
     return [
-        '🧹 **自动清理设置**',
+        '🧹 **自动清理未索引临时文件**',
         '',
         `当前状态：${enabled ? '✅ 开启' : '⬜ 关闭'}`,
         '',
-        '开启后会自动清理本地 uploads 中未登记到数据库的孤儿文件。',
-        '如果你主要使用本地存储，建议点“关闭自动清理”，防止默认删除文件。',
+        '开启后会自动删除本地 uploads 中未登记到文件索引、且超过保护期的临时文件。',
+        '这不会删除任务历史、已登记文件或第三方云端实体。',
         '',
-        '说明：只影响本地 uploads 孤儿文件，不会主动清理第三方云存储。',
+        '如果本地 uploads 中有绕过 TG Vault 写入的文件，请保持关闭，避免其被识别为未索引临时文件。',
     ].join('\n');
-}
-
-function canonicalTelegramChatKey(value: unknown): string {
-    const text = String(value ?? '').trim();
-    if (!text) return text;
-    if (/^-100\d+$/.test(text)) return text.slice(4);
-    if (/^-\d+$/.test(text)) return text.slice(1);
-    return text;
 }
 
 function getCallbackChatKey(update: Api.UpdateBotCallbackQuery): string {
     try {
         return canonicalTelegramChatKey(getPeerId(update.peer as any, true));
     } catch {
-        const peer: any = update.peer as any;
-        const value = peer?.userId || peer?.chatId || peer?.channelId || update.userId;
-        if (value && typeof value.toJSNumber === 'function') return canonicalTelegramChatKey(value.toJSNumber());
-        if (value !== undefined && value !== null) return canonicalTelegramChatKey(value);
-        return canonicalTelegramChatKey(update.userId.toJSNumber());
+        return telegramChatKeyFromPeerParts(update.peer as any, update.userId);
     }
 }
 
-export async function handleStart(message: Api.Message, senderId: number): Promise<void> {
+export async function handleStart(message: Api.Message, senderId: number, buttons?: Api.TypeReplyMarkup): Promise<void> {
     if (await isAuthenticatedAsync(senderId)) {
-        await message.reply({ message: buildWelcomeBack() });
+        await message.reply({ message: buildWelcomeBack(), buttons });
     } else {
         passwordInputState.set(senderId, { password: '' });
     }
@@ -610,7 +627,7 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
                     '⚠️ **确认删除本地服务器全部下载文件？**',
                     '',
                     `将删除 uploads 本地目录中的 **${stats.count}** 个文件，占用 **${formatBytes(stats.totalSize)}**。`,
-                    '这只清理服务器本地下载/缓存文件，不会主动删除 OneDrive 等云端存储里的文件记录。',
+                    '这会删除本地实体文件及对应的本地文件索引；不会删除任务历史或任何第三方云端实体。',
                     '',
                     '如确认，请点击下方红色确认按钮。',
                 ].join('\n'),
@@ -727,7 +744,7 @@ export async function handleList(message: Api.Message, args: string[]): Promise<
 export async function handleDelete(message: Api.Message, args: string[]): Promise<void> {
     if (args.length === 0) {
         await message.reply({
-            message: '❌ 请提供要删除的文件 ID 前缀\n\n用法：/delete <至少 8 位 ID 前缀>\n提示：请从网页端文件列表复制文件 ID。'
+            message: '❌ 请提供要删除的文件 ID 前缀\n\n用法：/delete <至少 8 位 ID 前缀>\n提示：发送 /list 可查看最近文件及 ID，也可从 Web 文件预览复制完整 ID。'
         });
         return;
     }
@@ -737,7 +754,7 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
     try {
         const scope = await getCurrentStorageScope();
         if (/^\d+$/.test(selector)) {
-            await message.reply({ message: '❌ 为避免误删，Telegram Bot 不再支持按列表序号删除。请从网页端复制至少 8 位文件 ID 前缀。' });
+            await message.reply({ message: '❌ 为避免误删，Telegram Bot 不支持按列表序号删除。请发送 /list 并复制至少 8 位文件 ID 前缀。' });
             return;
         }
         if (selector.length < 8) {
@@ -885,7 +902,10 @@ async function loadTaskCenterItems(chatId: string, userId: number): Promise<Task
     const ordinaryItems = listDownloadTaskGroups(chatId, userId)
         .map(ordinaryTaskCenterItem)
         .filter((item): item is TaskCenterItem => Boolean(item));
-    const channelRows = await listTelegramActiveTaskQueues(userId, 1000);
+    const [channelRows, ytdlpRows] = await Promise.all([
+        listTelegramActiveTaskQueues(userId, 1000),
+        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
+    ]);
     const channelItems = channelRows
         .filter(row => String(row.chat_id || '') === chatId)
         .map(row => {
@@ -897,7 +917,11 @@ async function loadTaskCenterItems(chatId: string, userId: number): Promise<Task
             return mergeChannelExecutionState(channelTaskCenterItem({ ...row, folder_override: folder }), row);
         })
         .filter((item): item is TaskCenterItem => Boolean(item));
-    return [...ordinaryItems, ...channelItems];
+    const ytdlpItems = ytdlpRows
+        .filter(task => String(task.chatId || '') === chatId)
+        .map(ytdlpTaskCenterItem)
+        .filter((item): item is TaskCenterItem => Boolean(item));
+    return [...ordinaryItems, ...channelItems, ...ytdlpItems];
 }
 
 async function findTaskCenterItem(
@@ -909,6 +933,11 @@ async function findTaskCenterItem(
     if (sourceType === 'memory') {
         const group = getDownloadTaskGroup(id, chatId, userId);
         return group ? ordinaryTaskCenterItem(group) : null;
+    }
+    if (sourceType === 'ytdlp') {
+        const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
+        const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
+        return matches.length === 1 ? ytdlpTaskCenterItem(matches[0]) : null;
     }
     const rows = await listTelegramActiveTaskQueues(userId, 1000);
     const matches = rows.filter(job => String(job.chat_id || '') === chatId && String(job.id).toLowerCase().startsWith(id.toLowerCase()));
@@ -969,11 +998,12 @@ export async function handleTasks(message: Api.Message): Promise<void> {
 }
 
 async function operateChannelTaskCenterItem(
-    action: 'start' | 'pause' | 'resume' | 'cancel_confirm',
+    action: 'start' | 'pause' | 'resume' | 'retry' | 'cancel_confirm',
     userId: number,
     chatId: string,
     id: string,
 ): Promise<{ ok: boolean; toast: string }> {
+    if (action === 'retry') return { ok: false, toast: '该频道任务请使用现有失败重试入口' };
     const rows = await listTelegramActiveTaskQueues(userId, 1000);
     const matches = rows.filter(job => String(job.chat_id || '') === chatId && String(job.id).toLowerCase().startsWith(id.toLowerCase()));
     if (matches.length !== 1) return { ok: false, toast: matches.length > 1 ? '任务 ID 前缀不唯一，请刷新任务列表' : '任务已结束或已失效' };
@@ -1003,6 +1033,26 @@ async function operateChannelTaskCenterItem(
     if (!job) return { ok: false, toast: '任务已结束或无法取消' };
     cancelChannelExecutionGroup(fullId);
     return { ok: true, toast: '任务已取消' };
+}
+
+async function cancelYtDlpTaskCenterItem(userId: number, chatId: string, id: string): Promise<{ ok: boolean; toast: string }> {
+    const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
+    const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
+    if (matches.length !== 1) return { ok: false, toast: matches.length > 1 ? '任务 ID 前缀不唯一，请刷新任务列表' : '任务已结束或已失效' };
+    const cancelled = await cancelYtDlpTask(matches[0].id);
+    return cancelled?.status === 'cancelled'
+        ? { ok: true, toast: 'yt-dlp 任务已取消' }
+        : { ok: false, toast: '任务已结束或无法取消' };
+}
+
+async function retryYtDlpTaskCenterItem(userId: number, chatId: string, id: string): Promise<{ ok: boolean; toast: string }> {
+    const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
+    const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
+    if (matches.length !== 1) return { ok: false, toast: matches.length > 1 ? '任务 ID 前缀不唯一，请刷新任务列表' : '任务已结束或已失效' };
+    const retried = await retryYtDlpTask(matches[0].id);
+    return retried?.status === 'pending' || retried?.status === 'running'
+        ? { ok: true, toast: 'yt-dlp 任务已重新排队' }
+        : { ok: false, toast: '任务存在未完成对账或当前无法重试' };
 }
 
 const pendingTaskCenterCancels = new Map<string, { userId: number; chatId: string; messageId: number; sourceType: TaskCenterSourceType; taskId: string; expiresAt: number }>();
@@ -1087,6 +1137,10 @@ export async function handleTaskCenterCallback(
                 return;
             }
         }
+        if (parsed.action === 'retry' && parsed.sourceType !== 'ytdlp') {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该任务类型不支持此重试按钮', alert: true }));
+            return;
+        }
 
         let ok = false;
         let toast = '';
@@ -1130,10 +1184,20 @@ export async function handleTaskCenterCallback(
                     : result.status === 'forbidden'
                         ? '任务不属于当前聊天'
                         : '任务已结束或已失效';
-        } else {
+        } else if (parsed.sourceType === 'channel') {
             const result = await operateChannelTaskCenterItem(parsed.action, userId, chatId, parsed.id);
             ok = result.ok;
             toast = result.toast;
+        } else if (parsed.action === 'cancel_confirm') {
+            const result = await cancelYtDlpTaskCenterItem(userId, chatId, parsed.id);
+            ok = result.ok;
+            toast = result.toast;
+        } else if (parsed.action === 'retry') {
+            const result = await retryYtDlpTaskCenterItem(userId, chatId, parsed.id);
+            ok = result.ok;
+            toast = result.toast;
+        } else {
+            toast = 'yt-dlp 任务不支持该操作';
         }
 
         if (parsed.action === 'cancel_confirm' || !ok) {
@@ -1157,23 +1221,150 @@ export async function handleTaskCenterCallback(
     }
 }
 
+async function getBulkTaskImpact(userId: number, chatId: string): Promise<BulkTaskImpact> {
+    const ordinaryGroups = listDownloadTaskGroups(chatId, userId)
+        .map(ordinaryTaskCenterItem)
+        .filter((item): item is TaskCenterItem => Boolean(item));
+    const [channelRows, ytdlpRows] = await Promise.all([
+        listTelegramActiveTaskQueues(userId, 1000),
+        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
+    ]);
+    return {
+        ordinaryTasks: ordinaryGroups.length,
+        ordinaryActiveFiles: ordinaryGroups.reduce((sum, item) => sum + item.active, 0),
+        ordinaryPendingFiles: ordinaryGroups.reduce((sum, item) => sum + item.pending, 0),
+        channelTasks: channelRows.filter(row => String(row.chat_id || '') === chatId).length,
+        ytdlpTasks: ytdlpRows.filter(task => String(task.chatId || '') === chatId && ['pending', 'running', 'paused'].includes(task.status)).length,
+    };
+}
+
+function bulkImpactTotal(impact: BulkTaskImpact): number {
+    return impact.ordinaryTasks + impact.channelTasks + impact.ytdlpTasks;
+}
+
+async function requestBulkTaskCancellation(message: Api.Message): Promise<void> {
+    const actorId = message.senderId?.toJSNumber();
+    const chatId = canonicalTelegramChatKey(message.chatId?.toString());
+    if (!actorId || !chatId) {
+        await message.reply({ message: '📮 无法识别当前聊天，未取消任务' });
+        return;
+    }
+    const impact = await getBulkTaskImpact(actorId, chatId);
+    if (bulkImpactTotal(impact) === 0) {
+        await message.reply({ message: '📮 当前聊天没有可取消的任务' });
+        return;
+    }
+    const sent = await message.reply({
+        message: [
+            '⚠️ **确认取消当前聊天全部任务？**',
+            '',
+            `普通下载：${impact.ordinaryTasks} 个任务（处理中 ${impact.ordinaryActiveFiles} 个文件，等待 ${impact.ordinaryPendingFiles} 个文件）`,
+            `频道任务：${impact.channelTasks} 个`,
+            `yt-dlp：${impact.ytdlpTasks} 个`,
+            '',
+            '确认后会中止正在运行的任务并清理对应临时文件。其它聊天和其它用户的任务不受影响。',
+        ].join('\n'),
+    }) as Api.Message;
+    if (!sent?.id) throw new Error('无法绑定批量任务确认消息');
+    const confirmId = destructiveConfirmations.issue({
+        actorId,
+        chatId,
+        messageId: sent.id,
+        action: 'cancel_task_scope',
+    });
+    pendingBulkTaskCancellations.set(confirmId, { actorId, chatId, messageId: sent.id });
+    await sent.edit({ text: sent.message, buttons: buildBulkTaskCancelKeyboard(confirmId) });
+}
+
+async function cancelTasksForScope(userId: number, chatId: string): Promise<BulkTaskImpact> {
+    const [channelRows, ytdlpRows] = await Promise.all([
+        listTelegramActiveTaskQueues(userId, 1000),
+        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
+    ]);
+    let channelTasks = 0;
+    for (const row of channelRows.filter(item => String(item.chat_id || '') === chatId)) {
+        const cancelled = await cancelTelegramBackgroundJob(userId, String(row.id), chatId);
+        if (!cancelled) continue;
+        channelTasks += 1;
+        cancelChannelExecutionGroup(String(row.id));
+    }
+    let ytdlpTasks = 0;
+    for (const task of ytdlpRows.filter(item => String(item.chatId || '') === chatId && ['pending', 'running', 'paused'].includes(item.status))) {
+        const cancelled = await cancelYtDlpTask(task.id);
+        if (cancelled?.status === 'cancelled') ytdlpTasks += 1;
+    }
+    const ordinaryTasks = listDownloadTaskGroups(chatId, userId)
+        .map(ordinaryTaskCenterItem)
+        .filter((item): item is TaskCenterItem => Boolean(item)).length;
+    const ordinary = forceStopDownloadTasksForScope(chatId, userId, '用户确认取消当前聊天全部任务');
+    return {
+        ordinaryTasks,
+        ordinaryActiveFiles: ordinary.active,
+        ordinaryPendingFiles: ordinary.pending,
+        channelTasks,
+        ytdlpTasks,
+    };
+}
+
+export async function handleBulkTaskCancelCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
+        return;
+    }
+    const match = data.match(/^bulk_task_(confirm|cancel)_([A-Za-z0-9_-]+)$/);
+    if (!match) return;
+    const [, action, confirmId] = match;
+    const pending = pendingBulkTaskCancellations.get(confirmId);
+    if (!pending) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '批量取消确认无效或已过期', alert: true }));
+        return;
+    }
+    const binding = {
+        actorId: userId,
+        chatId: getCallbackChatKey(update),
+        messageId: Number(update.msgId),
+        action: 'cancel_task_scope' as const,
+    };
+    if (action === 'cancel') {
+        if (!destructiveConfirmations.cancel(confirmId, binding)) {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该确认不属于你或已过期', alert: true }));
+            return;
+        }
+        pendingBulkTaskCancellations.delete(confirmId);
+        await client.editMessage(update.peer, { message: Number(update.msgId), text: '已返回，当前聊天任务未被取消。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已返回' }));
+        return;
+    }
+    const consumed = destructiveConfirmations.consume(confirmId, binding);
+    pendingBulkTaskCancellations.delete(confirmId);
+    if (consumed.status !== 'ok') {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该确认不属于你、已过期或已使用', alert: true }));
+        return;
+    }
+    try {
+        const result = await cancelTasksForScope(userId, pending.chatId);
+        await client.editMessage(update.peer, {
+            message: Number(update.msgId),
+            text: [
+                '🛑 **当前聊天任务已取消**',
+                '',
+                `普通下载：${result.ordinaryTasks} 个任务（处理中 ${result.ordinaryActiveFiles} / 等待 ${result.ordinaryPendingFiles} 个文件）`,
+                `频道任务：${result.channelTasks} 个`,
+                `yt-dlp：${result.ytdlpTasks} 个`,
+            ].join('\n'),
+            buttons: new Api.ReplyInlineMarkup({ rows: [] }),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '当前聊天任务已取消' }));
+    } catch (error) {
+        console.error('🤖 批量取消当前聊天任务失败:', error);
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `取消失败: ${(error as Error).message}`, alert: true }));
+    }
+}
+
 export async function handleStopTasks(message: Api.Message): Promise<void> {
     try {
-        const senderId = message.senderId?.toJSNumber();
-        const chatId = message.chatId?.toString();
-        if (!senderId || !chatId) {
-            await message.reply({ message: '📮 无法识别当前聊天，未停止任务' });
-            return;
-        }
-        const result = forceStopDownloadTasksForScope(chatId, senderId, '用户通过 /stop_tasks 停止当前聊天任务');
-        if (result.total === 0) {
-            await message.reply({ message: '📮 当前没有可停止的下载任务' });
-            return;
-        }
-
-        await message.reply({
-            message: `🛑 已发送停止指令\n\n处理中: ${result.active}\n等待中: ${result.pending}\n\n正在下载的任务会在当前分片结束后停止，并自动清理临时文件。`
-        });
+        await requestBulkTaskCancellation(message);
     } catch (error) {
         console.error('🤖 强制停止任务失败:', error);
         await message.reply({ message: `❌ 强制停止任务失败: ${(error as Error).message}` });
@@ -1217,8 +1408,8 @@ export async function handlePauseTasks(message: Api.Message, args: string[] = []
         }
     }
     await message.reply({ message: taskId
-        ? `📮 没有找到任务：${taskId}。未暂停全局下载队列。`
-        : `⏸️ 已暂停全局下载队列\n\n进行中: ${result.active}\n等待中: ${result.pending}\n\n当前正在下载的文件会继续完成，新的等待任务暂不开始。` });
+        ? `📮 没有找到任务：${taskId}。未暂停当前聊天任务。`
+        : `⏸️ 已暂停当前聊天的普通下载任务\n\n进行中: ${result.active}\n等待中: ${result.pending}\n\n当前正在下载的文件会继续完成，新的等待任务暂不开始。` });
 }
 
 export async function handleResumeTasks(message: Api.Message, args: string[] = []): Promise<void> {
@@ -1252,8 +1443,8 @@ export async function handleResumeTasks(message: Api.Message, args: string[] = [
         });
     }
     await message.reply({ message: taskId
-        ? `📮 没有找到任务：${taskId}。未继续全局下载队列。`
-        : `▶️ 已继续全局下载队列\n\n进行中: ${result.active}\n等待中: ${result.pending}` });
+        ? `📮 没有找到任务：${taskId}。未继续当前聊天任务。`
+        : `▶️ 已继续当前聊天的普通下载任务\n\n进行中: ${result.active}\n等待中: ${result.pending}` });
 }
 
 export async function handleCancelTask(message: Api.Message, args: string[]): Promise<void> {
@@ -1262,21 +1453,8 @@ export async function handleCancelTask(message: Api.Message, args: string[]): Pr
     const chatId = message.chatId?.toString();
     if (senderId) {
         if (selector === 'all') {
-            const currentChatJobs = (await listTelegramActiveTaskQueues(senderId, 1000))
-                .filter(job => String(job.chat_id || '') === String(chatId || ''));
-            const jobs: any[] = [];
-            for (const row of currentChatJobs) {
-                const cancelled = await cancelTelegramBackgroundJob(senderId, String(row.id), chatId);
-                if (cancelled) jobs.push(cancelled);
-            }
-            for (const job of jobs) cancelChannelExecutionGroup(String(job.id));
-            const result = chatId
-                ? forceStopDownloadTasksForScope(chatId, senderId, '用户通过 /task_cancel all 取消当前聊天任务')
-                : { active: 0, pending: 0, total: 0 };
-            if (jobs.length > 0 || result.total > 0) {
-                await message.reply({ message: `🛑 已取消任务\n\n频道任务: ${jobs.length}\n普通下载: 处理中 ${result.active} / 等待 ${result.pending}` });
-                return;
-            }
+            await requestBulkTaskCancellation(message);
+            return;
         } else {
             if (chatId) {
                 const ordinary = cancelDownloadTaskGroup(selector, chatId, senderId);
@@ -1290,6 +1468,20 @@ export async function handleCancelTask(message: Api.Message, args: string[]): Pr
                 cancelChannelExecutionGroup(String(job.id));
                 await message.reply({ message: `🛑 已取消频道任务 ${String(job.id).slice(0, 12)}\n来源：${job.source}` });
                 return;
+            }
+            if (chatId) {
+                const ytdlpTasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: senderId, limit: 500 });
+                const matches = ytdlpTasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(selector.toLowerCase()));
+                if (matches.length === 1) {
+                    const cancelled = await cancelYtDlpTask(matches[0].id);
+                    if (cancelled?.status === 'cancelled') {
+                        await message.reply({ message: `🛑 已取消 yt-dlp 任务 ${matches[0].id}` });
+                        return;
+                    }
+                } else if (matches.length > 1) {
+                    await message.reply({ message: '📮 yt-dlp 任务 ID 前缀不唯一，请提供更长的 ID。' });
+                    return;
+                }
             }
         }
     }
@@ -1426,7 +1618,7 @@ export async function handlePathSession(message: Api.Message, args: string[]): P
 }
 
 export async function handlePathClear(message: Api.Message): Promise<void> {
-    clearTelegramPathState(message.chatId?.toString() || 'unknown');
+    await clearTelegramPathStatePersistent(message.chatId?.toString() || 'unknown');
     await message.reply({ message: '🧹 已清除下一次/本会话自定义下载目录，后续恢复使用默认自动分类目录。' });
 }
 
@@ -1441,7 +1633,7 @@ export async function handlePathRulesCallback(client: TelegramClient, update: Ap
         const pathCenterState = await getPathCenterState();
         const chatKey = getCallbackChatKey(update);
         if (data === 'pr_clear_custom') {
-            clearTelegramPathState(chatKey);
+            await clearTelegramPathStatePersistent(chatKey);
         } else if (data === 'pr_recent') {
             const recent = await getRecentTelegramPathsPersistent(chatKey);
             await client.sendMessage(update.peer, {

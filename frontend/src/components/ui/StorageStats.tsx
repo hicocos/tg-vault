@@ -39,12 +39,7 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                         </span>
                         <span className="font-medium">{stats.tgvault.fileCount} 个文件</span>
                     </div>
-                    <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div
-                            className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                            style={{ width: `${Math.min(stats.tgvault.usedPercent, 100)}%` }}
-                        />
-                    </div>
+                {/* Indexed usage deliberately has no percentage unless a remote quota exists. */}
                     <p className="text-[10px] text-muted-foreground">
                         已用 {stats.tgvault.used}
                     </p>
@@ -81,12 +76,6 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                 <div className="flex items-center justify-between text-sm">
                     <span className="text-muted-foreground">TG Vault 使用</span>
                     <span className="font-medium">{stats.tgvault.used}</span>
-                </div>
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                    <div
-                        className="h-full bg-blue-500 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.min(stats.tgvault.usedPercent, 100)}%` }}
-                    />
                 </div>
                 <p className="text-xs text-muted-foreground">
                     共 {stats.tgvault.fileCount} 个文件

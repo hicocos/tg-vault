@@ -4,12 +4,15 @@ import { Trash2, X, CheckSquare, Share2, Copy, Calendar, Lock, Check } from "luc
 import { Button } from "./Button";
 import { DatePicker } from "./DatePicker";
 
+import type { StorageCapabilities } from "../../services/api";
+
 interface BulkActionToolbarProps {
     selectedFilesCount: number;
     selectedFoldersCount: number;
     onDelete: () => void;
     onCancel: () => void;
     onShare: (password: string, expiration: string) => Promise<string | null>;
+    shareCapabilities?: StorageCapabilities;
     isVisible: boolean;
 }
 
@@ -19,6 +22,7 @@ export const BulkActionToolbar = ({
     onDelete,
     onCancel,
     onShare,
+    shareCapabilities,
     isVisible
 }: BulkActionToolbarProps) => {
     const [showShareSettings, setShowShareSettings] = useState(false);
@@ -33,7 +37,10 @@ export const BulkActionToolbar = ({
     const [generatedLink, setGeneratedLink] = useState<string | null>(null);
 
     // Share is currently only available for exactly one file (not folders).
-    const canShare = selectedFilesCount === 1 && selectedFoldersCount === 0;
+    const canShare = selectedFilesCount === 1 && selectedFoldersCount === 0 && shareCapabilities?.share === true;
+    const shareUnavailableReason = selectedFilesCount !== 1 || selectedFoldersCount !== 0
+        ? '请选择单个文件进行分享'
+        : shareCapabilities?.share ? '分享' : '当前存储不支持分享，可改用下载';
 
     const handleShareClick = () => {
         if (showShareSettings) {
@@ -172,7 +179,7 @@ export const BulkActionToolbar = ({
                                     className="h-11 px-4 text-sm flex items-center gap-1.5 hover:bg-primary/10 text-blue-600 hover:text-blue-700 touch-manipulation"
                                     onClick={handleShareClick}
                                     disabled={!canShare}
-                                    title={!canShare ? "请选择单个文件或文件夹进行分享" : "分享"}
+                                    title={shareUnavailableReason}
                                 >
                                     <Share2 className="h-3.5 w-3.5" />
                                     <span>分享</span>
@@ -205,7 +212,7 @@ export const BulkActionToolbar = ({
                                         {!generatedLink ? (
                                             <div className="flex items-start md:items-center flex-col md:flex-row gap-4">
                                                 {/* Expiration Input */}
-                                                <div className="flex-1 w-full relative group">
+                                                {shareCapabilities?.shareExpiration && <div className="flex-1 w-full relative group">
                                                     <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors">
                                                         <Calendar className="h-4 w-4" />
                                                     </div>
@@ -230,10 +237,10 @@ export const BulkActionToolbar = ({
                                                             )}
                                                         </AnimatePresence>
                                                     </div>
-                                                </div>
+                                                </div>}
 
                                                 {/* Password Input */}
-                                                <div className="flex-1 w-full relative group">
+                                                {shareCapabilities?.sharePassword && <div className="flex-1 w-full relative group">
                                                     <div className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground group-focus-within:text-primary transition-colors">
                                                         <Lock className="h-4 w-4" />
                                                     </div>
@@ -244,7 +251,7 @@ export const BulkActionToolbar = ({
                                                         placeholder="设置访问密码 (可选)"
                                                         className="w-full h-9 pl-9 pr-3 rounded-lg border border-border bg-background/50 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition-all hover:bg-background"
                                                     />
-                                                </div>
+                                                </div>}
 
                                                 {/* Copy/Generate Button */}
                                                 <Button

@@ -38,11 +38,13 @@ import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules, getTelegramBatchFolderName, getTelegramChatName, isOpaqueTelegramIdentifier } from '../utils/storagePath.js';
 import { resolveTelegramGeneratedFileName } from '../utils/telegramNaming.js';
 import { annotateTelegramMediaGroup, createTelegramMediaGroupDebouncer, getForwardedSourceLookup, prefetchForwardedSourceMessages, takePendingMediaGroupSnapshot, telegramMediaGroupQueueKey, type ForwardedSourceMessageCache } from '../utils/telegramMediaGroup.js';
-import { resolveTelegramStorageFolder, resolveTelegramBatchStorageFolder, resolveTelegramTaskStorageFolder, previewTelegramStorageFolder } from '../utils/telegramPathSettings.js';
+import { resolveTelegramStorageFolderPersistent, resolveTelegramTaskStorageFolderPersistent, previewTelegramStorageFolderPersistent } from '../utils/telegramPathSettings.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
-import { DownloadTaskQueue } from './downloadTaskQueue.js';
+import { DownloadTaskQueue, type DownloadTaskGroupInput, type DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
+import { persistOrdinaryTransferTask } from './transferTasks.js';
 import { saveAndIndexWithCompensation, compensateIndexedWriteAfterCancel } from './storageWrite.js';
-import { withStorageAccountOperationLease } from './storageAccountOperation.js';
+import { acquireStorageAccountOperationLease, withStorageAccountOperationLease } from './storageAccountOperation.js';
+import { lockStorageAccountForUse } from './storageAccountLifecycle.js';
 import {
     beginTelegramWriteReconciliation,
     markTelegramWriteIndexPresent,
@@ -488,8 +490,52 @@ async function safeReply(message: Api.Message, params: { message: string, button
     }
 }
 
+const ordinaryTaskPersistedAt = new Map<string, number>();
+async function admitOrdinaryTransferTask(input: DownloadTaskGroupInput): Promise<void> {
+    const now = Date.now();
+    const snapshot: DownloadTaskGroupSnapshot = {
+        ...input,
+        state: 'waiting',
+        total: Math.max(0, input.expectedTotal || 0),
+        active: 0,
+        pending: 0,
+        completed: 0,
+        failed: 0,
+        cancelled: 0,
+        createdAt: now,
+        updatedAt: now,
+    };
+    if (!input.targetAccountId) {
+        await persistOrdinaryTransferTask(snapshot);
+        return;
+    }
+    const client = await pool.connect();
+    let lease: Awaited<ReturnType<typeof acquireStorageAccountOperationLease>> | null = null;
+    try {
+        await client.query('BEGIN');
+        const account = await lockStorageAccountForUse(client, input.targetAccountId);
+        if (account.type !== input.targetProvider) throw new Error('普通 Bot 任务目标账户与 provider 不匹配');
+        lease = await acquireStorageAccountOperationLease(pool, input.targetAccountId, 'telegram_bot_admission');
+        await client.query('COMMIT');
+        await persistOrdinaryTransferTask(snapshot);
+    } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw error;
+    } finally {
+        client.release();
+        await lease?.release();
+    }
+}
 const downloadQueue = new DownloadTaskQueue({
     maxConcurrent: normalizeFileDownloadConcurrency(process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY),
+    onGroupChanged: async group => {
+        if (group.hidden) return;
+        const now = Date.now();
+        const terminal = ['completed', 'cancelled'].includes(group.state) || group.failed > 0;
+        if (!terminal && now - (ordinaryTaskPersistedAt.get(group.id) || 0) < 1_000) return;
+        ordinaryTaskPersistedAt.set(group.id, now);
+        await persistOrdinaryTransferTask(group);
+    },
 });
 const channelTaskAbortRegistry = new TaskAbortRegistry();
 
@@ -1573,7 +1619,7 @@ async function processFileUpload(
                 ? file.folderOverride
                 : queue?.storageFolder !== undefined
                     ? queue.storageFolder
-                    : resolveTelegramStorageFolder(chatIdForPath, automaticFolder);
+                    : await resolveTelegramStorageFolderPersistent(chatIdForPath, automaticFolder);
 
             const downloadSource = await resolveDownloadSource(client, file.message, file.forwardedSourceCache);
             const result = await downloadAndSaveFile(downloadSource.client, downloadSource.message, file.fileName, file.targetDir, reportProgress, signal);
@@ -1868,15 +1914,19 @@ async function processBatchUploadSnapshot(client: TelegramClient | undefined, qu
     if (!folderName || isOpaqueTelegramIdentifier(folderName)) {
         folderName = await getTelegramBatchFolderName(firstMessage, mediaGroupId);
     }
-    downloadQueue.ensureGroup({
+    const initialAlbumGroup: DownloadTaskGroupInput = {
         id: groupId,
         kind: 'album',
         title: folderName,
         chatId: chatId.toString(),
         userId: queue.userId || firstMessage.senderId?.toJSNumber(),
+        targetProvider: queue.storageTarget.provider.name,
+        targetAccountId: queue.storageTarget.accountId,
         targetFolder: queue.storageFolder,
         expectedTotal: snapshot.length,
-    });
+    };
+    await admitOrdinaryTransferTask(initialAlbumGroup);
+    downloadQueue.ensureGroup(initialAlbumGroup);
     const sharedCaption = mediaGroupCaption;
     const activeUserClient = getTelegramUserClient();
     const shouldPrefetchForwardedSources = activeUserClient
@@ -1935,7 +1985,7 @@ async function processBatchUploadSnapshot(client: TelegramClient | undefined, qu
             mimeType: firstBatchFile.mimeType,
             fileName: firstBatchFile.fileName,
         }, storageRules);
-        const storageFolder = resolveTelegramBatchStorageFolder(chatId.toString(), automaticPreview);
+        const storageFolder = await resolveTelegramStorageFolderPersistent(chatId.toString(), automaticPreview);
         queue.storageFolder = storageFolder;
         downloadQueue.ensureGroup({
             id: groupId,
@@ -1943,6 +1993,8 @@ async function processBatchUploadSnapshot(client: TelegramClient | undefined, qu
             title: queue.folderName || folderName,
             chatId: chatId.toString(),
             userId: queue.userId || firstMessage.senderId?.toJSNumber(),
+            targetProvider: queue.storageTarget.provider.name,
+            targetAccountId: queue.storageTarget.accountId,
             targetFolder: storageFolder,
             expectedTotal: snapshot.length,
         });
@@ -2107,7 +2159,7 @@ export async function getTelegramDownloadPreview(messages: Api.Message[]): Promi
             mimeType: fileInfo.mimeType,
             fileName: fileInfo.fileName,
         }, storageRules);
-        const storageFolder = previewTelegramStorageFolder(message.chatId?.toString() || 'unknown', automaticFolder);
+        const storageFolder = await previewTelegramStorageFolderPersistent(message.chatId?.toString() || 'unknown', automaticFolder);
         const duplicate = await findDuplicateFile(fileInfo.fileName, storageFolder, getEstimatedFileSize(message), activeAccountId);
         if (duplicate) duplicateCount += 1;
     }
@@ -2297,7 +2349,7 @@ export async function downloadTelegramChannelRange(
                     mimeType: firstRef.fileInfo.mimeType,
                     fileName: firstRef.fileInfo.fileName,
                 }, storageRules);
-                taskResolvedStorageFolder = resolveTelegramTaskStorageFolder(chatIdStr, automaticPreview).folder;
+                taskResolvedStorageFolder = (await resolveTelegramTaskStorageFolderPersistent(chatIdStr, automaticPreview)).folder;
             }
         }
         registerBatch(chatIdStr, batchId, {
@@ -2419,7 +2471,7 @@ export async function downloadTelegramChannelRange(
                         mimeType,
                         fileName,
                     }, storageRules);
-                    const resolved = resolveTelegramTaskStorageFolder(chatIdStr, automaticPreview).folder;
+                    const resolved = (await resolveTelegramTaskStorageFolderPersistent(chatIdStr, automaticPreview)).folder;
                     taskResolvedStorageFolder = resolved;
                     updateBatch(chatIdStr, batchId, { folderPath: resolved || undefined });
                 }
@@ -2593,23 +2645,27 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         const chatIdStr = chatId.toString();
         const chatName = await getTelegramChatName(message);
         const previewRules = await getStoragePathRules();
-        const previewFolder = resolveTelegramStorageFolder(chatIdStr, buildStorageFolderWithRules({
+        const singleStorageTarget = storageManager.getActiveTarget();
+        const previewFolder = await resolveTelegramStorageFolderPersistent(chatIdStr, buildStorageFolderWithRules({
             source: 'telegram',
             chatName,
             mimeType,
             fileName: finalFileName,
         }, previewRules));
-        const singleStorageTarget = storageManager.getActiveTarget();
         const singleGroupId = ordinaryGroupId('s', chatIdStr, String(message.id));
-        downloadQueue.ensureGroup({
+        const singleGroup: DownloadTaskGroupInput = {
             id: singleGroupId,
             kind: 'single',
             title: finalFileName,
             chatId: chatIdStr,
             userId: senderId,
+            targetProvider: singleStorageTarget.provider.name,
+            targetAccountId: singleStorageTarget.accountId,
             targetFolder: previewFolder,
             expectedTotal: 1,
-        });
+        };
+        await admitOrdinaryTransferTask(singleGroup);
+        downloadQueue.ensureGroup(singleGroup);
 
         if (message.chatId) {
             await checkAndResetSession(client, chatId);
@@ -2706,13 +2762,15 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     mimeType,
                     fileName: finalFileName,
                 }, storageRules);
-                const storageFolder = resolveTelegramStorageFolder(chatIdStr, automaticFolder);
+                const storageFolder = previewFolder;
                 downloadQueue.ensureGroup({
                     id: singleGroupId,
                     kind: 'single',
                     title: finalFileName,
                     chatId: chatIdStr,
                     userId: senderId,
+                    targetProvider: singleStorageTarget.provider.name,
+                    targetAccountId: singleStorageTarget.accountId,
                     targetFolder: storageFolder,
                     expectedTotal: 1,
                 });

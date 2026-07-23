@@ -1,92 +1,132 @@
 {
-    "app": {
-        "title": "TG Vault",
-        "subtitle": "Manage and organize your digital assets.",
-        "searchPlaceholder": "Search files...",
-        "upload": "Upload",
-        "select": "Select",
-        "viewAll": "View all",
-        "recent": "Recent Files",
-        "dropTitle": "Click or drag files to upload",
-        "dropActive": "Drop files now",
-        "dropSubtitle": "SVG, PNG, JPG or GIF (max. 800x400px)",
-        "release": "Release to upload",
-        "syncing": "Server is uploading to {{source}}...",
-        "moveTo": "Move to",
-        "moveSuccess": "Move successful",
-        "moveFailed": "Move failed",
-        "rootDirectory": "Root Directory",
-        "cancel": "Cancel",
-        "confirm": "Confirm"
+  "app": {
+    "title": "TG Vault",
+    "subtitle": "Manage and organize your digital assets.",
+    "searchPlaceholder": "Search files...",
+    "mobileSearch": "Search files",
+    "refresh": "Refresh files",
+    "upload": "Upload",
+    "select": "Select",
+    "exitSelection": "Exit selection",
+    "viewAll": "View all",
+    "recent": "Recent files",
+    "dropTitle": "Click or drag files to upload",
+    "dropActive": "Drop files now",
+    "dropSubtitle": "Any file is supported; files over 40 MiB use chunked upload",
+    "release": "Release to upload",
+    "syncing": "Server is uploading to {{source}}...",
+    "moveTo": "Move to",
+    "moveSuccess": "Move successful",
+    "moveFailed": "Move failed",
+    "rootDirectory": "Root directory",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "sortName": "Name",
+    "sortDate": "Date",
+    "loadMore": "Load more",
+    "loading": "Loading…"
+  },
+  "sidebar": {
+    "files": "My files",
+    "dashboard": "Dashboard",
+    "settings": "Settings",
+    "media": "Media",
+    "documents": "Documents",
+    "trash": "Trash",
+    "favorites": "Favorites",
+    "tasks": "Tasks",
+    "logout": "Sign out on this device",
+    "categories": {
+      "images": "Images",
+      "videos": "Videos",
+      "audio": "Audio",
+      "docs": "Other"
     },
-    "sidebar": {
-        "files": "My Files",
-        "dashboard": "Dashboard",
-        "settings": "Settings",
-        "media": "Media",
-        "documents": "Documents",
-        "trash": "Trash",
-        "categories": {
-            "images": "Images",
-            "videos": "Videos",
-            "audio": "Audio",
-            "docs": "Other"
-        },
-        "storage": {
-            "used": "{{used}} GB of {{total}} GB used",
-            "uc": "Storage"
-        }
-    },
-    "file": {
-        "size": "Size",
-        "date": "Date",
-        "download": "Download",
-        "preview": "Preview",
-        "items": "{{count}} items",
-        "delete": "Delete",
-        "rename": "Rename",
-        "renameTitle": "Rename",
-        "renamePlaceholder": "Enter new name",
-        "renameConfirm": "Confirm",
-        "renameCancel": "Cancel",
-        "renameExtHint": "File extension cannot be changed",
-        "move": "Move File"
-    },
-    "folder": {
-        "move": "Move Folder"
-    },
-    "delete": {
-        "title": "Are you sure?",
-        "description": "This will permanently delete \"{{name}}\". This action cannot be undone.",
-        "cancel": "Cancel",
-        "confirm": "Delete"
-    },
-    "empty": {
-        "title": "No files found",
-        "description": "Try dragging some files here or check your filters."
-    },
-    "settings": {
-        "title": "Settings",
-        "general": {
-            "title": "General",
-            "language": "Language",
-            "theme": "Theme",
-            "themeLight": "Light",
-            "themeDark": "Dark",
-            "themeSystem": "System"
-        },
-        "account": {
-            "title": "Account",
-            "name": "Name",
-            "email": "Email",
-            "plan": "Current Plan",
-            "upgrade": "Upgrade"
-        },
-        "storage": {
-            "title": "Storage",
-            "total": "Total Storage",
-            "used": "Used",
-            "free": "Free"
-        }
+    "storage": {
+      "used": "{{used}} GB of {{total}} GB used",
+      "uc": "Storage"
     }
+  },
+  "file": {
+    "size": "Size",
+    "date": "Date",
+    "download": "Download",
+    "preview": "Preview",
+    "items": "{{count}} items",
+    "delete": "Delete",
+    "rename": "Rename",
+    "renameTitle": "Rename",
+    "renamePlaceholder": "Enter a new name",
+    "renameConfirm": "Confirm",
+    "renameCancel": "Cancel",
+    "renameExtHint": "The file extension cannot be changed",
+    "move": "Move file",
+    "favorite": "Favorite",
+    "unfavorite": "Remove from favorites",
+    "share": "Share"
+  },
+  "folder": {
+    "move": "Move folder"
+  },
+  "delete": {
+    "title": "Confirm deletion?",
+    "subtitle": "This action cannot be undone",
+    "description": "This will permanently delete “{{name}}”. This action cannot be undone.",
+    "cancel": "Cancel",
+    "confirm": "Delete"
+  },
+  "upload": {
+    "anyFile": "Any file is supported",
+    "chunkHint": "Files over 40 MiB use chunked upload",
+    "speed": "Speed {{value}}",
+    "eta": "About {{value}} remaining",
+    "uploading": "Uploading… {{percent}}%",
+    "keepUsing": "Uploads continue in the background; you can keep browsing or add files"
+  },
+  "empty": {
+    "title": "No files found",
+    "description": "Try dragging files here or check your filters.",
+    "root": { "title": "No files here yet", "description": "Upload a file or create a folder to start organizing your assets." },
+    "folder": { "title": "This folder is empty", "description": "Upload to this folder or return to its parent." },
+    "search": { "title": "No matching files", "description": "Try another keyword or clear the search." },
+    "filter": { "title": "No files in this category", "description": "Choose another category or upload a matching file." },
+    "offline": { "title": "Cannot reach the server", "description": "Check your network connection and try again." },
+    "error": { "title": "Could not load files", "description": "The service is temporarily unavailable. Try again shortly." },
+    "stale": { "title": "Showing previously loaded data", "description": "Refresh failed; this content may be out of date." },
+    "clearSearch": "Clear search",
+    "clearFilter": "View all files",
+    "retry": "Retry"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "Manage appearance, security, Telegram, storage, and data maintenance.",
+    "nav": {
+      "general": "General",
+      "security": "Security",
+      "telegram": "Telegram",
+      "storage": "Storage",
+      "maintenance": "Maintenance"
+    },
+    "general": {
+      "title": "General",
+      "language": "Language",
+      "theme": "Theme",
+      "themeLight": "Light",
+      "themeDark": "Dark",
+      "themeSystem": "System"
+    },
+    "account": {
+      "title": "Account",
+      "name": "Name",
+      "email": "Email",
+      "plan": "Current plan",
+      "upgrade": "Upgrade"
+    },
+    "storage": {
+      "title": "Storage space",
+      "total": "Total storage",
+      "used": "Used",
+      "free": "Free"
+    }
+  }
 }

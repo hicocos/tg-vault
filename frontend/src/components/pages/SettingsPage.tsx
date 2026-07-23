@@ -1,17 +1,20 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen } from "lucide-react";
+import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen, KeyRound, LogOut, UserX, CircleHelp, XCircle, RefreshCw, Loader2, Gauge, Copy } from "lucide-react";
 import { Button } from "../ui/Button";
 import { LanguageToggle } from "../ui/LanguageToggle";
 import { useTheme } from "../../hooks/useTheme";
 import { cn } from "../../lib/utils";
-import { fileApi, type StorageStats } from "../../services/api";
+import { fileApi, type AdvancedTaskSettings, type StorageAccount, type StorageConfig, type StorageStats } from "../../services/api";
 import { isTrustedOAuthPopupMessage } from "../../services/oauthPopupMessage";
 import { authService } from "../../services/auth";
+import { SETTINGS_SECTIONS, type SettingsSectionId } from "./settingsSections";
+import { useRuntimeUiLocalization } from "./useRuntimeUiLocalization";
 
 interface SettingsPageProps {
     storageStats?: StorageStats | null;
+    onSignedOut?: () => void;
 }
 
 interface SettingsSectionProps {
@@ -62,23 +65,101 @@ const SettingsRow = ({ icon: Icon, label, value, action, onClick, description }:
     </div>
 );
 
-export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
+const StorageProbeStatus = ({ account, busy, onProbe }: { account: StorageAccount; busy: boolean; onProbe: () => void }) => {
+    const status = account.last_probe_status;
+    const Icon = status === 'available' ? CheckCircle : status === 'failed' ? XCircle : CircleHelp;
+    const label = status === 'available' ? '连接可用' : status === 'failed' ? '连接失败' : '尚未测试';
+    return (
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <span className={cn(
+                "inline-flex items-center gap-1 rounded-md border px-2 py-1",
+                status === 'available' && "border-emerald-200 bg-emerald-50 text-emerald-700",
+                status === 'failed' && "border-red-200 bg-red-50 text-red-700",
+                !status && "border-border bg-muted text-muted-foreground",
+            )} title={account.last_probe_error || undefined}>
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+            </span>
+            {account.last_probed_at && <span className="text-muted-foreground break-words">{new Date(account.last_probed_at).toLocaleString('zh-CN', { hour12: false })}</span>}
+            <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={onProbe}>
+                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                测试连接
+            </Button>
+            {status === 'failed' && account.last_probe_error && <p className="min-w-0 basis-full [overflow-wrap:anywhere] text-red-700">{account.last_probe_error}</p>}
+        </div>
+    );
+};
+
+interface ActionDialogState {
+    mode: 'notice' | 'confirm' | 'prompt';
+    title: string;
+    message: string;
+    inputType?: 'text' | 'password';
+    resolve?: (value: boolean | string | null) => void;
+}
+
+const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
+    state: ActionDialogState;
+    input: string;
+    onInput: (value: string) => void;
+    onCancel: () => void;
+    onConfirm: () => void;
+}) => {
+    return (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/55 p-4" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onCancel(); }}>
+            <div className="w-full max-w-md rounded-2xl border border-border bg-background p-6 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="settings-action-title">
+                <h3 id="settings-action-title" className="text-lg font-semibold">{state.title}</h3>
+                <p className="mt-3 whitespace-pre-line text-sm leading-6 text-muted-foreground">{state.message}</p>
+                {state.mode === 'prompt' && (
+                    <input
+                        autoFocus
+                        type={state.inputType || 'text'}
+                        value={input}
+                        onChange={event => onInput(event.target.value)}
+                        onKeyDown={event => { if (event.key === 'Enter') onConfirm(); if (event.key === 'Escape') onCancel(); }}
+                        className="mt-4 h-11 w-full rounded-lg border border-border bg-background px-3 outline-none focus:ring-2 focus:ring-primary/20"
+                    />
+                )}
+                <div className="mt-6 flex justify-end gap-2">
+                    {state.mode !== 'notice' && <Button variant="outline" onClick={onCancel}>取消</Button>}
+                    <Button onClick={onConfirm}>{state.mode === 'notice' ? '知道了' : '确认'}</Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export const SettingsPage = ({ storageStats, onSignedOut }: SettingsPageProps) => {
     const { t } = useTranslation();
     const { theme, setTheme } = useTheme();
+    const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
+    const pageRef = useRef<HTMLDivElement>(null);
+    useRuntimeUiLocalization(pageRef);
+    const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
+    const [actionDialogInput, setActionDialogInput] = useState('');
+
+    const showNotice = (message: string, title = '操作结果') => new Promise<void>(resolve => {
+        setActionDialog({ mode: 'notice', title, message, resolve: () => resolve() });
+    });
+    const requestConfirmation = (message: string, title = '请确认') => new Promise<boolean>(resolve => {
+        setActionDialog({ mode: 'confirm', title, message, resolve: value => resolve(value === true) });
+    });
+    const requestInput = (message: string, title = '请输入', inputType: 'text' | 'password' = 'text') => new Promise<string | null>(resolve => {
+        setActionDialogInput('');
+        setActionDialog({ mode: 'prompt', title, message, inputType, resolve: value => resolve(typeof value === 'string' ? value : null) });
+    });
+    const closeActionDialog = (confirmed: boolean) => {
+        if (!actionDialog) return;
+        const value = actionDialog.mode === 'prompt' ? (confirmed ? actionDialogInput : null) : confirmed;
+        actionDialog.resolve?.(value);
+        setActionDialog(null);
+        setActionDialogInput('');
+    };
 
     // Storage Configuration State
-    const [config, setConfig] = useState<{
-        provider: string;
-        activeAccountId: string | null;
-        accounts: any[];
-        redirectUri: string;
-        googleDriveRedirectUri?: string;
-        telegramUserDownloadEnabled?: boolean;
-        telegramUserSessionReady?: boolean;
-        telegramAllowedUserIds?: number[];
-        telegramAllowedUserIdsFromEnv?: boolean;
-    } | null>(null);
+    const [config, setConfig] = useState<StorageConfig | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [probingAccountId, setProbingAccountId] = useState<string | null>(null);
     const [showOneDriveForm, setShowOneDriveForm] = useState(false);
 
     // OneDrive Form State (for adding new account)
@@ -127,6 +208,11 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
     const [is2FAActivated, setIs2FAActivated] = useState(false);
     const [activationCode, setActivationCode] = useState("");
     const [isActivating2FA, setIsActivating2FA] = useState(false);
+    const [currentPassword, setCurrentPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [isChangingPassword, setIsChangingPassword] = useState(false);
+    const [passwordError, setPasswordError] = useState<string | null>(null);
 
     // Telegram User Download State
     const [showTelegramUserDownload, setShowTelegramUserDownload] = useState(false);
@@ -134,16 +220,34 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
     const [isSavingTelegramAllowedUsers, setIsSavingTelegramAllowedUsers] = useState(false);
     const [cleanupRetentionDays, setCleanupRetentionDays] = useState(7);
     const [isCleaningDownloadItems, setIsCleaningDownloadItems] = useState(false);
+    const [advancedTasks, setAdvancedTasks] = useState<AdvancedTaskSettings | null>(null);
+
+    const reloadAdvancedTasks = async () => {
+        const data = await fileApi.getAdvancedTaskSettings();
+        setAdvancedTasks(data);
+        return data;
+    };
+
+    const updateAdvancedTask = async (patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans'>>) => {
+        try {
+            await fileApi.updateAdvancedTaskSetting(patch);
+        } catch (error: any) {
+            if (error?.code !== 'CONFIRMATION_REQUIRED') throw error;
+            if (!(await requestConfirmation('该并发值可能触发 Telegram 限流、断流或账号风控。确认继续吗？', '高并发二次确认'))) return;
+            await fileApi.updateAdvancedTaskSetting(patch, true);
+        }
+        await reloadAdvancedTasks();
+    };
 
     const handleCleanupDownloadItems = async () => {
         if (isCleaningDownloadItems) return;
-        if (!window.confirm(`确定清理 ${cleanupRetentionDays} 天前已完成的 Telegram 下载明细吗？\n\n只删除任务审计明细，不删除 files 文件索引，也不删除云端文件。`)) return;
+        if (!(await requestConfirmation(`确定删除 ${cleanupRetentionDays} 天前已完成的 Telegram 下载任务历史吗？\n\n只删除任务审计明细，不删除文件索引，也不删除云端文件。`, '删除任务历史'))) return;
         setIsCleaningDownloadItems(true);
         try {
             const result = await fileApi.cleanupDownloadItems(cleanupRetentionDays);
-            alert(`清理完成：删除 ${result.deletedCount} 条已完成下载明细。`);
+            await showNotice(`已删除 ${result.deletedCount} 条已完成下载任务历史。`);
         } catch (error: any) {
-            alert(error.message || '清理下载任务明细失败');
+            await showNotice(error.message || '删除下载任务历史失败', '操作失败');
         } finally {
             setIsCleaningDownloadItems(false);
         }
@@ -156,9 +260,9 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             const result = await fileApi.setTelegramAllowedUserIds(telegramAllowedUserIdsInput);
             setTelegramAllowedUserIdsInput(result.userIds.join(', '));
             await reloadStorageConfig();
-            alert('Telegram 允许用户列表已保存');
+            await showNotice('Telegram 允许用户列表已保存');
         } catch (error: any) {
-            alert(error.message || '更新 Telegram 允许用户列表失败');
+            await showNotice(error.message || '更新 Telegram 允许用户列表失败', '保存失败');
         } finally {
             setIsSavingTelegramAllowedUsers(false);
         }
@@ -172,11 +276,26 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         return data;
     };
 
+    const handleProbeAccount = async (account: StorageAccount) => {
+        if (probingAccountId) return;
+        setProbingAccountId(account.id);
+        try {
+            await fileApi.probeStorageAccount(account.id);
+            await reloadStorageConfig();
+            await showNotice(`“${account.name}”连接测试成功`);
+        } catch (error: any) {
+            await reloadStorageConfig().catch(() => undefined);
+            await showNotice(error?.message || '存储账户连接测试失败', '连接测试失败');
+        } finally {
+            setProbingAccountId(null);
+        }
+    };
+
     // Load initial config
     useEffect(() => {
         const loadConfig = async () => {
             try {
-                await reloadStorageConfig();
+                await Promise.all([reloadStorageConfig(), reloadAdvancedTasks()]);
             } catch (error) {
                 console.error("Failed to load storage config:", error);
             }
@@ -241,17 +360,18 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
         };
         const providerName = providerNames[provider];
 
-        if (!window.confirm(`确定要切换存储源到 ${providerName}${accountId ? ' (指定账户)' : ''} 吗？`)) return;
+        if (!(await requestConfirmation(`确定要把系统默认存储切换到 ${providerName}${accountId ? '（指定账户）' : ''}吗？\n\n这会影响所有用户后续新提交的任务；已经提交的上传、Telegram 和 yt-dlp 任务仍使用原目标。切换前会执行只读连接测试。`, '切换系统默认存储'))) return;
 
         setIsSaving(true);
         try {
             await fileApi.switchStorageProvider(provider as any, accountId);
             const data = await fileApi.getStorageConfig();
             setConfig(data);
-            alert(`已成功切换到 ${providerName}`);
+            await showNotice(`已成功切换到 ${providerName}`);
             window.location.reload();
         } catch (error: any) {
-            alert(error.message);
+            await reloadStorageConfig().catch(() => undefined);
+            await showNotice(error.message, '操作失败');
         } finally {
             setIsSaving(false);
         }
@@ -259,7 +379,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
     const handleSaveGDConfig = async () => {
         if (!gdClientId || !gdClientSecret) {
-            alert("请填写 Client ID 和 Client Secret");
+            await showNotice('请填写 Client ID 和 Client Secret', '信息不完整');
             return;
         }
         setIsSaving(true);
@@ -290,7 +410,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                 await reloadStorageConfig();
                 setShowGDForm(false);
                 if (showAlert) {
-                    alert("Google Drive 授权成功并已启用！");
+                    await showNotice('Google Drive 授权成功并已启用！');
                 }
             };
 
@@ -313,27 +433,40 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                 }
             }, 1000);
         } catch (error: any) {
-            alert("发起授权失败: " + error.message);
+            await showNotice('发起授权失败: ' + error.message, '授权失败');
         } finally {
             setIsSaving(false);
         }
     };
 
     const handleDeleteAccount = async (accountId: string, accountName: string) => {
-        if (!window.confirm(`确定要删除账户 "${accountName}" 吗？\n\n将删除该账户在 TG Vault 中的文件索引记录，但不会删除云端原文件。`)) return;
         try {
-            const result = await fileApi.deleteAccount(accountId);
-            alert(result.message);
+            const preview = await fileApi.previewAccountDeletion(accountId);
+            const impact = preview.impact;
+            const busyCount = impact.activeLeaseCount + impact.activeTaskCount + impact.activeUploadCount;
+            const impactText = [
+                `账户：${accountName}`,
+                `将删除 TG Vault 索引：${impact.fileCount} 条`,
+                `索引容量：${(impact.totalSizeBytes / 1024 / 1024).toFixed(2)} MiB`,
+                `涉及目录：${impact.folderCount} 个`,
+                `活动租约/任务/上传：${impact.activeLeaseCount}/${impact.activeTaskCount}/${impact.activeUploadCount}`,
+                '',
+                '不会删除云端原文件；执行时服务端会重新检查活动租约和任务。',
+                ...(busyCount > 0 ? ['', '当前存在活动引用，执行将被服务端阻止。请先结束相关任务。'] : []),
+            ].join('\n');
+            if (!(await requestConfirmation(impactText, '删除存储账户'))) return;
+            const result = await fileApi.deleteAccount(accountId, preview.confirmationToken);
+            await showNotice(result.message);
             const data = await fileApi.getStorageConfig();
             setConfig(data);
         } catch (error: any) {
-            alert(error.message);
+            await showNotice(error.message, '操作失败');
         }
     };
 
     const handleSaveOneDriveConfig = async () => {
         if (!odClientId) {
-            alert("请填写 Client ID");
+            await showNotice('请填写 Client ID', '信息不完整');
             return;
         }
         setIsSaving(true);
@@ -365,7 +498,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                 setConfig(newData);
                 setShowOneDriveForm(false);
                 if (showAlert) {
-                    alert("OneDrive 授权成功并已启用！");
+                    await showNotice('OneDrive 授权成功并已启用！');
                 }
             };
 
@@ -388,7 +521,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                 }
             }, 1000);
         } catch (error: any) {
-            alert("发起授权失败: " + error.message);
+            await showNotice('发起授权失败: ' + error.message, '授权失败');
         } finally {
             setIsSaving(false);
         }
@@ -396,7 +529,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
     const handleSaveOSSConfig = async () => {
         if (!ossAccountName || !ossRegion || !ossAccessKeyId || !ossAccessKeySecret || !ossBucket) {
-            alert("请填写所有必填项");
+            await showNotice('请填写所有必填项', '信息不完整');
             return;
         }
         setIsSaving(true);
@@ -404,10 +537,10 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             await fileApi.addAliyunOSSAccount(ossAccountName, ossRegion, ossAccessKeyId, ossAccessKeySecret, ossBucket);
             const data = await fileApi.getStorageConfig();
             setConfig(data);
-            alert("阿里云 OSS 账户添加成功！");
+            await showNotice('阿里云 OSS 账户添加成功！');
             setShowOSSForm(false);
         } catch (error: any) {
-            alert("添加阿里云 OSS 账户失败: " + error.message);
+            await showNotice('添加阿里云 OSS 账户失败: ' + error.message, '添加失败');
         } finally {
             setIsSaving(false);
         }
@@ -415,7 +548,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
     const handleSaveS3Config = async () => {
         if (!s3AccountName || !s3Endpoint || !s3Region || !s3AccessKeyId || !s3AccessKeySecret || !s3Bucket) {
-            alert("请填写所有必填项");
+            await showNotice('请填写所有必填项', '信息不完整');
             return;
         }
         setIsSaving(true);
@@ -423,10 +556,10 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             await fileApi.addS3Account(s3AccountName, s3Endpoint, s3Region, s3AccessKeyId, s3AccessKeySecret, s3Bucket, s3ForcePathStyle);
             const data = await fileApi.getStorageConfig();
             setConfig(data);
-            alert("S3 兼容存储账户添加成功！");
+            await showNotice('S3 兼容存储账户添加成功！');
             setShowS3Form(false);
         } catch (error: any) {
-            alert("添加 S3 兼容存储账户失败: " + error.message);
+            await showNotice('添加 S3 兼容存储账户失败: ' + error.message, '添加失败');
         } finally {
             setIsSaving(false);
         }
@@ -434,7 +567,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
 
     const handleSaveWebDAVConfig = async () => {
         if (!webdavAccountName || !webdavUrl) {
-            alert("请填写账户名称和 URL");
+            await showNotice('请填写账户名称和 URL', '信息不完整');
             return;
         }
         setIsSaving(true);
@@ -442,10 +575,10 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
             await fileApi.addWebDAVAccount(webdavAccountName, webdavUrl, webdavUsername, webdavPassword);
             const data = await fileApi.getStorageConfig();
             setConfig(data);
-            alert("WebDAV 存储账户添加成功！");
+            await showNotice('WebDAV 存储账户添加成功！');
             setShowWebDAVForm(false);
         } catch (error: any) {
-            alert("添加 WebDAV 存储账户失败: " + error.message);
+            await showNotice('添加 WebDAV 存储账户失败: ' + error.message, '添加失败');
         } finally {
             setIsSaving(false);
         }
@@ -491,7 +624,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
     };
 
     const handleDisable2FA = async () => {
-        const password = window.prompt("为了安全，请确认您的管理员密码以禁用 2FA：");
+        const password = await requestInput('为了安全，请确认您的管理员密码以禁用 2FA：', '禁用双重验证', 'password');
         if (!password) return;
 
         setIsLoading2FA(true);
@@ -501,31 +634,84 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                 setIs2FAActivated(false);
                 setShow2FA(false);
             } else {
-                alert(result.error || "禁用失败");
+                await showNotice(result.error || '禁用失败', '操作失败');
             }
         } catch (error: any) {
-            alert(error.message);
+            await showNotice(error.message, '操作失败');
         } finally {
             setIsLoading2FA(false);
         }
     };
 
+    const handleChangePassword = async () => {
+        if (isChangingPassword) return;
+        if (newPassword.length < 8) return setPasswordError('新密码至少需要 8 位');
+        if (newPassword !== confirmPassword) return setPasswordError('两次输入的新密码不一致');
+        setIsChangingPassword(true);
+        setPasswordError(null);
+        try {
+            const result = await authService.changePassword(currentPassword, newPassword);
+            if (!result.success) return setPasswordError(result.error || '修改密码失败');
+            onSignedOut?.();
+        } finally {
+            setIsChangingPassword(false);
+        }
+    };
+
+    const handleRevokeAllSessions = async () => {
+        if (!(await requestConfirmation('确定退出所有设备吗？当前浏览器也需要重新登录。', '退出所有设备'))) return;
+        const result = await authService.revokeAllSessions();
+        if (!result.success) return void await showNotice(result.error || '退出所有设备失败', '操作失败');
+        onSignedOut?.();
+    };
+
+    const handleLogoutCurrentSession = async () => {
+        await authService.logout();
+        onSignedOut?.();
+    };
+
     return (
         <motion.div
+            ref={pageRef}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="max-w-3xl mx-auto space-y-8 pb-10 mt-6"
+            className="max-w-5xl mx-auto space-y-8 pb-10 mt-6"
         >
+            {actionDialog && (
+                <ActionDialog
+                    state={actionDialog}
+                    input={actionDialogInput}
+                    onInput={setActionDialogInput}
+                    onCancel={() => closeActionDialog(false)}
+                    onConfirm={() => closeActionDialog(true)}
+                />
+            )}
             <div className="flex items-center gap-4 mb-2">
                 <div className="p-3 bg-secondary rounded-xl">
                     <Palette className="h-6 w-6 text-foreground" />
                 </div>
                 <div>
                     <h2 className="text-2xl font-bold tracking-tight">{t("settings.title")}</h2>
-                    <p className="text-muted-foreground">Customize your experience & system settings.</p>
+                    <p className="text-muted-foreground">{t("settings.subtitle")}</p>
                 </div>
             </div>
 
+            <nav className="sticky top-0 z-20 -mx-1 flex gap-2 overflow-x-auto rounded-xl border border-border bg-background/95 p-2 shadow-sm backdrop-blur" aria-label={t('settings.title')}>
+                {SETTINGS_SECTIONS.map(section => (
+                    <Button
+                        key={section.id}
+                        size="sm"
+                        variant={activeSection === section.id ? 'default' : 'ghost'}
+                        className="min-h-10 shrink-0"
+                        onClick={() => setActiveSection(section.id)}
+                        aria-current={activeSection === section.id ? 'page' : undefined}
+                    >
+                        {t(section.labelKey)}
+                    </Button>
+                ))}
+            </nav>
+
+            {activeSection === 'general' && <>
             {/* General Section: Language & Theme */}
             <SettingsSection title={t("settings.general.title")}>
                 <SettingsRow
@@ -569,9 +755,43 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     }
                 />
             </SettingsSection>
+            </>}
 
+            {activeSection === 'security' && <>
             {/* Security Section */}
             <SettingsSection title="安全设置">
+                <div className="border-b border-border/50 p-4 space-y-4">
+                    <div className="flex items-start gap-3">
+                        <div className="p-2 rounded-lg bg-muted text-muted-foreground"><KeyRound className="h-4 w-4" /></div>
+                        <div>
+                            <p className="text-sm font-medium">修改管理员密码</p>
+                            <p className="text-xs text-muted-foreground mt-1">修改成功后会撤销全部 Web 会话，所有设备都需要使用新密码重新登录。</p>
+                        </div>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                        <input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} placeholder="当前密码" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                        <input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} placeholder="新密码（至少 8 位）" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                        <input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} placeholder="再次输入新密码" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-xs text-destructive">{passwordError}</p>
+                        <Button size="sm" onClick={handleChangePassword} disabled={isChangingPassword || !currentPassword || !newPassword || !confirmPassword}>
+                            {isChangingPassword ? '修改中...' : '修改并退出全部设备'}
+                        </Button>
+                    </div>
+                </div>
+                <SettingsRow
+                    icon={LogOut}
+                    label="退出当前设备"
+                    description="立即撤销当前浏览器的登录会话。"
+                    action={<Button size="sm" variant="outline" onClick={handleLogoutCurrentSession}>退出</Button>}
+                />
+                <SettingsRow
+                    icon={UserX}
+                    label="退出所有设备"
+                    description="撤销当前密码下签发的全部 Web 会话。"
+                    action={<Button size="sm" variant="outline" className="text-destructive" onClick={handleRevokeAllSessions}>全部退出</Button>}
+                />
                 <SettingsRow
                     icon={Shield}
                     label="双重验证 (2FA)"
@@ -675,7 +895,33 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     )}
                 </AnimatePresence>
             </SettingsSection>
+            </>}
 
+            {activeSection === 'maintenance' && <>
+            <SettingsSection title="高级任务设置">
+                {advancedTasks ? <div className="divide-y divide-border/50">
+                    <SettingsRow icon={Gauge} label="单文件分片并发" description="与 Bot /download_workers 共用；12/16 需要二次确认。" action={
+                        <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.telegramDownloadWorkers} onChange={event => void updateAdvancedTask({ telegramDownloadWorkers: Number(event.target.value) })}>
+                            {[4, 8, 12, 16].map(value => <option key={value} value={value}>{value}</option>)}
+                        </select>
+                    } />
+                    <SettingsRow icon={Gauge} label="同时下载文件数" description="与 Bot /file_concurrency 共用；4 需要二次确认。" action={
+                        <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.telegramFileConcurrency} onChange={event => void updateAdvancedTask({ telegramFileConcurrency: Number(event.target.value) })}>
+                            {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
+                        </select>
+                    } />
+                    <SettingsRow icon={Copy} label="重复文件处理" description="同名、同目录、同大小文件的统一策略。" action={
+                        <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.duplicateMode} onChange={event => void updateAdvancedTask({ duplicateMode: event.target.value as 'copy' | 'skip' })}>
+                            <option value="copy">生成副本</option><option value="skip">跳过重复</option>
+                        </select>
+                    } />
+                    <SettingsRow icon={Trash2} label="自动清理未索引临时文件" description="不删除文件索引或云端实体，只清理超过保护期的本地孤儿文件。" action={
+                        <Button size="sm" variant={advancedTasks.autoCleanupOrphans ? 'default' : 'outline'} onClick={() => void updateAdvancedTask({ autoCleanupOrphans: !advancedTasks.autoCleanupOrphans })}>
+                            {advancedTasks.autoCleanupOrphans ? '已开启' : '已关闭'}
+                        </Button>
+                    } />
+                </div> : <div className="p-6 text-sm text-muted-foreground">正在加载高级任务设置…</div>}
+            </SettingsSection>
             <SettingsSection title="数据维护">
                 <SettingsRow
                     icon={Trash2}
@@ -706,7 +952,9 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     }
                 />
             </SettingsSection>
+            </>}
 
+            {activeSection === 'telegram' && <>
             {/* Telegram Download Section */}
             <SettingsSection title="Telegram Bot 设置">
                 <div className="p-4 bg-muted/20 border-b border-border/50">
@@ -792,7 +1040,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                                     setConfig(refreshedConfig);
                                     setShowTelegramUserDownload(!!refreshedConfig.telegramUserDownloadEnabled);
                                 } catch (error: any) {
-                                    alert(error.message || '更新 Telegram 下载设置失败');
+                                    await showNotice(error.message || '更新 Telegram 下载设置失败', '保存失败');
                                 } finally {
                                     setIsSaving(false);
                                 }
@@ -814,11 +1062,13 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div className="p-6 space-y-5">
                                 <div className="p-4 rounded-xl border border-amber-500/20 bg-amber-500/5 space-y-2">
                                     <p className="text-sm font-medium text-amber-700 dark:text-amber-400">这项功能需要你先准备用户账号 session</p>
-                                    <p className="text-xs text-muted-foreground leading-relaxed">
-                                        1. 申请 Telegram 的 <code className="px-1 py-0.5 rounded bg-muted">api_id</code> 和 <code className="px-1 py-0.5 rounded bg-muted">api_hash</code>
-                                        <br />2. 运行 <code className="px-1 py-0.5 rounded bg-muted">npm run login:telegram-user</code> 生成 session 文件
-                                        <br />3. 在后端环境变量里填写 <code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_API_ID</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_API_HASH</code>、<code className="px-1 py-0.5 rounded bg-muted">TELEGRAM_USER_SESSION_FILE</code>
-                                    </p>
+                                    {config?.telegramUserClientStatus && <div className="mt-3 rounded-lg border border-border bg-background/70 p-3 text-xs leading-5">
+                                        <p>状态：{config.telegramUserClientStatus.status}</p>
+                                        {config.telegramUserClientStatus.username && <p>账号：@{config.telegramUserClientStatus.username}（ID {config.telegramUserClientStatus.userId}）</p>}
+                                        {config.telegramUserClientStatus.checkedAt && <p>最近检查：{new Date(config.telegramUserClientStatus.checkedAt).toLocaleString()}</p>}
+                                        {config.telegramUserClientStatus.lastError && <p className="text-destructive">最近错误：{config.telegramUserClientStatus.lastError}</p>}
+                                        {config.telegramUserClientStatus.action && <p className="text-amber-700">下一步：{config.telegramUserClientStatus.action}</p>}
+                                    </div>}
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -874,7 +1124,9 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     )}
                 </AnimatePresence>
             </SettingsSection>
+            </>}
 
+            {activeSection === 'storage' && <>
             {/* Storage Configuration Section (New) */}
             <SettingsSection title="存储源设置">
                 <div className="mx-4 mt-3 mb-4 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5 flex items-center gap-3">
@@ -940,23 +1192,24 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div
                                 key={account.id}
                                 className={cn(
-                                    "flex items-center justify-between p-3 rounded-lg border transition-all",
+                                    "flex flex-col items-stretch gap-3 p-3 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between",
                                     account.is_active
                                         ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
                                         : "bg-background border-border hover:border-border/80"
                                 )}
                             >
-                                <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     <div className={cn(
-                                        "h-2 w-2 rounded-full",
+                                        "mt-2 h-2 w-2 shrink-0 rounded-full",
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
-                                        <p className="text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <StorageProbeStatus account={account} busy={probingAccountId === account.id} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
@@ -1120,23 +1373,24 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div
                                 key={account.id}
                                 className={cn(
-                                    "flex items-center justify-between p-3 rounded-lg border transition-all",
+                                    "flex flex-col items-stretch gap-3 p-3 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between",
                                     account.is_active
                                         ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
                                         : "bg-background border-border hover:border-border/80"
                                 )}
                             >
-                                <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     <div className={cn(
-                                        "h-2 w-2 rounded-full",
+                                        "mt-2 h-2 w-2 shrink-0 rounded-full",
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
-                                        <p className="text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <StorageProbeStatus account={account} busy={probingAccountId === account.id} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
@@ -1304,23 +1558,24 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div
                                 key={account.id}
                                 className={cn(
-                                    "flex items-center justify-between p-3 rounded-lg border transition-all",
+                                    "flex flex-col items-stretch gap-3 p-3 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between",
                                     account.is_active
                                         ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
                                         : "bg-background border-border hover:border-border/80"
                                 )}
                             >
-                                <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     <div className={cn(
-                                        "h-2 w-2 rounded-full",
+                                        "mt-2 h-2 w-2 shrink-0 rounded-full",
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
-                                        <p className="text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <StorageProbeStatus account={account} busy={probingAccountId === account.id} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
@@ -1489,23 +1744,24 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div
                                 key={account.id}
                                 className={cn(
-                                    "flex items-center justify-between p-3 rounded-lg border transition-all",
+                                    "flex flex-col items-stretch gap-3 p-3 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between",
                                     account.is_active
                                         ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
                                         : "bg-background border-border hover:border-border/80"
                                 )}
                             >
-                                <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     <div className={cn(
-                                        "h-2 w-2 rounded-full",
+                                        "mt-2 h-2 w-2 shrink-0 rounded-full",
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
-                                        <p className="text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <StorageProbeStatus account={account} busy={probingAccountId === account.id} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
@@ -1696,23 +1952,24 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                             <div
                                 key={account.id}
                                 className={cn(
-                                    "flex items-center justify-between p-3 rounded-lg border transition-all",
+                                    "flex flex-col items-stretch gap-3 p-3 rounded-lg border transition-all sm:flex-row sm:items-center sm:justify-between",
                                     account.is_active
                                         ? "bg-primary/5 border-primary/20 ring-1 ring-primary/10"
                                         : "bg-background border-border hover:border-border/80"
                                 )}
                             >
-                                <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     <div className={cn(
-                                        "h-2 w-2 rounded-full",
+                                        "mt-2 h-2 w-2 shrink-0 rounded-full",
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
-                                        <p className="text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
+                                        <StorageProbeStatus account={account} busy={probingAccountId === account.id} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
@@ -1925,6 +2182,7 @@ export const SettingsPage = ({ storageStats }: SettingsPageProps) => {
                     )}
                 </div>
             </SettingsSection>
+            </>}
 
         </motion.div>
     );

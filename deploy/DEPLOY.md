@@ -20,7 +20,10 @@ nano .env
 
 ```dotenv
 DB_PASSWORD=使用 openssl rand -hex 32 生成的随机值
+IMAGE_VERSION=v2.0.0
 VITE_API_URL=https://api.example.com
+OAUTH_CALLBACK_BASE_URL=https://api.example.com
+OAUTH_FRONTEND_ORIGIN=https://cloud.example.com
 CORS_ORIGIN=https://cloud.example.com
 DOMAIN=cloud.example.com
 COOKIE_SECURE=true
@@ -61,7 +64,7 @@ docker compose ps
 ```bash
 git fetch origin
 git status --short
-git pull --ff-only origin feat/telegram-task-center
+git pull --ff-only origin main
 docker compose up -d --build
 ```
 

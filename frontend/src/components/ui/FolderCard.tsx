@@ -9,10 +9,12 @@ import { useLongPress } from "../../hooks/useLongPress";
 
 export interface FolderData {
     name: string;
+    displayName?: string;
     files: FileData[];
     fileCount: number;
     coverFile?: FileData; // 用于显示缩略图的文件（第一个有缩略图的文件）
     latestDate?: string;
+    isFavorite?: boolean;
 }
 
 const getFileTypeIcon = (type: FileData["type"]) => {
@@ -63,7 +65,7 @@ export const FolderCard = ({
         return acc;
     }, {} as Record<string, number>);
 
-    const isFavorite = folder.files.length > 0 && folder.files.every(f => !!f.is_favorite);
+    const isFavorite = folder.isFavorite ?? (folder.files.length > 0 && folder.files.every(f => !!f.is_favorite));
 
     const handleCardClick = () => {
         if (isSelectionMode) {
@@ -108,7 +110,7 @@ export const FolderCard = ({
                         <>
                             <img
                                 src={thumbnailSrc}
-                                alt={folder.name}
+                            alt={folder.displayName || folder.name}
                                 className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105 opacity-90"
                                 loading="lazy"
                             />
@@ -180,7 +182,7 @@ export const FolderCard = ({
                 <div className={`p-3.5 flex items-start justify-between gap-2 ${isSelected ? 'bg-primary/5' : ''}`}>
                     <div className="flex-1 min-w-0">
                         <h3 className="truncate text-sm font-semibold leading-tight text-foreground mb-1" title={folder.name}>
-                            {folder.name}
+                            {folder.displayName || folder.name}
                         </h3>
                         <p className="text-xs text-muted-foreground">
                             {folder.fileCount} 个文件

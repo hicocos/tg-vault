@@ -9,6 +9,7 @@ import scopedFolderOperationsRouter from './routes/folderOperations.js';
 import uploadRouter, { apiRouter as apiUploadRouter } from './routes/upload.js';
 import storageRouter from './routes/storage.js';
 import chunkedUploadRouter from './routes/chunkedUpload.js';
+import tasksRouter from './routes/tasks.js';
 import authRouter, { requireAuth } from './routes/auth.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
 import { initTelegramBot } from './services/telegramBot.js';
@@ -19,8 +20,13 @@ import { ensureDatabaseInitialized, pool } from './db/index.js';
 import helmet from 'helmet';
 import crypto from 'node:crypto';
 import { normalizeRequestId } from './services/operationalEvents.js';
+import { markTransferTasksAfterRestart } from './services/transferTasks.js';
+import { initializeYtDlpQueue } from './services/ytDlpDownload.js';
+import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
 
 dotenv.config();
+const runtimeConfigSummary = validateRuntimeConfig();
+logRuntimeConfigSummary(runtimeConfigSummary);
 
 const app = express();
 app.set('trust proxy', process.env.TRUST_PROXY || 'loopback');
@@ -134,6 +140,7 @@ app.use('/api/files', requireAuthOrSignedUrl, filesRouter);
 app.use('/api/upload', requireAuth, uploadRouter);
 app.use('/api/v1/upload', apiUploadRouter);
 app.use('/api/chunked', requireAuth, chunkedUploadRouter);
+app.use('/api/tasks', tasksRouter);
 app.use('/api/storage', storageRouter);
 
 // 健康检查（不需要认证）
@@ -172,6 +179,7 @@ let server: ReturnType<typeof app.listen> | null = null;
 async function initializeApplication(): Promise<void> {
     const telegramEnabled = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_API_ID && !!process.env.TELEGRAM_API_HASH;
     await ensureDatabaseInitialized();
+    await markTransferTasksAfterRestart();
     const { storageManager } = await import('./services/storage.js');
     await storageManager.init();
     const twoFactor = await get2FAReadiness();
@@ -180,6 +188,7 @@ async function initializeApplication(): Promise<void> {
         await initTelegramUserClient();
         await initTelegramBot();
     }
+    await initializeYtDlpQueue();
     applicationReady = true;
     readinessError = null;
 }

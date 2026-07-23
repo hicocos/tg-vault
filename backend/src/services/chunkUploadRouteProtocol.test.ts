@@ -35,6 +35,18 @@ test('chunk init negotiates the server maximum chunk size and authoritative coun
     assert.match(route, /totalChunks: chunks/);
 });
 
+test('chunk init freezes an explicit queue target instead of silently using the active account', () => {
+    assert.match(route, /lockStorageTargetForUse/);
+    assert.match(route, /storageManager\.getTarget\(selected\.provider, selected\.accountId\)/);
+    assert.match(route, /targetProvider: target\.provider\.name/);
+    assert.match(route, /targetAccountId: target\.accountId/);
+});
+
+test('chunk ownership uses the stable single-admin principal instead of a bearer session', () => {
+    assert.match(route, /stableWebAdminPrincipalId/);
+    assert.doesNotMatch(route, /createHash\('sha256'\)\.update\(token\)/);
+});
+
 test('schema persists session target, lifecycle lease and idempotent chunk metadata', () => {
     assert.match(schema, /CREATE TABLE IF NOT EXISTS chunk_upload_sessions/);
     assert.match(schema, /owner_id VARCHAR\(64\) NOT NULL/);

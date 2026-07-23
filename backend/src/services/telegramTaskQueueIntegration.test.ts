@@ -7,7 +7,7 @@ assert.match(source, /processFileUpload\(userClient, uploadItem, undefined, chan
 assert.match(source, /await assertStorageTargetWritable\(storageTarget\)/);
 assert.match(source, /storageCooldownUntil = error\.cooldownUntil/);
 
-assert.match(source, /import \{ DownloadTaskQueue \} from '\.\/downloadTaskQueue\.js';/);
+assert.match(source, /import \{ DownloadTaskQueue,[^}]+\} from '\.\/downloadTaskQueue\.js';/);
 assert.doesNotMatch(source, /class BetterDownloadQueue/);
 assert.match(source, /const downloadQueue = new DownloadTaskQueue/);
 assert.match(source, /ensureGroup\(\{[\s\S]*kind: 'single'/);

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 
-export type DestructiveAction = 'delete_file' | 'clear_local_storage';
+export type DestructiveAction = 'delete_file' | 'clear_local_storage' | 'cancel_task_scope';
 
 export interface DestructiveConfirmationBinding {
     actorId: number;

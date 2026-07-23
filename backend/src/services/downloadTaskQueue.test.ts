@@ -15,6 +15,28 @@ async function flush(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 0));
 }
 
+async function testGroupNotificationsAreSerializedInSnapshotOrder() {
+    const first = deferred<void>();
+    const seen: Array<{ state: string; updatedAt: number }> = [];
+    let calls = 0;
+    const queue = new DownloadTaskQueue({
+        onGroupChanged: async snapshot => {
+            calls += 1;
+            if (calls === 1) await first.promise;
+            seen.push({ state: snapshot.state, updatedAt: snapshot.updatedAt });
+        },
+    });
+    queue.ensureGroup({ id: 'ordered', kind: 'single', title: 'ordered', chatId: 'chat', expectedTotal: 1 });
+    queue.cancelGroup('ordered', { chatId: 'chat' });
+    await flush();
+    assert.equal(seen.length, 0);
+    first.resolve();
+    await flush();
+    await flush();
+    assert.deepEqual(seen.map(item => item.state), ['waiting', 'cancelled']);
+    assert.ok(seen[0].updatedAt < seen[1].updatedAt);
+}
+
 async function testGroupsFilesAndStartsAutomatically() {
     const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
     const first = deferred();
@@ -554,7 +576,36 @@ async function testGroupControlNeverClearsGlobalPause() {
     await b;
 }
 
+async function testTaskTargetSnapshotRemainsImmutable() {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
+    queue.ensureGroup({
+        id: 'target-snapshot',
+        kind: 'single',
+        title: 'snapshot',
+        chatId: '-1001234',
+        targetProvider: 'google_drive',
+        targetAccountId: 'account-a',
+        targetFolder: 'inbox',
+        expectedTotal: 1,
+    });
+    const updated = queue.ensureGroup({
+        id: 'target-snapshot',
+        kind: 'single',
+        title: 'snapshot',
+        chatId: '-1001234',
+        targetProvider: 's3',
+        targetAccountId: 'account-b',
+        targetFolder: 'inbox/final',
+        expectedTotal: 1,
+    });
+
+    assert.equal(updated.targetProvider, 'google_drive');
+    assert.equal(updated.targetAccountId, 'account-a');
+    assert.equal(updated.targetFolder, 'inbox/final');
+}
+
 async function main() {
+    await testGroupNotificationsAreSerializedInSnapshotOrder();
     await testGroupsFilesAndStartsAutomatically();
     await testPrioritizeGroupIsStableAndDoesNotPreemptActiveFile();
     await testPauseFinishesActiveFileThenResumeOnlySelectedGroup();
@@ -575,6 +626,7 @@ async function main() {
     await testLateAddToPausedGroupDoesNotStart();
     await testScopedPauseDoesNotBlockOrResumeOtherOwners();
     await testGroupControlNeverClearsGlobalPause();
+    await testTaskTargetSnapshotRemainsImmutable();
     console.log('download task queue ok');
 }
 

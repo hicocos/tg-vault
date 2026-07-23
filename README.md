@@ -131,7 +131,7 @@ docker compose up -d
 | `DUPLICATE_FILE_MODE` | `copy` | 重复文件策略：`copy` 生成副本，`skip` 跳过同名同目录同大小文件 |
 | `AUTO_CLEANUP_ORPHANS` | `true` | 是否自动清理本地 uploads 中未登记到数据库的孤儿文件 |
 | `YTDLP_BIN` | `yt-dlp` | yt-dlp 可执行文件路径 |
-| `YTDLP_WORK_DIR` | `./data/uploads/ytdlp` | yt-dlp 下载临时目录 |
+| `YTDLP_WORK_DIR` | `/data/uploads/ytdlp` | yt-dlp 下载临时目录（Compose 部署） |
 | `YTDLP_MAX_CONCURRENT` | `1` | yt-dlp 并发任务数 |
 
 ### 限流与安全项
@@ -143,8 +143,9 @@ docker compose up -d
 | `TRUST_PROXY` | `loopback` | Express 反代信任范围；本机 Nginx/Caddy 反代推荐保持默认 |
 | `COOKIE_SECURE` | `true` | 登录 Cookie 仅通过 HTTPS 发送；本地 HTTP 调试可临时设为 `false` |
 | `JSON_BODY_LIMIT` | `2mb` | 普通 JSON API 请求体大小限制，不是文件大小限制 |
-| `MAX_UPLOAD_CHUNK_MB` | `64` | Web 分片上传单片最大 MB |
-| `MAX_UPLOAD_SESSIONS` | `200` | 同时存在的上传会话上限 |
+| `MAX_UPLOAD_CHUNK_MB` | `32` | Web 分片上传单片最大 MiB |
+| `MAX_CHUNK_UPLOAD_GB` / `CHUNK_GLOBAL_BUDGET_GB` | `20` / `40` | 单任务上限与所有未完成分片会话的总预算 |
+| `CHUNK_DISK_RESERVE_GB` | `8` | 分片写入后必须保留的最小可用磁盘空间 |
 | `MAX_TOTAL_CHUNKS` | `50000` | 单个上传任务允许的最大分片数 |
 | `ORPHAN_CLEANUP_MIN_AGE_MS` | `600000` | 本地孤儿文件清理保护期，默认 10 分钟内不清理 |
 
@@ -225,19 +226,22 @@ TG Vault 有两层 Telegram 下载并发：
 | :--- | :--- | :---: |
 | `/start` | 身份认证 / 开始使用 | 否 |
 | `/help` | 查看 Bot 内置帮助 | 否 |
+| `/list [数量] [页码]` | 查看最近文件和可复制的文件 ID | 否 |
 | `/setup_2fa` | 配置双重验证 (TOTP) | 否 |
-| `/storage` | 查看存储统计，可清理本地文件 | 否 |
+| `/storage` | 查看存储状态；可在二次确认后删除本地实体文件 | 否 |
 | `/tasks` | 查看实时传输任务队列 | 否 |
-| `/task_pause [任务ID]` | 暂停全局队列或指定任务卡的新下载 | 否 |
-| `/task_resume [任务ID]` | 继续全局队列或指定任务卡 | 否 |
-| `/task_cancel <任务ID或all>` | 取消匹配任务 | 否 |
-| `/stop_tasks` | 停止所有下载任务；别名 `/stop`、`/cancel_tasks` | 否 |
+| `/task_pause [任务ID]` | 暂停当前聊天的普通下载，或暂停指定任务的新下载 | 否 |
+| `/task_resume [任务ID]` | 继续当前聊天的普通下载，或继续指定任务 | 否 |
+| `/task_cancel <任务ID或all>` | 取消指定任务，或经确认取消当前聊天全部任务 | 否 |
+| `/stop_tasks` | 经确认取消当前聊天全部任务；别名 `/stop`、`/cancel_tasks` | 否 |
 | `/download_workers` | 设置单文件分片并发；别名 `/workers` | 否 |
 | `/file_concurrency` | 设置一次同时下载几个文件；别名 `/file_workers`、`/download_files` | 否 |
 | `/duplicate_mode` | 设置重复文件处理；别名 `/duplicate`、`/dup` | 否 |
-| `/cleanup_settings` | 设置本地孤儿文件自动清理开关；别名 `/cleanup` | 否 |
+| `/cleanup_settings` | 设置“自动清理未登记到文件索引的本地临时文件”开关；别名 `/cleanup` | 否 |
 | `/ytdlp <url>` | 解析并下载视频链接到当前存储源 | 否 |
-| `/delete <ID或序号>` | 删除指定文件 | 否 |
+| `/delete <至少 8 位 ID 前缀>` | 删除指定文件；ID 可从 `/list` 或 Web 预览复制 | 否 |
+
+> “清理”相关操作按对象区分：Web 设置中的“删除任务历史”只删 Telegram 下载审计明细；`/cleanup_settings` 只管理未索引临时文件的自动清理；`/storage` 中的危险操作会删除本地实体文件，必须单独确认。
 
 ### 保存位置命令
 

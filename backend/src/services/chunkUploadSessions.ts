@@ -53,6 +53,7 @@ export interface ChunkUploadSessionRepository {
     reserveSession(session: ChunkUploadSession, globalBudgetBytes: number, diskFreeBytes?: number, diskReserveBytes?: number): Promise<boolean>;
     getReservedBytes(): Promise<number>;
     getSession(uploadId: string, ownerId: string): Promise<ChunkUploadSession | null>;
+    listSessions?(ownerId: string): Promise<ChunkUploadSession[]>;
     getChunk(uploadId: string, ownerId: string, index: number): Promise<ChunkUploadChunk | null>;
     listChunks(uploadId: string, ownerId: string): Promise<ChunkUploadChunk[]>;
     recordChunk(uploadId: string, ownerId: string, chunk: ChunkUploadChunk): Promise<ChunkRecordResult>;
@@ -246,6 +247,10 @@ export class ChunkUploadSessionStore {
         return this.repository.getSession(uploadId, ownerId);
     }
 
+    list(ownerId: string): Promise<ChunkUploadSession[]> {
+        return this.repository.listSessions?.(ownerId) || Promise.resolve([]);
+    }
+
     chunks(uploadId: string, ownerId: string): Promise<ChunkUploadChunk[]> {
         return this.repository.listChunks(uploadId, ownerId);
     }
@@ -386,6 +391,16 @@ export class PostgresChunkUploadSessionRepository implements ChunkUploadSessionR
             `SELECT * FROM chunk_upload_sessions WHERE upload_id = $1 AND owner_id = $2`, [uploadId, ownerId],
         );
         return result.rows[0] ? mapSession(result.rows[0]) : null;
+    }
+
+    async listSessions(ownerId: string): Promise<ChunkUploadSession[]> {
+        const result = await this.pool.query(
+            `SELECT * FROM chunk_upload_sessions
+             WHERE owner_id = $1 AND status IN ('open','completing','failed') AND expires_at > NOW()
+             ORDER BY created_at DESC LIMIT 100`,
+            [ownerId],
+        );
+        return result.rows.map(mapSession);
     }
 
     async getChunk(uploadId: string, ownerId: string, index: number): Promise<ChunkUploadChunk | null> {

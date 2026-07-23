@@ -8,9 +8,9 @@ import crypto from 'crypto';
 import { storageManager } from '../services/storage.js';
 import { authenticatedUsers, passwordInputState, isAuthenticatedAsync, loadAuthenticatedUsers, persistAuthenticatedUser, userStates, TelegramUserState } from './telegramState.js';
 import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../utils/security.js';
-import { handleStart, handleHelp, handleStorage, handleStorageSwitch, handleStorageSwitchCallback, handleDelete, handleDeleteConfirmCallback, handleTasks, handleTaskCenterCallback, handleStopTasks, handlePauseTasks, handleResumeTasks, handleCancelTask, handleChannelTaskQueueCallback, handleRetryFailedTasks, handleDownloadWorkers, handleDownloadWorkersCallback, handleFileConcurrency, handleFileConcurrencyCallback, handleStorageCleanupCallback, handlePathRules, handlePathOnce, handlePathSession, handlePathClear, handlePathRulesCallback, handleDuplicateMode, handleDuplicateModeCallback, handleCleanupSettings, handleCleanupSettingsCallback } from './telegramCommands.js';
+import { handleStart, handleHelp, handleStorage, handleStorageSwitch, handleStorageSwitchCallback, handleList, handleDelete, handleDeleteConfirmCallback, handleTasks, handleTaskCenterCallback, handleBulkTaskCancelCallback, handleStopTasks, handlePauseTasks, handleResumeTasks, handleCancelTask, handleChannelTaskQueueCallback, handleRetryFailedTasks, handleDownloadWorkers, handleDownloadWorkersCallback, handleFileConcurrency, handleFileConcurrencyCallback, handleStorageCleanupCallback, handlePathRules, handlePathOnce, handlePathSession, handlePathClear, handlePathRulesCallback, handleDuplicateMode, handleDuplicateModeCallback, handleCleanupSettings, handleCleanupSettingsCallback } from './telegramCommands.js';
 import { handleFileUpload, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, loadFileDownloadConcurrencySetting } from './telegramUpload.js';
-import { handleYtDlpCommand } from './ytDlpDownload.js';
+import { handleYtDlpCommand, setYtDlpNotifier } from './ytDlpDownload.js';
 import {
     enqueueTelegramDateDownload,
     enqueueTelegramTagDownload,
@@ -29,9 +29,47 @@ import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildCle
 import { query } from '../db/index.js';
 import { getConfiguredTelegramAllowedUsers, addTelegramAllowedUser, countAuthenticatedTelegramUsers, shouldAutoAllowFirstTelegramUser, verifyTelegramPin } from '../utils/authSettings.js';
 import { assertPublicHttpUrl } from '../utils/networkSecurity.js';
+import { BOT_COMMANDS, buildBotCommandMenu, normalizeBotCommandText } from '../utils/telegramCommandRegistry.js';
 import { rememberRecentTelegramPathPersistent, buildPathPreviewLine, applyPendingTelegramPathInputPersistent, getPendingTelegramPathInput, clearPendingTelegramPathInput } from '../utils/telegramPathSettings.js';
 import { isTelegramSubscriptionVisibleInManagement } from './telegramSubscriptionVisibility.js';
 import { buildTelegramSubscriptionPage, parseTelegramSubscriptionCallback } from './telegramSubscriptionManagement.js';
+
+function buildBotStartKeyboard(): Api.ReplyInlineMarkup {
+    return new Api.ReplyInlineMarkup({
+        rows: [
+            new Api.KeyboardButtonRow({ buttons: [
+                new Api.KeyboardButtonCallback({ text: '📤 上传说明', data: Buffer.from('home_upload') }),
+                new Api.KeyboardButtonCallback({ text: '🔧 任务', data: Buffer.from('home_tasks') }),
+            ] }),
+            new Api.KeyboardButtonRow({ buttons: [
+                new Api.KeyboardButtonCallback({ text: '📊 存储', data: Buffer.from('home_storage') }),
+                new Api.KeyboardButtonCallback({ text: '☰ 更多', data: Buffer.from('home_more') }),
+            ] }),
+        ],
+    });
+}
+
+function buildBotMoreKeyboard(): Api.ReplyInlineMarkup {
+    const visible = BOT_COMMANDS.filter(command => command.help && !['start', 'tasks', 'storage', 'help'].includes(command.command));
+    return new Api.ReplyInlineMarkup({
+        rows: visible.slice(0, 12).map(command => new Api.KeyboardButtonRow({
+            buttons: [new Api.KeyboardButtonCallback({ text: `/${command.command} · ${command.description}`, data: Buffer.from(`home_cmd_${command.command}`) })],
+        })),
+    });
+}
+
+async function handleBotHomeCallback(update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    const userId = update.userId.toJSNumber();
+    if (!(await isAuthenticatedAsync(userId))) return;
+    if (data === 'home_tasks') return handleTasks(await client!.getMessages(update.peer, { ids: Number(update.msgId) }).then(messages => messages[0] as Api.Message));
+    if (data === 'home_storage') return handleStorage(await client!.getMessages(update.peer, { ids: Number(update.msgId) }).then(messages => messages[0] as Api.Message));
+    const text = data === 'home_upload'
+        ? '📤 直接发送或转发任意文件即可上传。\n\n使用 /path_rules 选择保存位置，使用 /tasks 查看进度。'
+        : data === 'home_more'
+            ? '☰ **更多能力**\n\n请选择下方命令，或发送 /help 查看完整说明。'
+            : `请发送 /${data.replace(/^home_cmd_/, '')} 使用此能力。`;
+    await client!.editMessage(update.peer, { message: Number(update.msgId), text, buttons: data === 'home_more' ? buildBotMoreKeyboard() : buildBotStartKeyboard() });
+}
 
 // Session File Path
 const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || './data/telegram_session.txt';
@@ -40,7 +78,7 @@ const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || './data/telegram_sessi
 let client: TelegramClient | null = null;
 
 type TelegramWizardKind = 'tg_sub_manage' | 'tg_download' | 'tg_date' | 'tg_tag';
-type TelegramWizardStep = 'mode' | 'source' | 'path' | 'comments' | 'start_date' | 'end_date' | 'tag';
+type TelegramWizardStep = 'mode' | 'source' | 'path' | 'comments' | 'start_date' | 'end_date' | 'tag' | 'confirm';
 
 interface TelegramWizardState {
     kind: TelegramWizardKind;
@@ -48,6 +86,10 @@ interface TelegramWizardState {
     source?: string;
     startDate?: string;
     tag?: string;
+    endDate?: string;
+    targetProvider?: string;
+    targetAccountId?: string | null;
+    targetAccountName?: string;
     customFolder?: string;
     includeComments?: boolean;
     commentsMaxPerPost?: number;
@@ -257,6 +299,16 @@ function buildTelegramWizardPrompt(state: TelegramWizardState): string {
             '也可以发送：`开` / `关` / `yes` / `no`。',
             '发送“取消”可退出。',
         ].join('\n');
+    }
+
+    if (state.step === 'confirm') {
+        const range = state.kind === 'tg_tag' ? `标签：#${state.tag}` : `日期：${state.startDate} → ${state.endDate}`;
+        return [title, '', '请确认任务范围：', `📍 频道：${state.source}`, `🔎 ${range}`,
+            `💬 评论区：${state.includeComments ? `包含（每帖最多 ${state.commentsMaxPerPost} 条）` : '不包含'}`,
+            `📁 目录：${state.customFolder || '默认自动分类'}`,
+            `☁️ 固定存储：${state.targetProvider || '当前存储'} / ${state.targetAccountName || state.targetAccountId || '当前账户'}`,
+            '', '估计量将在扫描中实时更新；超过服务端扫描上限时会分段继续，任务可在 /tasks 取消。',
+            '发送 `确认` 开始，或发送 `取消` 放弃。'].join('\n');
     }
 
     if (state.step === 'tag') {
@@ -536,20 +588,43 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
         return true;
     }
 
-    if (state.step === 'tag') {
+    if (state.step === 'confirm') {
+        if (!/^(确认|confirm|yes|y)$/i.test(input)) {
+            await message.reply({ message: '请发送 `确认` 开始任务，或发送 `取消` 放弃。' });
+            return true;
+        }
         telegramWizardStates.delete(senderId);
         try {
-            const queuedMsg = await message.reply({ message: `⏳ 已开始后台扫描 ${state.source} 中带有 ${input.startsWith('#') ? input : `#${input}`} 的媒体消息...
-完成后会自动更新结果，可用 /tasks 查看后台任务。` });
-            await replyWithJobResult(queuedMsg as Api.Message, message, enqueueTelegramTagDownload(client!, message, senderId, state.source!, input, state.customFolder, {
-                includeComments: Boolean(state.includeComments),
-                commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
-                onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary),
-                onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
-            }), 'tag');
+            if (state.kind === 'tg_tag') {
+                const queuedMsg = await message.reply({ message: `⏳ 已确认，开始后台扫描 ${state.source} 中带有 ${state.tag?.startsWith('#') ? state.tag : `#${state.tag}`} 的媒体消息…` });
+                await replyWithJobResult(queuedMsg as Api.Message, message, enqueueTelegramTagDownload(client!, message, senderId, state.source!, state.tag!, state.customFolder, {
+                    includeComments: Boolean(state.includeComments), commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
+                    onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary), onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
+                    targetProvider: state.targetProvider, targetAccountId: state.targetAccountId,
+                }), 'tag');
+            } else {
+                const queuedMsg = await message.reply({ message: `⏳ 已确认，开始后台扫描 ${state.source}：${state.startDate} → ${state.endDate}…` });
+                await replyWithJobResult(queuedMsg as Api.Message, message, enqueueTelegramDateDownload(client!, message, senderId, state.source!, state.startDate!, state.endDate!, state.customFolder, {
+                    includeComments: Boolean(state.includeComments), commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
+                    onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary), onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
+                    targetProvider: state.targetProvider, targetAccountId: state.targetAccountId,
+                }), 'date');
+            }
         } catch (error) {
-            await message.reply({ message: `❌ 标签下载失败: ${error instanceof Error ? error.message : String(error)}` });
+            await message.reply({ message: `❌ 任务提交失败: ${error instanceof Error ? error.message : String(error)}` });
         }
+        return true;
+    }
+
+    if (state.step === 'tag') {
+        state.tag = input;
+        const target = storageManager.getActiveTarget();
+        const accounts = await storageManager.getAccounts();
+        state.targetProvider = target.provider.name;
+        state.targetAccountId = target.accountId;
+        state.targetAccountName = accounts.find(account => String(account.id) === String(target.accountId || ''))?.name || (target.provider.name === 'local' ? '服务器本地目录' : undefined);
+        state.step = 'confirm';
+        await message.reply({ message: buildTelegramWizardPrompt(state) });
         return true;
     }
 
@@ -569,19 +644,14 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
         return true;
     }
 
-    telegramWizardStates.delete(senderId);
-    try {
-        const queuedMsg = await message.reply({ message: `⏳ 已开始后台扫描 ${state.source}：${state.startDate} → ${input}...
-完成后会自动更新结果，可用 /tasks 查看后台任务。` });
-        await replyWithJobResult(queuedMsg as Api.Message, message, enqueueTelegramDateDownload(client!, message, senderId, state.source!, state.startDate!, input, state.customFolder, {
-            includeComments: Boolean(state.includeComments),
-            commentsMaxPerPost: state.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
-            onScanComplete: summary => updateScanStatusMessage(queuedMsg as Api.Message, summary),
-            onProgress: summary => updateJobProgressMessage(queuedMsg as Api.Message, summary),
-        }), 'date');
-    } catch (error) {
-        await message.reply({ message: `❌ 日期下载失败: ${error instanceof Error ? error.message : String(error)}` });
-    }
+    state.endDate = input;
+    const target = storageManager.getActiveTarget();
+    const accounts = await storageManager.getAccounts();
+    state.targetProvider = target.provider.name;
+    state.targetAccountId = target.accountId;
+    state.targetAccountName = accounts.find(account => String(account.id) === String(target.accountId || ''))?.name || (target.provider.name === 'local' ? '服务器本地目录' : undefined);
+    state.step = 'confirm';
+    await message.reply({ message: buildTelegramWizardPrompt(state) });
     return true;
 }
 
@@ -623,6 +693,11 @@ function buildSubscriptionDisplayLines(row: any, index: number): string {
         `${index + 1}. ${status} ${row.title || row.source_original || row.source}`,
         sourceLine,
         row.folder_override ? `   📁 专属目录：${row.folder_override}` : '   📁 保存策略：默认自动分类',
+        row.last_scan_at ? `   🔎 上次扫描：${new Date(row.last_scan_at).toLocaleString('zh-CN', { hour12: false })}` : '   🔎 尚未扫描',
+        row.last_success_at ? `   ✅ 上次成功：${new Date(row.last_success_at).toLocaleString('zh-CN', { hour12: false })}` : null,
+        row.next_scan_at ? `   ⏭️ 下次扫描约：${new Date(row.next_scan_at).toLocaleString('zh-CN', { hour12: false })}` : null,
+        row.last_result ? `   📊 最近结果：${row.last_result.status || 'unknown'}${row.last_result.found !== undefined ? `，发现 ${row.last_result.found}` : ''}${row.last_result.failed ? `，失败 ${row.last_result.failed}` : ''}` : null,
+        row.last_error ? `   ⚠️ 最近错误：${row.last_error}` : null,
         !row.enabled && row.disabled_reason ? `   ⚠️ ${row.disabled_reason}` : null,
         !row.enabled && row.disabled_at ? `   暂停时间：${new Date(row.disabled_at).toLocaleString('zh-CN', { hour12: false })}` : null,
     ].filter(Boolean).join('\n');
@@ -1207,6 +1282,10 @@ export async function initTelegramBot(): Promise<void> {
         try { fs.chmodSync(SESSION_FILE, 0o600); } catch (e) { console.warn('🤖 修正 Telegram Bot session 文件权限失败:', e); }
 
         console.log('🤖 Telegram Bot 已连接!');
+        setYtDlpNotifier(async (chatId, text) => {
+            if (!client) return;
+            await client.sendMessage(chatId, { message: text });
+        });
 
         // Ensure database table exists
         try {
@@ -1226,22 +1305,7 @@ export async function initTelegramBot(): Promise<void> {
             await client.invoke(new Api.bots.SetBotCommands({
                 scope: new Api.BotCommandScopeDefault(),
                 langCode: 'zh',
-                commands: [
-                    new Api.BotCommand({ command: 'start', description: '开始使用 / 验证身份' }),
-                    new Api.BotCommand({ command: 'path_rules', description: '保存路径/自定义目录' }),
-                    new Api.BotCommand({ command: 'tg_sub', description: '订阅频道自动同步' }),
-                    new Api.BotCommand({ command: 'tg_download', description: '按日期/标签下载频道文件' }),
-                    new Api.BotCommand({ command: 'storage_switch', description: '切换已配置存储源' }),
-                    new Api.BotCommand({ command: 'download_workers', description: '设置单文件分片并发' }),
-                    new Api.BotCommand({ command: 'file_concurrency', description: '设置同时下载文件数' }),
-                    new Api.BotCommand({ command: 'duplicate_mode', description: '设置重复文件处理' }),
-                    new Api.BotCommand({ command: 'cleanup_settings', description: '设置自动清理开关' }),
-                    new Api.BotCommand({ command: 'storage', description: '查看存储统计/清理本地文件' }),
-                    new Api.BotCommand({ command: 'tasks', description: '查看任务状态' }),
-                    new Api.BotCommand({ command: 'setup_2fa', description: '配置双重验证 (2FA)' }),
-                    new Api.BotCommand({ command: 'ytdlp', description: '解析并下载链接到存储源' }),
-                    new Api.BotCommand({ command: 'help', description: '显示预览帮助' }),
-                ]
+                commands: buildBotCommandMenu().map(command => new Api.BotCommand(command))
             }));
             console.log('🤖 Bot 命令菜单已更新');
         } catch (e) {
@@ -1314,7 +1378,8 @@ export async function initTelegramBot(): Promise<void> {
                     return;
                 }
 
-                const text = message.text || '';
+                let text = message.text || '';
+                text = normalizeBotCommandText(text);
                 const chatId = message.chatId;
 
                 if (!chatId) return;
@@ -1330,7 +1395,7 @@ export async function initTelegramBot(): Promise<void> {
 
                 // Commands
                 if (text === '/start') {
-                    await handleStart(message, senderId);
+                    await handleStart(message, senderId, buildBotStartKeyboard());
                     if (!(await isAuthenticatedAsync(senderId))) {
                         // Send password keyboard if not authenticated
                         await message.reply({
@@ -1623,7 +1688,11 @@ export async function initTelegramBot(): Promise<void> {
                 }
 
                 if (text === '/list' || text.startsWith('/list ')) {
-                    await message.reply({ message: '📋 上传记录菜单已隐藏。需要查看文件时请到网页端文件列表，或使用 /storage 查看统计。' });
+                    if (!(await isAuthenticatedAsync(senderId))) {
+                        await message.reply({ message: MSG.AUTH_REQUIRED });
+                        return;
+                    }
+                    await handleList(message, text.split(/\s+/).slice(1));
                     return;
                 }
 
@@ -1833,6 +1902,11 @@ export async function initTelegramBot(): Promise<void> {
                 const callbackUpdate = update as Api.UpdateBotCallbackQuery;
                 const data = Buffer.from(callbackUpdate.data || []).toString('utf-8');
 
+                if (data.startsWith('home_')) {
+                    await handleBotHomeCallback(callbackUpdate, data);
+                    return;
+                }
+
                 // 处理密码回调
                 if (data.startsWith('pwd_')) {
                     await handlePasswordCallback(callbackUpdate);
@@ -1901,6 +1975,11 @@ export async function initTelegramBot(): Promise<void> {
                 // 处理新版 /tasks 任务中心导航与控制
                 if (data.startsWith('tc_')) {
                     await handleTaskCenterCallback(activeClient, callbackUpdate, data);
+                    return;
+                }
+
+                if (data.startsWith('bulk_task_')) {
+                    await handleBulkTaskCancelCallback(activeClient, callbackUpdate, data);
                     return;
                 }
 

@@ -9,7 +9,7 @@ import { is2FAEnabled, verifyTOTP, generateOTPAuthUrl, activate2FA, disable2FA, 
 import { UAParser } from 'ua-parser-js';
 import axios from 'axios';
 import { sendSecurityNotification } from '../services/telegramBot.js';
-import { createInitialAdminCredentials, isInitialSetupRequired, validateTelegramPin, validateWebPassword, verifyWebPassword } from '../utils/authSettings.js';
+import { changeWebPasswordAndRevokeSessions, createInitialAdminCredentials, isInitialSetupRequired, validateTelegramPin, validateWebPassword, verifyWebPassword } from '../utils/authSettings.js';
 
 // 导入可能需要的辅助函数
 async function getIPLocation(ip: string) {
@@ -275,6 +275,41 @@ router.post('/logout', async (req: Request, res: Response) => {
     }
     clearAuthCookie(res);
     res.json({ success: true });
+});
+
+router.post('/change-password', requireAuth, async (req: Request, res: Response) => {
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== 'string' || !currentPassword) {
+        return res.status(400).json({ error: '请输入当前密码' });
+    }
+    const validationError = validateWebPassword(newPassword);
+    if (validationError) return res.status(400).json({ error: validationError });
+    try {
+        await changeWebPasswordAndRevokeSessions(currentPassword, newPassword);
+        clearAuthCookie(res);
+        res.json({ success: true, sessionsRevoked: true, message: '密码已修改，所有设备需要重新登录' });
+    } catch (error) {
+        const message = error instanceof Error ? error.message : '修改密码失败';
+        if (message === '当前密码不正确') return res.status(401).json({ error: message });
+        if (/不能与|至少需要|过长/.test(message)) return res.status(400).json({ error: message });
+        console.error('修改管理员密码失败:', error);
+        res.status(500).json({ error: '修改密码失败' });
+    }
+});
+
+router.post('/revoke-all', requireAuth, async (_req: Request, res: Response) => {
+    try {
+        const result = await query('DELETE FROM web_sessions');
+        clearAuthCookie(res);
+        res.json({
+            success: true,
+            revokedCount: result.rowCount || 0,
+            message: '已退出所有设备',
+        });
+    } catch (error) {
+        console.error('撤销全部 Web 会话失败:', error);
+        res.status(500).json({ error: '退出所有设备失败' });
+    }
 });
 
 // 检查认证初始化状态

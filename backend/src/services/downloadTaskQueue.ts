@@ -15,6 +15,8 @@ export interface DownloadTaskGroupInput {
     chatId: string;
     userId?: number;
     source?: string;
+    targetProvider?: string;
+    targetAccountId?: string | null;
     targetFolder?: string | null;
     expectedTotal?: number;
     hidden?: boolean;
@@ -72,6 +74,7 @@ export interface DownloadTaskScopeStatus {
 export interface DownloadTaskQueueOptions {
     maxConcurrent?: number;
     idFactory?: () => string;
+    onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
 }
 
 export type DownloadFileTaskState = 'pending' | 'active' | 'success' | 'failed' | 'cancelled';
@@ -130,14 +133,21 @@ export class DownloadTaskQueue {
     private readonly maxHistory = 50;
     private maxConcurrent: number;
     private readonly idFactory: () => string;
+    private readonly onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
     private userPaused = false;
     private readonly scopedUserPauses = new Map<string, { scope: DownloadTaskScope; reason: string }>();
     private systemPause?: DownloadTaskSystemPause;
     private readonly diskPressureBlockers = new Map<string, { reason: string; recheckMs?: number }>();
+    private readonly notificationChains = new Map<string, Promise<void>>();
 
     constructor(options: DownloadTaskQueueOptions = {}) {
         this.maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent || 1));
         this.idFactory = options.idFactory || (() => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
+        this.onGroupChanged = options.onGroupChanged;
+    }
+
+    private nextGroupVersion(group: DownloadTaskGroupRecord, candidate = Date.now()): number {
+        return Math.max(candidate, group.updatedAt + 1);
     }
 
     ensureGroup(input: DownloadTaskGroupInput): DownloadTaskGroupSnapshot {
@@ -156,10 +166,13 @@ export class DownloadTaskQueue {
             current.chatId = input.chatId || current.chatId;
             current.userId = input.userId ?? current.userId;
             current.source = input.source ?? current.source;
+            if (current.targetProvider === undefined && input.targetProvider !== undefined) current.targetProvider = input.targetProvider;
+            if (current.targetAccountId === undefined && input.targetAccountId !== undefined) current.targetAccountId = input.targetAccountId;
             current.targetFolder = input.targetFolder ?? current.targetFolder;
             current.hidden = input.hidden ?? current.hidden;
             current.expectedTotal = Math.max(current.expectedTotal, Math.max(0, input.expectedTotal || 0));
-            current.updatedAt = now;
+            current.updatedAt = this.nextGroupVersion(current, now);
+            this.notifyGroup(current);
             return this.snapshotGroup(current);
         }
 
@@ -174,6 +187,7 @@ export class DownloadTaskQueue {
             updatedAt: now,
         };
         this.groups.set(id, record);
+        this.notifyGroup(record);
         return this.snapshotGroup(record);
     }
 
@@ -199,7 +213,7 @@ export class DownloadTaskQueue {
             group.expectedTotal,
             this.countGroupFiles(groupId) + group.completed + group.failed + group.cancelled + 1,
         );
-        group.updatedAt = Date.now();
+        group.updatedAt = this.nextGroupVersion(group);
 
         return new Promise((resolve, reject) => {
             const abortController = new AbortController();
@@ -218,8 +232,9 @@ export class DownloadTaskQueue {
                 execute: async () => {
                     task.status = 'active';
                     task.startTime = Date.now();
-                    group.updatedAt = task.startTime;
+                    group.updatedAt = this.nextGroupVersion(group, task.startTime);
                     this.active.push(task);
+                    this.notifyGroup(group);
                     try {
                         const outcome = await execute(abortController.signal, task.id);
                         if (abortController.signal.aborted) {
@@ -246,7 +261,7 @@ export class DownloadTaskQueue {
                         }
                     } finally {
                         task.endTime = Date.now();
-                        group.updatedAt = task.endTime;
+                        group.updatedAt = this.nextGroupVersion(group, task.endTime);
                         const activeIndex = this.active.findIndex(item => item.id === task.id);
                         if (activeIndex >= 0) this.active.splice(activeIndex, 1);
                         if (group.stateOverride === 'pausing' && !this.hasActiveGroupTask(group.id)) {
@@ -255,11 +270,13 @@ export class DownloadTaskQueue {
                             group.stateOverride = 'cancelled';
                         }
                         this.pushHistory(task);
+                        this.notifyGroup(group);
                         this.processNext();
                     }
                 },
             };
             this.queue.push(task);
+            this.notifyGroup(group);
             if (queuedBehindPausedGroup && group.stateOverride === 'pausing' && !this.hasActiveGroupTask(group.id)) {
                 group.stateOverride = 'paused';
             }
@@ -374,7 +391,10 @@ export class DownloadTaskQueue {
             task.downloadedSize = Math.max(0, downloaded);
             if (total !== undefined && total > 0) task.totalSize = total;
             const group = this.groups.get(task.groupId);
-            if (group) group.updatedAt = Date.now();
+            if (group) {
+                group.updatedAt = this.nextGroupVersion(group);
+                this.notifyGroup(group);
+            }
         }
     }
 
@@ -388,7 +408,8 @@ export class DownloadTaskQueue {
         const selected = this.queue.filter(task => task.groupId === group.id);
         if (selected.length === 0) return this.controlResult('terminal', group);
         this.queue = [...selected, ...this.queue.filter(task => task.groupId !== group.id)];
-        group.updatedAt = Date.now();
+        group.updatedAt = this.nextGroupVersion(group);
+        this.notifyGroup(group);
         this.processNext();
         return this.controlResult('ok', group);
     }
@@ -401,7 +422,8 @@ export class DownloadTaskQueue {
             return this.controlResult('ok', group);
         }
         group.stateOverride = this.hasActiveGroupTask(group.id) ? 'pausing' : 'paused';
-        group.updatedAt = Date.now();
+        group.updatedAt = this.nextGroupVersion(group);
+        this.notifyGroup(group);
         this.processNext();
         return this.controlResult('ok', group);
     }
@@ -415,7 +437,8 @@ export class DownloadTaskQueue {
             return this.controlResult('terminal', group);
         }
         group.stateOverride = undefined;
-        group.updatedAt = Date.now();
+        group.updatedAt = this.nextGroupVersion(group);
+        this.notifyGroup(group);
         this.processNext();
         return this.controlResult('ok', group);
     }
@@ -433,7 +456,7 @@ export class DownloadTaskQueue {
         if (this.snapshotGroup(group).state === 'completed') return this.controlResult('terminal', group);
 
         group.stateOverride = 'cancelling';
-        group.updatedAt = Date.now();
+        group.updatedAt = this.nextGroupVersion(group);
         const removed: DownloadFileTask[] = [];
         this.queue = this.queue.filter(task => {
             if (task.groupId !== group.id) return true;
@@ -448,6 +471,7 @@ export class DownloadTaskQueue {
             }
         }
         if (!this.hasActiveGroupTask(group.id)) group.stateOverride = 'cancelled';
+        this.notifyGroup(group);
         this.processNext();
         return this.controlResult('ok', group);
     }
@@ -458,6 +482,7 @@ export class DownloadTaskQueue {
         } else {
             this.userPaused = true;
         }
+        this.notifyGroups();
         return this.counts();
     }
 
@@ -467,6 +492,7 @@ export class DownloadTaskQueue {
         } else {
             this.userPaused = false;
         }
+        this.notifyGroups();
         this.processNext();
         return this.counts();
     }
@@ -481,11 +507,13 @@ export class DownloadTaskQueue {
 
     pauseScope(scope: DownloadTaskScope, reason = '用户已暂停当前聊天下载队列'): { active: number; pending: number; total: number } {
         this.scopedUserPauses.set(this.scopePauseKey(scope), { scope: { ...scope }, reason });
+        this.notifyGroups(scope);
         return this.countsForScope(scope);
     }
 
     resumeScope(scope: DownloadTaskScope): { active: number; pending: number; total: number } {
         this.scopedUserPauses.delete(this.scopePauseKey(scope));
+        this.notifyGroups(scope);
         this.processNext();
         return this.countsForScope(scope);
     }
@@ -495,12 +523,14 @@ export class DownloadTaskQueue {
         if (!id) throw new Error('磁盘保护 blocker ID 不能为空');
         this.diskPressureBlockers.set(id, { reason, recheckMs });
         this.refreshDiskPressurePause();
+        this.notifyGroups();
         return this.counts();
     }
 
     releaseDiskPressureBlocker(blockerId: string): { active: number; pending: number; total: number } {
         this.diskPressureBlockers.delete(blockerId.trim());
         this.refreshDiskPressurePause();
+        this.notifyGroups();
         if (!this.systemPause) this.processNext();
         return this.counts();
     }
@@ -601,7 +631,8 @@ export class DownloadTaskQueue {
             const group = this.groups.get(groupId);
             if (!group) continue;
             group.stateOverride = this.hasActiveGroupTask(groupId) ? 'cancelling' : 'cancelled';
-            group.updatedAt = Date.now();
+            group.updatedAt = this.nextGroupVersion(group);
+            this.notifyGroup(group);
         }
         return { active, pending, total: active + pending };
     }
@@ -628,7 +659,8 @@ export class DownloadTaskQueue {
         const group = this.groups.get(task.groupId);
         if (group) {
             group.cancelled += 1;
-            group.updatedAt = task.endTime;
+            group.updatedAt = this.nextGroupVersion(group, task.endTime);
+            this.notifyGroup(group);
         }
         task.settleCancelled?.();
         if (task.onPendingCancelled) {
@@ -741,6 +773,28 @@ export class DownloadTaskQueue {
         return snapshot;
     }
 
+    private notifyGroup(group: DownloadTaskGroupRecord): void {
+        if (!this.onGroupChanged) return;
+        const snapshot = this.snapshotForDisplay(group);
+        const previous = this.notificationChains.get(group.id) || Promise.resolve();
+        const next = previous
+            .catch(() => undefined)
+            .then(() => this.onGroupChanged!(snapshot))
+            .catch(error => {
+                console.error(`[Queue] persist group failed: ${group.id}`, error);
+            })
+            .finally(() => {
+                if (this.notificationChains.get(group.id) === next) this.notificationChains.delete(group.id);
+            });
+        this.notificationChains.set(group.id, next);
+    }
+
+    private notifyGroups(scope: DownloadTaskScope = {}): void {
+        for (const group of this.groups.values()) {
+            if (this.matchesScope(group, scope)) this.notifyGroup(group);
+        }
+    }
+
     private snapshotGroup(group: DownloadTaskGroupRecord): DownloadTaskGroupSnapshot {
         const activeTasks = this.active.filter(task => task.groupId === group.id);
         const pendingTasks = this.queue.filter(task => task.groupId === group.id);
@@ -767,6 +821,8 @@ export class DownloadTaskQueue {
             chatId: group.chatId,
             userId: group.userId,
             source: group.source,
+            targetProvider: group.targetProvider,
+            targetAccountId: group.targetAccountId,
             targetFolder: group.targetFolder,
             expectedTotal: group.expectedTotal,
             hidden: group.hidden,

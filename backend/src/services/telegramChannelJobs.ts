@@ -13,6 +13,7 @@ import {
     type StorageAccountCooldown,
 } from './storageCooldown.js';
 import { getTelegramUserClient, isTelegramUserClientReady } from './telegramUserClient.js';
+import { recordTelegramUserClientFailure } from './telegramUserClientStatus.js';
 import { abortChannelExecutionForLeaseLoss, downloadTelegramChannelRange, getTelegramDownloadPreview, getChannelTaskAbortSignal, releaseChannelTaskAbortSignal, type TelegramDownloadMessageRef } from './telegramUpload.js';
 import { getSetting } from '../utils/settings.js';
 import { extractFileInfo, getEstimatedFileSize, type TelegramFileInfo } from '../utils/telegramMedia.js';
@@ -307,6 +308,8 @@ interface TelegramCommentScanOptions {
     onScanComplete?: (summary: TelegramDownloadScanSummary) => Promise<void> | void;
     onProgress?: (summary: TelegramJobProgressSummary) => Promise<void> | void;
     onRefDiscovered?: (ref: TelegramDownloadMessageRef) => Promise<void> | void;
+    targetProvider?: string;
+    targetAccountId?: string | null;
 }
 
 export interface TelegramJobProgressSummary {
@@ -748,12 +751,15 @@ export async function subscribeTelegramChannel(userId: number, chatId: string | 
 
 export async function listTelegramSubscriptions(userId: number, includeDisabled = false) {
     const result = await query(
-        `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at, updated_at
+        `SELECT id, source, source_original, source_type, title, last_message_id, folder_override, enabled, disabled_reason, disabled_at,
+                last_scan_at, last_success_at, last_error, last_result,
+                CASE WHEN enabled THEN NOW() + ($3::int * INTERVAL '1 millisecond') ELSE NULL END AS next_scan_at,
+                updated_at
          FROM telegram_channel_subscriptions
          WHERE user_id = $1
            AND ($2::boolean OR enabled = true)
          ORDER BY updated_at DESC`,
-        [userId, includeDisabled]
+        [userId, includeDisabled, SUBSCRIPTION_INTERVAL_MS]
     );
     return result.rows;
 }
@@ -1458,6 +1464,8 @@ export async function enqueueTelegramDateDownload(botClient: TelegramClient, req
         folderOverride: folderOverride || null,
         includeComments: Boolean(options.includeComments),
         commentsMaxPerPost: options.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
+        storageProvider: options.targetProvider || null,
+        storageAccountId: options.targetAccountId || null,
     });
     return runSegmentedTelegramJob(botClient, requestMessage, jobId, source, folderOverride, options);
 }
@@ -1499,6 +1507,8 @@ export async function enqueueTelegramTagDownload(botClient: TelegramClient, requ
         folderOverride: folderOverride || null,
         includeComments: Boolean(options.includeComments),
         commentsMaxPerPost: options.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
+        storageProvider: options.targetProvider || null,
+        storageAccountId: options.targetAccountId || null,
     });
     const result = await runSegmentedTelegramJob(botClient, requestMessage, jobId, source, folderOverride, options);
     return { ...result, tag };
@@ -1824,6 +1834,11 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : (row.source_type === 'private_invite' ? ['private_invite'] : []));
             const latestMessageId = await getLatestMessageId(userClient, row.source);
             const lastMessageId = Number(row.last_message_id || 0);
+            await query(`UPDATE telegram_channel_subscriptions
+                         SET last_scan_at = NOW(), last_error = NULL,
+                             last_result = jsonb_build_object('status', CASE WHEN $2::int > $3::int THEN 'updates_found' ELSE 'no_updates' END,
+                                                              'latestMessageId', $2::int, 'previousMessageId', $3::int)
+                         WHERE id = $1`, [row.id, latestMessageId || 0, lastMessageId]);
             if (!latestMessageId || latestMessageId <= lastMessageId) continue;
 
             const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
@@ -1874,12 +1889,22 @@ async function runSubscriptionScan(botClient: TelegramClient) {
                 error: downloadResult.failed > 0 ? `${downloadResult.failed} 个文件下载失败` : null,
             });
             if (!finalized) continue;
+            await query(`UPDATE telegram_channel_subscriptions
+                         SET last_success_at = NOW(), last_error = $2,
+                             last_result = jsonb_build_object('status', $3::text, 'found', $4::int, 'skipped', $5::int, 'failed', $6::int)
+                         WHERE id = $1`, [row.id, downloadResult.failed > 0 ? `${downloadResult.failed} 个文件下载失败` : null, downloadResult.failed > 0 ? 'partial_failure' : 'success', downloadResult.found, downloadResult.skipped, downloadResult.failed]);
             if (downloadResult.found > 0) {
                 await botClient.sendMessage(targetChat, { message: `✅ 订阅 ${row.source} 已同步 ${downloadResult.found} 个新文件，跳过 ${downloadResult.skipped} 条${downloadResult.failed ? `，失败 ${downloadResult.failed} 条` : ''}${safeAdvanceId < latestMessageId ? '。本轮达到扫描上限或存在失败项，剩余将在后续继续处理。' : '。'}` }).catch(() => undefined);
             }
         } catch (error) {
             console.error('🤖 Telegram 订阅同步失败:', error);
+            const safeError = error instanceof Error ? error.message.slice(0, 500) : '订阅同步失败';
+            await query(`UPDATE telegram_channel_subscriptions
+                         SET last_scan_at = NOW(), last_error = $2,
+                             last_result = jsonb_build_object('status', 'failed')
+                         WHERE id = $1`, [row.id, safeError]).catch(() => undefined);
             if (isTelegramSourceInaccessibleError(error)) {
+                recordTelegramUserClientFailure('permission_denied', '当前 Telegram 用户账号无法访问订阅来源');
                 const reason = subscriptionDisabledReason(error);
                 await pauseTelegramSubscriptionForError(row.id, reason).catch(updateError => console.error('🤖 暂停不可访问的 Telegram 订阅失败:', updateError));
                 const targetChat = row.chat_id || row.user_id;

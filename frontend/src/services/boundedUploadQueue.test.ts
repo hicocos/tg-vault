@@ -60,6 +60,30 @@ test('cancel aborts active upload and cancels a pending item without starting it
     assert.deepEqual(started, ['first']);
 });
 
+test('pause prevents new uploads from starting until resume without interrupting the active item', async () => {
+    const firstGate = deferred<void>();
+    const started: string[] = [];
+    const queue = new BoundedUploadQueue<string, string>(1, async value => {
+        started.push(value);
+        if (value === 'first') await firstGate.promise;
+        return value;
+    });
+
+    const first = queue.enqueue('first', 'first');
+    const second = queue.enqueue('second', 'second');
+    await flush();
+    queue.pause();
+    firstGate.resolve();
+    assert.equal(await first, 'first');
+    await flush();
+    assert.deepEqual(started, ['first']);
+    assert.equal(queue.isPaused(), true);
+
+    queue.resume();
+    assert.equal(await second, 'second');
+    assert.deepEqual(started, ['first', 'second']);
+});
+
 test('failed item can be retried and partial summary remains truthful', async () => {
     let attempts = 0;
     const queue = new BoundedUploadQueue<string, string>(2, async value => {
@@ -72,4 +96,24 @@ test('failed item can be retried and partial summary remains truthful', async ()
     assert.deepEqual(summarizeUploads([
         { status: 'completed' }, { status: 'error' }, { status: 'cancelled' }, { status: 'uploading' },
     ]), { total: 4, completed: 1, failed: 1, cancelled: 1, active: 1, settled: false });
+});
+
+test('reset aborts active work, rejects pending work, and clears pause state for logout', async () => {
+    const started: string[] = [];
+    const queue = new BoundedUploadQueue<string, string>(1, async (value, signal) => {
+        started.push(value);
+        await new Promise<void>((_, reject) => signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true }));
+        return value;
+    });
+
+    const active = queue.enqueue('active', 'active');
+    const pending = queue.enqueue('pending', 'pending');
+    queue.pause();
+    await flush();
+    queue.reset();
+
+    await assert.rejects(active, /Aborted/);
+    await assert.rejects(pending, /cancelled/i);
+    assert.equal(queue.isPaused(), false);
+    assert.deepEqual(started, ['active']);
 });

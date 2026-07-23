@@ -15,4 +15,13 @@ test('web destructive confirmation is actor/action/object bound and one-time', (
     const expired = store.issue({ authToken: 'session-a', action: 'delete_storage_account', objectId: 'account-a' });
     now = 1_101;
     assert.equal(store.consume(expired.confirmationToken, { authToken: 'session-a', action: 'delete_storage_account', objectId: 'account-a' }).status, 'expired');
+
+    const taskCancel = store.issue({ authToken: 'session-a', action: 'cancel_task', objectId: 'ytdlp:yd-a' });
+    assert.equal(store.consume(taskCancel.confirmationToken, { authToken: 'session-a', action: 'cancel_task', objectId: 'ytdlp:yd-b' }).status, 'mismatch');
+    assert.equal(store.consume(taskCancel.confirmationToken, { authToken: 'session-a', action: 'cancel_task', objectId: 'ytdlp:yd-a' }).status, 'ok');
+    assert.equal(store.consume(taskCancel.confirmationToken, { authToken: 'session-a', action: 'cancel_task', objectId: 'ytdlp:yd-a' }).status, 'missing');
+
+    const snapshotted = store.issue({ authToken: 'session-a', action: 'delete_storage_account', objectId: 'account-a', context: 'files-hash-a' });
+    assert.equal(store.consume(snapshotted.confirmationToken, { authToken: 'session-a', action: 'delete_storage_account', objectId: 'account-a', context: 'files-hash-b' }).status, 'mismatch');
+    assert.equal(store.consume(snapshotted.confirmationToken, { authToken: 'session-a', action: 'delete_storage_account', objectId: 'account-a', context: 'files-hash-a' }).status, 'ok');
 });

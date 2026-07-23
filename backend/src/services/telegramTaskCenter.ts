@@ -1,8 +1,9 @@
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
+import type { TransferTaskRecord } from './transferTasks.js';
 
-export type TaskCenterSourceType = 'memory' | 'channel';
-export type TaskCenterKind = 'single' | 'album' | 'channel';
-export type TaskCenterState = 'running' | 'waiting' | 'pausing' | 'paused' | 'cooling';
+export type TaskCenterSourceType = 'memory' | 'channel' | 'ytdlp';
+export type TaskCenterKind = 'single' | 'album' | 'channel' | 'ytdlp';
+export type TaskCenterState = 'running' | 'waiting' | 'pausing' | 'paused' | 'cooling' | 'failed';
 
 export type TaskCenterProtection = {
     kind: 'disk_pressure' | 'storage_cooldown' | 'telegram_flood_wait';
@@ -24,6 +25,7 @@ export interface TaskCenterItem {
     completed: number;
     failed: number;
     skipped: number;
+    progressPercent?: number;
     currentFileName?: string;
     chatId?: string;
     userId?: number;
@@ -51,7 +53,7 @@ export interface TaskCenterPage extends TaskCenterView {
     visibleItems: TaskCenterItem[];
 }
 
-export type TaskCenterAction = 'start' | 'pause' | 'resume' | 'cancel_prompt' | 'cancel_confirm';
+export type TaskCenterAction = 'start' | 'pause' | 'resume' | 'retry' | 'cancel_prompt' | 'cancel_confirm';
 
 export type ParsedTaskCenterCallback =
     | { view: 'list'; page: number }
@@ -64,12 +66,13 @@ const ACTION_CODES: Record<TaskCenterAction, string> = {
     start: 's',
     pause: 'p',
     resume: 'r',
+    retry: 't',
     cancel_prompt: 'x',
     cancel_confirm: 'k',
 };
 const CODE_ACTIONS = Object.fromEntries(Object.entries(ACTION_CODES).map(([action, code]) => [code, action])) as Record<string, TaskCenterAction>;
-const SOURCE_CODES: Record<TaskCenterSourceType, string> = { memory: 'm', channel: 'c' };
-const CODE_SOURCES: Record<string, TaskCenterSourceType> = { m: 'memory', c: 'channel' };
+const SOURCE_CODES: Record<TaskCenterSourceType, string> = { memory: 'm', channel: 'c', ytdlp: 'y' };
+const CODE_SOURCES: Record<string, TaskCenterSourceType> = { m: 'memory', c: 'channel', y: 'ytdlp' };
 
 function safeNumber(value: unknown): number {
     const parsed = Number(value || 0);
@@ -93,7 +96,7 @@ function shortText(value: string, max = 32): string {
 }
 
 function kindLabel(kind: TaskCenterKind): string {
-    return ({ single: '单文件', album: '相册', channel: '频道任务' } as const)[kind];
+    return ({ single: '单文件', album: '相册', channel: '频道任务', ytdlp: 'yt-dlp' } as const)[kind];
 }
 
 function stateMeta(state: TaskCenterState): { icon: string; label: string; bucket: 'running' | 'waiting' | 'paused' | 'cooling' } {
@@ -103,11 +106,12 @@ function stateMeta(state: TaskCenterState): { icon: string; label: string; bucke
         case 'pausing': return { icon: '⏸', label: '正在完成当前文件', bucket: 'paused' };
         case 'paused': return { icon: '⏸', label: '已暂停', bucket: 'paused' };
         case 'cooling': return { icon: '🧊', label: '系统等待', bucket: 'cooling' };
+        case 'failed': return { icon: '🔴', label: '处理失败', bucket: 'waiting' };
     }
 }
 
 function stateOrder(state: TaskCenterState): number {
-    return ({ running: 0, waiting: 1, pausing: 2, paused: 3, cooling: 4 } as const)[state];
+    return ({ running: 0, waiting: 1, pausing: 2, paused: 3, cooling: 4, failed: 5 } as const)[state];
 }
 
 function sourceCode(sourceType: TaskCenterSourceType): string {
@@ -137,6 +141,9 @@ function formatAge(timestamp: number, now: number): string {
 }
 
 function progressLine(item: TaskCenterItem): string {
+    if (item.progressPercent !== undefined) {
+        return `${Math.round(Math.max(0, Math.min(100, item.progressPercent)))}%${item.currentFileName ? ` · ${item.currentFileName}` : ''}`;
+    }
     const finished = Math.min(item.total, item.completed + item.failed + item.skipped);
     const parts = [`${finished}/${item.total}`];
     if (item.active > 0) parts.push(`下载中 ${item.active}`);
@@ -148,7 +155,7 @@ function progressLine(item: TaskCenterItem): string {
 
 export function sortTaskCenterItems(items: TaskCenterItem[]): TaskCenterItem[] {
     return items
-        .filter(item => ['running', 'waiting', 'pausing', 'paused', 'cooling'].includes(item.state))
+        .filter(item => ['running', 'waiting', 'pausing', 'paused', 'cooling', 'failed'].includes(item.state))
         .sort((a, b) => stateOrder(a.state) - stateOrder(b.state) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
@@ -237,14 +244,16 @@ export function buildTaskCenterDetail(
         lines.push('', `该任务由系统保护暂停；${recovery}`);
     }
     if (item.state === 'pausing') lines.push('', '当前文件完成后会自动进入已暂停状态。');
-    if (item.state === 'waiting') lines.push('', '“优先开始”会把该任务移到等待队列前面，不会中断正在下载的文件。');
-    if (item.state === 'running') lines.push('', '暂停会先完成当前文件，再停止这个任务的后续文件。');
+    if (item.state === 'failed') lines.push('', '该任务没有继续运行；确认外部写结果已对账后，可以重新提交下载。');
+    if (item.state === 'waiting' && item.sourceType !== 'ytdlp') lines.push('', '“优先开始”会把该任务移到等待队列前面，不会中断正在下载的文件。');
+    if (item.state === 'running' && item.sourceType !== 'ytdlp') lines.push('', '暂停会先完成当前文件，再停止这个任务的后续文件。');
 
     const actionRow: TaskCenterButton[] = [];
-    if (item.state === 'waiting' && (item.sourceType === 'memory' || item.active + item.pending > 0)) actionRow.push({ text: '▶️ 优先开始', data: callbackAction('start', item, page) });
-    if (item.state === 'running') actionRow.push({ text: '⏸ 暂停任务', data: callbackAction('pause', item, page) });
-    if (item.state === 'paused' && !systemBlocked) actionRow.push({ text: '▶️ 继续', data: callbackAction('resume', item, page) });
-    if (item.state === 'pausing') actionRow.push({ text: '▶️ 撤销暂停', data: callbackAction('resume', item, page) });
+    if (item.sourceType !== 'ytdlp' && item.state === 'waiting' && (item.sourceType === 'memory' || item.active + item.pending > 0)) actionRow.push({ text: '▶️ 优先开始', data: callbackAction('start', item, page) });
+    if (item.sourceType !== 'ytdlp' && item.state === 'running') actionRow.push({ text: '⏸ 暂停任务', data: callbackAction('pause', item, page) });
+    if (item.sourceType !== 'ytdlp' && item.state === 'paused' && !systemBlocked) actionRow.push({ text: '▶️ 继续', data: callbackAction('resume', item, page) });
+    if (item.sourceType !== 'ytdlp' && item.state === 'pausing') actionRow.push({ text: '▶️ 撤销暂停', data: callbackAction('resume', item, page) });
+    if (item.sourceType === 'ytdlp' && item.state === 'failed') actionRow.push({ text: '🔄 重试', data: callbackAction('retry', item, page) });
     actionRow.push({ text: '🛑 取消', data: callbackAction('cancel_prompt', item, page) });
 
     return {
@@ -287,14 +296,14 @@ export function parseTaskCenterCallback(data: string): ParsedTaskCenterCallback 
     let match = data.match(/^tc_l_(\d{1,6})$/);
     if (match) return { view: 'list', page: Number(match[1]) };
 
-    match = data.match(/^tc_d_([mc])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
+    match = data.match(/^tc_d_([mcy])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
     if (match) {
         const sourceType = CODE_SOURCES[match[1]];
         if (!sourceType || !VALID_ID.test(match[2])) return null;
         return { view: 'detail', sourceType, id: match[2], page: Number(match[3]) };
     }
 
-    match = data.match(/^tc_a_([sprxk])_([mc])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
+    match = data.match(/^tc_a_([sprtxk])_([mcy])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
     if (!match) return null;
     const action = CODE_ACTIONS[match[1]];
     const sourceType = CODE_SOURCES[match[2]];
@@ -329,6 +338,45 @@ export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot): TaskCe
         protection: group.systemPause,
         createdAt: group.createdAt,
         updatedAt: group.updatedAt,
+    };
+}
+
+export function ytdlpTaskCenterItem(task: TransferTaskRecord): TaskCenterItem | null {
+    if (task.sourceType !== 'ytdlp' || !['pending', 'running', 'paused', 'failed', 'interrupted', 'retry_required'].includes(task.status)) return null;
+    const id = task.id.replace(/[^A-Za-z0-9-]/g, '').slice(0, 24);
+    if (!id) return null;
+    const state: TaskCenterState = ['failed', 'interrupted', 'retry_required'].includes(task.status)
+        ? 'failed'
+        : task.status === 'running' ? 'running' : task.status === 'paused' ? 'paused' : 'waiting';
+    const stageLabels: Record<string, string> = {
+        waiting: '等待开始',
+        recovering: '服务重启后恢复',
+        downloading: '下载源文件',
+        uploading: '上传到存储',
+        processing: '服务器处理中',
+    };
+    const accountName = typeof task.payload.targetAccountName === 'string' ? task.payload.targetAccountName : task.targetProvider;
+    return {
+        sourceType: 'ytdlp',
+        id,
+        kind: 'ytdlp',
+        title: task.title,
+        state,
+        total: 1,
+        active: state === 'running' ? 1 : 0,
+        pending: state === 'waiting' ? 1 : 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0,
+        progressPercent: task.progress,
+        currentFileName: stageLabels[task.stage] || task.stage,
+        chatId: task.chatId || undefined,
+        userId: task.ownerUserId || undefined,
+        source: task.source || undefined,
+        targetFolder: `${accountName || '默认账户'} / ${task.targetFolder || 'ytdlp'}`,
+        reason: task.error || undefined,
+        createdAt: task.createdAt.getTime(),
+        updatedAt: task.updatedAt.getTime(),
     };
 }
 

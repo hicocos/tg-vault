@@ -8,6 +8,7 @@ import {
     ordinaryTaskCenterItem,
     parseTaskCenterCallback,
     sortTaskCenterItems,
+    ytdlpTaskCenterItem,
     type TaskCenterItem,
 } from './telegramTaskCenter.js';
 import { buildSilentModeNotice, buildSilentProgress, buildTaskControlButtons } from '../utils/telegramMessages.js';
@@ -320,6 +321,67 @@ function testUsesLongerChannelSelectorsToAvoidAmbiguousShortPrefixes() {
     assert.notEqual(first?.id, second?.id);
 }
 
+function testYtDlpTasksUseRealisticControlsAndCallbackCodec() {
+    const task = ytdlpTaskCenterItem({
+        sourceType: 'ytdlp',
+        id: 'yd-1234567890abcdef',
+        kind: 'video_download',
+        title: 'yt-dlp: example.com',
+        status: 'running',
+        stage: 'downloading',
+        progress: 42.5,
+        ownerUserId: 7,
+        chatId: '123',
+        source: 'https://example.com/video',
+        targetProvider: 'google_drive',
+        targetAccountId: '11111111-1111-1111-1111-111111111111',
+        targetFolder: 'ytdlp',
+        totalItems: 1,
+        completedItems: 0,
+        failedItems: 0,
+        totalBytes: 0,
+        transferredBytes: 0,
+        payload: { targetAccountName: '主盘' },
+        error: null,
+        retryable: false,
+        cancelRequested: false,
+        startedAt: new Date(now - 30_000),
+        finishedAt: null,
+        createdAt: new Date(now - 60_000),
+        updatedAt: new Date(now),
+    });
+    assert.equal(task?.sourceType, 'ytdlp');
+    assert.equal(task?.progressPercent, 42.5);
+    assert.equal(task?.targetFolder, '主盘 / ytdlp');
+    const detail = buildTaskCenterDetail(task!, 0, { now });
+    assert.match(detail.text, /43%/);
+    assert(!findButtonText(detail.rows, /暂停任务/));
+    assert(!findButtonText(detail.rows, /优先开始/));
+    assert(findButtonText(detail.rows, /取消/));
+    assert(flattenData(detail.rows).includes('tc_a_x_y_yd-1234567890abcdef_0'));
+    assert.deepEqual(parseTaskCenterCallback('tc_d_y_yd-1234567890abcdef_0'), {
+        view: 'detail', sourceType: 'ytdlp', id: 'yd-1234567890abcdef', page: 0,
+    });
+
+    const failed = ytdlpTaskCenterItem({
+        sourceType: 'ytdlp', id: 'yd-1234567890abcdef', kind: 'video_download', title: 'yt-dlp: example.com',
+        status: 'failed', stage: 'failed', progress: 42.5, ownerUserId: 7, chatId: '123',
+        source: 'https://example.com/video', targetProvider: 'google_drive',
+        targetAccountId: '11111111-1111-1111-1111-111111111111', targetFolder: 'ytdlp',
+        totalItems: 1, completedItems: 0, failedItems: 1, totalBytes: 0, transferredBytes: 0,
+        payload: { targetAccountName: '主盘' }, error: '网络暂时不可用', retryable: true,
+        cancelRequested: false, startedAt: new Date(now - 30_000), finishedAt: new Date(now),
+        createdAt: new Date(now - 60_000), updatedAt: new Date(now),
+    });
+    assert.equal(failed?.state, 'failed');
+    const failedDetail = buildTaskCenterDetail(failed!, 0, { now });
+    assert(findButtonText(failedDetail.rows, /重试/));
+    assert(flattenData(failedDetail.rows).includes('tc_a_t_y_yd-1234567890abcdef_0'));
+    assert.deepEqual(parseTaskCenterCallback('tc_a_t_y_yd-1234567890abcdef_0'), {
+        view: 'action', action: 'retry', sourceType: 'ytdlp', id: 'yd-1234567890abcdef', page: 0,
+    });
+}
+
 async function testPausedProgressDoesNotShowQueuedFileAsCurrent() {
     const text = buildSilentProgress(6, [{
         folderName: '相册',
@@ -475,6 +537,7 @@ async function main() {
     testAdaptersHideTerminalOrdinaryGroupsAndMapChannelRows();
     testEscapesUserControlledMarkdownInTaskCards();
     testUsesLongerChannelSelectorsToAvoidAmbiguousShortPrefixes();
+    testYtDlpTasksUseRealisticControlsAndCallbackCodec();
     await testPausedProgressDoesNotShowQueuedFileAsCurrent();
     testActiveProgressUsesCanonicalStoredDisplayName();
     testLegacyTaskCardShowsOnlyValidActions();

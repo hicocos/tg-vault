@@ -2,12 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import axios from 'axios';
 import OSS from 'ali-oss';
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl as getS3SignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createClient, WebDAVClient } from 'webdav';
 import { google } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { safeJoin } from '../utils/localPath.js';
+import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
 import {
     decryptSettingValue,
     decryptStorageConfig,
@@ -68,6 +69,8 @@ function isGoogleDriveDailyUploadLimitError(error: any): boolean {
 export interface IStorageProvider {
     id?: string; // 对于云盘，这是账户 ID
     name: string;
+    /** Performs a read-only connectivity and authorization check. */
+    probe(): Promise<void>;
     /**
      * 保存文件
      * @param tempPath 临时文件路径
@@ -100,6 +103,9 @@ export interface IStorageProvider {
      */
     getFileSize?(storedPath: string): Promise<number>;
 
+    /** Returns remote account quota when the provider exposes it. */
+    getQuota?(): Promise<{ totalBytes: number; usedBytes: number } | null>;
+
 
     /**
      * 创建分享链接
@@ -116,6 +122,19 @@ export interface StorageTargetSnapshot {
     providerKey: string;
 }
 
+export class StorageProbeError extends Error {
+    constructor(public readonly provider: string, message: string, public readonly causeCode?: string) {
+        super(message);
+        this.name = 'StorageProbeError';
+    }
+}
+
+function storageProbeError(provider: string, error: unknown): StorageProbeError {
+    if (error instanceof StorageProbeError) return error;
+    const { reason, code } = summarizeStorageProbeFailure(error);
+    return new StorageProbeError(provider, `${provider} 连接测试失败：${reason}`, code);
+}
+
 // 本地存储实现
 export class LocalStorageProvider implements IStorageProvider {
     name = 'local';
@@ -126,6 +145,12 @@ export class LocalStorageProvider implements IStorageProvider {
         if (!fs.existsSync(this.uploadDir)) {
             fs.mkdirSync(this.uploadDir, { recursive: true });
         }
+    }
+
+    async probe(): Promise<void> {
+        const stats = await fs.promises.stat(this.uploadDir);
+        if (!stats.isDirectory()) throw new StorageProbeError(this.name, '本地存储路径不是目录');
+        await fs.promises.access(this.uploadDir, fs.constants.R_OK | fs.constants.W_OK);
     }
 
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
@@ -219,6 +244,14 @@ export class AliyunOSSStorageProvider implements IStorageProvider {
         return r;
     }
 
+    async probe(): Promise<void> {
+        try {
+            await this.client.list({ 'max-keys': 1 });
+        } catch (error) {
+            throw storageProbeError(this.name, error);
+        }
+    }
+
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
         try {
             const objectKey = folder ? `${folder}/${fileName}` : fileName;
@@ -296,6 +329,14 @@ export class S3StorageProvider implements IStorageProvider {
             },
             forcePathStyle: forcePathStyle,
         });
+    }
+
+    async probe(): Promise<void> {
+        try {
+            await this.client.send(new ListObjectsV2Command({ Bucket: this.bucket, MaxKeys: 1 }));
+        } catch (error) {
+            throw storageProbeError(this.name, error);
+        }
     }
 
     async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
@@ -420,6 +461,17 @@ export class WebDAVStorageProvider implements IStorageProvider {
             throw error;
         } finally {
             clearTimeout(timeout!);
+        }
+    }
+
+    async probe(): Promise<void> {
+        try {
+            await this.withRequestTimeout(
+                signal => this.client.getDirectoryContents('/', { deep: false, signal }),
+                'WebDAV probe',
+            );
+        } catch (error) {
+            throw storageProbeError(this.name, error);
         }
     }
 
@@ -619,6 +671,18 @@ export class OneDriveStorageProvider implements IStorageProvider {
 
     private encodeOneDrivePath(rawPath: string): string {
         return rawPath.split('/').filter(Boolean).map(part => encodeURIComponent(part)).join('/');
+    }
+
+    async probe(): Promise<void> {
+        try {
+            const token = await this.getAccessToken();
+            await axios.get('https://graph.microsoft.com/v1.0/me/drive?$select=id,driveType', {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 30_000,
+            });
+        } catch (error) {
+            throw storageProbeError(this.name, error);
+        }
     }
 
     /**
@@ -933,6 +997,20 @@ export class OneDriveStorageProvider implements IStorageProvider {
         }
     }
 
+    /** Returns OneDrive account quota from Microsoft Graph. */
+    async getQuota(): Promise<{ totalBytes: number; usedBytes: number } | null> {
+        const token = await this.getAccessToken();
+        const response = await axios.get(
+            'https://graph.microsoft.com/v1.0/me/drive?$select=quota',
+            { headers: { Authorization: `Bearer ${token}` }, timeout: 30000 },
+        );
+        const totalBytes = Number(response.data?.quota?.total);
+        const usedBytes = Number(response.data?.quota?.used);
+        return Number.isFinite(totalBytes) && totalBytes > 0 && Number.isFinite(usedBytes)
+            ? { totalBytes, usedBytes }
+            : null;
+    }
+
     /**
      * 创建分享链接
      */
@@ -1072,6 +1150,19 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         }
 
         return next as T;
+    }
+
+    async probe(): Promise<void> {
+        try {
+            await this.ensureAuthenticated();
+            await this.drive.files.list(this.withSharedDriveSupport({
+                pageSize: 1,
+                fields: 'files(id)',
+                spaces: 'drive',
+            }, true));
+        } catch (error) {
+            throw storageProbeError(this.name, error);
+        }
     }
 
     private async findFolderId(segment: string, parentId: string | null): Promise<string | null> {
@@ -1220,6 +1311,17 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         }
     }
 
+    /** Returns the authenticated Drive quota. Shared drives may report organization-managed limits. */
+    async getQuota(): Promise<{ totalBytes: number; usedBytes: number } | null> {
+        await this.ensureAuthenticated();
+        const response = await this.drive.about.get({ fields: 'storageQuota' });
+        const totalBytes = Number(response.data?.storageQuota?.limit);
+        const usedBytes = Number(response.data?.storageQuota?.usage);
+        return Number.isFinite(totalBytes) && totalBytes > 0 && Number.isFinite(usedBytes)
+            ? { totalBytes, usedBytes }
+            : null;
+    }
+
     /**
      * 创建分享链接
      */
@@ -1304,6 +1406,9 @@ export class StorageManager {
                     created_at TIMESTAMPTZ DEFAULT NOW(),
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
+                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_status VARCHAR(20);
+                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_error TEXT;
+                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probed_at TIMESTAMPTZ;
 
                 -- 确保 files 表有 storage_account_id 字段
                 DO $$ 
@@ -1560,8 +1665,37 @@ export class StorageManager {
     }
 
     async getAccounts() {
-        const res = await query('SELECT id, name, type, is_active FROM storage_accounts ORDER BY created_at ASC');
+        const res = await query(`SELECT id, name, type, is_active, last_probe_status, last_probe_error, last_probed_at
+                                 FROM storage_accounts ORDER BY created_at ASC`);
         return res.rows;
+    }
+
+    async probeAccount(accountId: string): Promise<{ accountId: string; provider: string; status: 'available'; checkedAt: string }> {
+        const result = await query('SELECT id, type FROM storage_accounts WHERE id = $1', [accountId]);
+        const account = result.rows[0];
+        if (!account) throw new StorageProbeError('storage', '存储账户不存在', 'ACCOUNT_NOT_FOUND');
+        const provider = this.providers.get(`${account.type}:${account.id}`);
+        if (!provider) throw new StorageProbeError(String(account.type), '存储账户客户端未初始化，请检查配置后重启服务', 'PROVIDER_NOT_INITIALIZED');
+        try {
+            await provider.probe();
+            const checkedAt = new Date().toISOString();
+            await query(
+                `UPDATE storage_accounts
+                 SET last_probe_status = 'available', last_probe_error = NULL, last_probed_at = $2
+                 WHERE id = $1`,
+                [accountId, checkedAt],
+            );
+            return { accountId, provider: provider.name, status: 'available', checkedAt };
+        } catch (error) {
+            const failure = storageProbeError(provider.name, error);
+            await query(
+                `UPDATE storage_accounts
+                 SET last_probe_status = 'failed', last_probe_error = $2, last_probed_at = NOW()
+                 WHERE id = $1`,
+                [accountId, failure.message],
+            );
+            throw failure;
+        }
     }
 
     // 从内存中移除 Provider
@@ -1604,6 +1738,17 @@ export class StorageManager {
 
     // 切换激活账户
     async switchAccount(accountId: string | 'local') {
+        if (accountId === 'local') {
+            try {
+                await this.getProvider('local').probe();
+            } catch (error) {
+                throw storageProbeError('local', error);
+            }
+        } else {
+            // Probe before opening the switch transaction. A failed probe must leave the
+            // currently active account and in-memory provider untouched.
+            await this.probeAccount(accountId);
+        }
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
@@ -1622,11 +1767,13 @@ export class StorageManager {
     }
 
     async addAliyunOSSAccount(name: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string) {
+        const candidate = new AliyunOSSStorageProvider('probe', region, accessKeyId, accessKeySecret, bucket);
+        await candidate.probe();
         const config = JSON.stringify(encryptStorageConfig({ region, accessKeyId, accessKeySecret, bucket }));
 
         const res = await query(
-            `INSERT INTO storage_accounts (type, name, config, is_active) 
-             VALUES ($1, $2, $3, $4) RETURNING id`,
+            `INSERT INTO storage_accounts (type, name, config, is_active, last_probe_status, last_probe_error, last_probed_at)
+             VALUES ($1, $2, $3, $4, 'available', NULL, NOW()) RETURNING id`,
             ['aliyun_oss', name, config, false]
         );
         const targetId = res.rows[0].id;
@@ -1639,11 +1786,13 @@ export class StorageManager {
     }
 
     async addS3Account(name: string, endpoint: string, region: string, accessKeyId: string, accessKeySecret: string, bucket: string, forcePathStyle: boolean = false) {
+        const candidate = new S3StorageProvider('probe', endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle);
+        await candidate.probe();
         const config = JSON.stringify(encryptStorageConfig({ endpoint, region, accessKeyId, accessKeySecret, bucket, forcePathStyle }));
 
         const res = await query(
-            `INSERT INTO storage_accounts (type, name, config, is_active) 
-             VALUES ($1, $2, $3, $4) RETURNING id`,
+            `INSERT INTO storage_accounts (type, name, config, is_active, last_probe_status, last_probe_error, last_probed_at)
+             VALUES ($1, $2, $3, $4, 'available', NULL, NOW()) RETURNING id`,
             ['s3', name, config, false]
         );
         const targetId = res.rows[0].id;
@@ -1656,11 +1805,13 @@ export class StorageManager {
     }
 
     async addWebDAVAccount(name: string, url: string, username?: string, password?: string) {
+        const candidate = new WebDAVStorageProvider('probe', url, username, password);
+        await candidate.probe();
         const config = JSON.stringify(encryptStorageConfig({ url, username, password }));
 
         const res = await query(
-            `INSERT INTO storage_accounts (type, name, config, is_active) 
-             VALUES ($1, $2, $3, $4) RETURNING id`,
+            `INSERT INTO storage_accounts (type, name, config, is_active, last_probe_status, last_probe_error, last_probed_at)
+             VALUES ($1, $2, $3, $4, 'available', NULL, NOW()) RETURNING id`,
             ['webdav', name, config, false]
         );
         const targetId = res.rows[0].id;

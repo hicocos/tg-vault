@@ -3,11 +3,15 @@ name: tg-vault
 services:
   # 前端（暴露到宿主机供 Nginx 反代）
   frontend:
-    image: tg-vault-frontend:latest
+    image: tg-vault-frontend:${IMAGE_VERSION:?IMAGE_VERSION is required}
     build:
       context: ./frontend
+      sbom: true
+      provenance: mode=max
       args:
         - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
+        - SOURCE_REVISION=${SOURCE_REVISION:-unknown}
+        - SOURCE_VERSION=${SOURCE_VERSION:-worktree}
     container_name: tg-vault-frontend
     ports:
       - "127.0.0.1:47832:80"
@@ -31,34 +35,59 @@ services:
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: tg-vault-backend:latest
-    build: ./backend
+    image: tg-vault-backend:${IMAGE_VERSION:?IMAGE_VERSION is required}
+    build:
+      context: ./backend
+      sbom: true
+      provenance: mode=max
+      args:
+        - SOURCE_REVISION=${SOURCE_REVISION:-unknown}
+        - SOURCE_VERSION=${SOURCE_VERSION:-worktree}
     container_name: tg-vault-backend
     ports:
-      - "127.0.0.1:51947:51947"
+      - "127.0.0.1:${PORT:-51947}:${PORT:-51947}"
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://tgvault:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tgvault
-      - PORT=51947
+      - PORT=${PORT:-51947}
       - NODE_ENV=production
+      - TRUST_PROXY=${TRUST_PROXY:-loopback}
       - COOKIE_SECURE=${COOKIE_SECURE:-true}
-      - UPLOAD_DIR=/data/uploads
-      - THUMBNAIL_DIR=/data/thumbnails
-      - PREVIEW_DIR=/data/previews
-      - CHUNK_DIR=/data/chunks
+      - JSON_BODY_LIMIT=${JSON_BODY_LIMIT:-2mb}
+      - UPLOAD_DIR=${UPLOAD_DIR:-/data/uploads}
+      - THUMBNAIL_DIR=${THUMBNAIL_DIR:-/data/thumbnails}
+      - PREVIEW_DIR=${PREVIEW_DIR:-/data/previews}
+      - CHUNK_DIR=${CHUNK_DIR:-/data/chunks}
+      - MAX_UPLOAD_CHUNK_MB=${MAX_UPLOAD_CHUNK_MB:-32}
+      - MAX_CHUNK_UPLOAD_GB=${MAX_CHUNK_UPLOAD_GB:-20}
+      - CHUNK_GLOBAL_BUDGET_GB=${CHUNK_GLOBAL_BUDGET_GB:-40}
+      - CHUNK_DISK_RESERVE_GB=${CHUNK_DISK_RESERVE_GB:-8}
+      - MAX_TOTAL_CHUNKS=${MAX_TOTAL_CHUNKS:-50000}
+      - CHUNK_SESSION_TTL_MS=${CHUNK_SESSION_TTL_MS:-86400000}
+      - CHUNK_COMPLETION_LEASE_MS=${CHUNK_COMPLETION_LEASE_MS:-1800000}
       - DUPLICATE_FILE_MODE=${DUPLICATE_FILE_MODE:-copy}
       - AUTO_CLEANUP_ORPHANS=${AUTO_CLEANUP_ORPHANS:-true}
-      - VITE_API_URL=${VITE_API_URL:-https://api.example.com}
+      - ORPHAN_CLEANUP_MIN_AGE_MS=${ORPHAN_CLEANUP_MIN_AGE_MS:-600000}
       - CORS_ORIGIN=${CORS_ORIGIN:-https://cloud.example.com}
+      - OAUTH_CALLBACK_BASE_URL=${OAUTH_CALLBACK_BASE_URL:-${VITE_API_URL:-https://api.example.com}}
+      - OAUTH_FRONTEND_ORIGIN=${OAUTH_FRONTEND_ORIGIN:-${CORS_ORIGIN:-https://cloud.example.com}}
       - SESSION_SECRET=${SESSION_SECRET:-}
       - STORAGE_CREDENTIALS_SECRET=${STORAGE_CREDENTIALS_SECRET:-}
-      - TG_VAULT_SECRET_DIR=/data/secrets
+      - TG_VAULT_SECRET_DIR=${TG_VAULT_SECRET_DIR:-/data/secrets}
+      - ALLOW_INSECURE_STORAGE_ENDPOINTS=${ALLOW_INSECURE_STORAGE_ENDPOINTS:-false}
       - DOMAIN=${DOMAIN:-cloud.example.com}
+      - SQL_LOG_SLOW_MS=${SQL_LOG_SLOW_MS:-500}
+      - SQL_LOG_ALL=${SQL_LOG_ALL:-false}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
       - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_ALLOWED_USER_IDS=${TELEGRAM_ALLOWED_USER_IDS:-}
+      - TELEGRAM_ALLOWED_SOURCES=${TELEGRAM_ALLOWED_SOURCES:-}
+      - TELEGRAM_SOURCE_ALLOWLIST=${TELEGRAM_SOURCE_ALLOWLIST:-}
+      - TELEGRAM_SESSION_FILE=${TELEGRAM_SESSION_FILE:-/data/telegram_session.txt}
       - TELEGRAM_USER_SESSION_FILE=${TELEGRAM_USER_SESSION_FILE:-/data/telegram_user_session.txt}
       - TELEGRAM_DOWNLOAD_WORKERS=${TELEGRAM_DOWNLOAD_WORKERS:-4}
       - TELEGRAM_FILE_DOWNLOAD_CONCURRENCY=${TELEGRAM_FILE_DOWNLOAD_CONCURRENCY:-2}
@@ -66,7 +95,30 @@ services:
       - TELEGRAM_RATE_MAX=${TELEGRAM_RATE_MAX:-30}
       - TELEGRAM_HEAVY_RATE_WINDOW_MS=${TELEGRAM_HEAVY_RATE_WINDOW_MS:-600000}
       - TELEGRAM_HEAVY_RATE_MAX=${TELEGRAM_HEAVY_RATE_MAX:-5}
+      - TELEGRAM_PIN_FAIL_WINDOW_MS=${TELEGRAM_PIN_FAIL_WINDOW_MS:-900000}
+      - TELEGRAM_PIN_FAIL_MAX=${TELEGRAM_PIN_FAIL_MAX:-5}
+      - TELEGRAM_PIN_LOCK_MS=${TELEGRAM_PIN_LOCK_MS:-900000}
       - TELEGRAM_COMMENTS_MAX_PER_POST=${TELEGRAM_COMMENTS_MAX_PER_POST:-200}
+      - TELEGRAM_SUBSCRIPTION_INTERVAL_MS=${TELEGRAM_SUBSCRIPTION_INTERVAL_MS:-300000}
+      - TELEGRAM_SUBSCRIPTION_SCAN_LIMIT=${TELEGRAM_SUBSCRIPTION_SCAN_LIMIT:-100}
+      - TG_JOB_RECOVERY_DELAY_MS=${TG_JOB_RECOVERY_DELAY_MS:-10000}
+      - TG_JOB_SCAN_SEGMENT_SIZE=${TG_JOB_SCAN_SEGMENT_SIZE:-100}
+      - TG_JOB_DOWNLOAD_BATCH_SIZE=${TG_JOB_DOWNLOAD_BATCH_SIZE:-20}
+      - TG_JOB_MAX_ATTEMPTS=${TG_JOB_MAX_ATTEMPTS:-3}
+      - TG_LARGE_TASK_SEGMENT_SIZE=${TG_LARGE_TASK_SEGMENT_SIZE:-50}
+      - TG_LARGE_TASK_REFRESH_INTERVAL_MS=${TG_LARGE_TASK_REFRESH_INTERVAL_MS:-10000}
+      - TG_MEDIA_GROUP_ENQUEUE_BATCH_SIZE=${TG_MEDIA_GROUP_ENQUEUE_BATCH_SIZE:-50}
+      - TG_MIN_FREE_DISK_GB=${TG_MIN_FREE_DISK_GB:-8}
+      - TG_DISK_WATERMARK_RECHECK_MS=${TG_DISK_WATERMARK_RECHECK_MS:-30000}
+      - TG_DISK_WATERMARK_MAX_WAIT_MS=${TG_DISK_WATERMARK_MAX_WAIT_MS:-0}
+      - TG_STATUS_DEBUG=${TG_STATUS_DEBUG:-0}
+      - TG_STATUS_DEBUG_LOG=${TG_STATUS_DEBUG_LOG:-/data/logs/tg_silent_debug.log}
+      - TG_DEBUG_LOG_MAX_MB=${TG_DEBUG_LOG_MAX_MB:-5}
+      - YTDLP_BIN=${YTDLP_BIN:-yt-dlp}
+      - YTDLP_WORK_DIR=${YTDLP_WORK_DIR:-/data/uploads/ytdlp}
+      - YTDLP_MAX_CONCURRENT=${YTDLP_MAX_CONCURRENT:-1}
+      - WEBDAV_INACTIVITY_TIMEOUT_MS=${WEBDAV_INACTIVITY_TIMEOUT_MS:-300000}
+      - WEBDAV_UPLOAD_TIMEOUT_MS=${WEBDAV_UPLOAD_TIMEOUT_MS:-21600000}
       - TOTP_SECRET=${TOTP_SECRET:-}
     volumes:
       - file-storage:/data
@@ -75,7 +127,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 35s
     healthcheck:
-      test: [ "CMD-SHELL", "node -e \"fetch('http://127.0.0.1:51947/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"" ]
+      test: [ "CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + process.env.PORT + '/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"" ]
       interval: 15s
       timeout: 5s
       retries: 10
@@ -88,7 +140,7 @@ services:
 
   # 数据库
   postgres:
-    image: postgres:16-alpine
+    image: postgres@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     container_name: tg-vault-postgres
     environment:
       - POSTGRES_DB=tgvault

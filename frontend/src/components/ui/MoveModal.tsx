@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
+import type { FolderMovePreview } from "../../services/api";
 
 interface MoveModalProps {
     isOpen: boolean;
@@ -12,11 +13,17 @@ interface MoveModalProps {
     currentFolder: string | null;
     folders: string[]; // List of available folder names
     title?: string;
+    sourceFolder?: string;
+    isFolder?: boolean;
+    onPreview?: (destinationFolder: string | null, signal: AbortSignal) => Promise<FolderMovePreview>;
 }
 
-export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, title }: MoveModalProps) => {
+export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, title, sourceFolder, isFolder = false, onPreview }: MoveModalProps) => {
     const { t } = useTranslation();
     const [selectedFolder, setSelectedFolder] = useState<string | null>(currentFolder);
+    const [preview, setPreview] = useState<FolderMovePreview | null>(null);
+    const [previewError, setPreviewError] = useState<string | null>(null);
+    const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
     useEffect(() => {
         if (isOpen) {
@@ -24,12 +31,43 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
         }
     }, [isOpen, currentFolder]);
 
+    useEffect(() => {
+        if (!isOpen || !isFolder || !onPreview || selectedFolder === currentFolder) {
+            setPreview(null);
+            setPreviewError(null);
+            setIsPreviewLoading(false);
+            return;
+        }
+        const controller = new AbortController();
+        setIsPreviewLoading(true);
+        setPreviewError(null);
+        onPreview(selectedFolder, controller.signal)
+            .then(result => setPreview(result))
+            .catch(error => {
+                if (error?.name !== 'AbortError') setPreviewError(error?.message || '无法获取移动预览');
+            })
+            .finally(() => {
+                if (!controller.signal.aborted) setIsPreviewLoading(false);
+            });
+        return () => controller.abort();
+    }, [currentFolder, isFolder, isOpen, onPreview, selectedFolder]);
+
     // Filter out the current folder from the list
-    const availableFolders = folders.filter(f => f !== currentFolder);
+    const availableFolders = folders.filter(folder =>
+        folder !== currentFolder
+        && (!isFolder || !sourceFolder || (folder !== sourceFolder && !folder.startsWith(`${sourceFolder}/`)))
+    );
 
     if (!isOpen) return null;
 
     const isChanged = selectedFolder !== currentFolder;
+    const canConfirm = isChanged && !isPreviewLoading && !previewError && (!isFolder || (!!preview && !preview.conflict));
+    const formatBytes = (bytes: number) => {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const unit = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+        return `${(bytes / (1024 ** unit)).toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+    };
 
     const modalContent = (
         <AnimatePresence>
@@ -82,6 +120,22 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                                     <span className="font-semibold text-foreground truncate max-w-[200px]">{currentFolder}</span>
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {isFolder && isChanged && (
+                        <div className="px-6 py-3 border-b border-border/50 text-xs">
+                            {isPreviewLoading ? (
+                                <p className="text-muted-foreground">正在检查最终路径和冲突...</p>
+                            ) : previewError ? (
+                                <p className="text-destructive">{previewError}</p>
+                            ) : preview ? (
+                                <div className="space-y-1.5">
+                                    <p><span className="text-muted-foreground">最终路径：</span><strong>{preview.finalPath}</strong></p>
+                                    <p className="text-muted-foreground">将移动 {preview.folderCount} 个目录、{preview.fileCount} 个文件（{formatBytes(preview.totalSizeBytes)}）</p>
+                                    {preview.conflict && <p className="text-destructive">{preview.conflictReason}</p>}
+                                </div>
+                            ) : null}
                         </div>
                     )}
 
@@ -190,7 +244,7 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                                 onClose();
                             }} 
                             className="h-10 px-5 text-sm font-medium shadow-sm"
-                            disabled={!isChanged}
+                            disabled={!canConfirm}
                         >
                             {t("app.confirm") || "确认移动"}
                         </Button>

@@ -1,10 +1,10 @@
-import { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { Fragment, useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
 import { Button } from "./components/ui/Button";
 import { FileCard } from "./components/ui/FileCard";
 import { FolderCard, type FolderData } from "./components/ui/FolderCard";
 import { UploadZone } from "./components/ui/UploadZone";
-import { Search, RefreshCw, ArrowLeft, ChevronDown, ChevronRight, CheckSquare, Cloud, HardDrive, Database, Package, Network, FolderPlus } from "lucide-react";
+import { Search, RefreshCw, ArrowLeft, ChevronDown, ChevronRight, CheckSquare, Cloud, HardDrive, Database, Package, Network, FolderPlus, Upload } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { BulkActionToolbar } from "./components/ui/BulkActionToolbar";
 import { useTranslation } from "react-i18next";
@@ -17,13 +17,19 @@ import { FolderPromptModal } from "./components/ui/FolderPromptModal";
 import { RenameModal } from "./components/ui/RenameModal";
 import { MoveModal } from "./components/ui/MoveModal";
 import { Notification, type NotificationType } from "./components/ui/Notification";
-import { fileApi, type BatchDeletePreview, type BatchDeleteResult, type FileData, type FolderAggregation, type FileQueryOptions, type StorageStats as StorageStatsType } from "./services/api";
+import { fileApi, type BatchDeletePreview, type BatchDeleteResult, type ChunkUploadSession, type FileData, type FolderAggregation, type FileQueryOptions, type StorageConfig, type StorageStats as StorageStatsType, type UploadCapabilities, type UploadTargetSnapshot } from "./services/api";
 import { authService } from "./services/auth";
 import type { QueueItem } from "./components/ui/UploadQueueModal";
 import { LatestRequest } from "./services/latestRequest";
 import { BoundedUploadQueue } from "./services/boundedUploadQueue";
+import { createUploadTelemetry, updateUploadTelemetry } from "./services/uploadTelemetry";
+import { describeFileViewState } from "./services/fileViewState";
+import { buildFolderBreadcrumbs, parentFolder } from "./services/folderNavigation";
+import { attachUploadSession, createUploadQueueInput, type UploadQueueInput } from "./services/uploadQueueInput";
+import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
+const TasksPage = lazy(() => import("./components/pages/TasksPage").then(module => ({ default: module.TasksPage })));
 const PreviewModal = lazy(() => import("./components/ui/PreviewModal").then(module => ({ default: module.PreviewModal })));
 const UploadQueueModal = lazy(() => import("./components/ui/UploadQueueModal").then(module => ({ default: module.UploadQueueModal })));
 const CreateFolderModal = lazy(() => import("./components/ui/CreateFolderModal").then(module => ({ default: module.CreateFolderModal })));
@@ -53,16 +59,45 @@ function App() {
 
   // 改用队列管理上传状态
   const [uploadQueue, setUploadQueue] = useState<QueueItem[]>([]);
-  const uploadManagerRef = useRef(new BoundedUploadQueue<{ item: QueueItem; folder?: string }, void>(3, async ({ item, folder }, signal) => {
+  const [recoveredUploads, setRecoveredUploads] = useState<ChunkUploadSession[]>([]);
+  const [resumingSessionIds, setResumingSessionIds] = useState<string[]>([]);
+  const [cancellingRecoveredUpload, setCancellingRecoveredUpload] = useState<ChunkUploadSession | null>(null);
+  const uploadManagerRef = useRef(new BoundedUploadQueue<UploadQueueInput<QueueItem, ChunkUploadSession>, void>(3, async (input, signal) => {
+    const { item, folder, target, resumeSession } = input;
     setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
-    await fileApi.uploadFile(item.file, folder, progress => {
-      setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: progress.percent === 100 ? 'processing' : 'uploading', progress: progress.percent } : q));
+    const upload = resumeSession
+      ? fileApi.resumeChunkedUpload.bind(fileApi, item.file, resumeSession)
+      : (onProgress: Parameters<typeof fileApi.uploadFile>[2], uploadSignal: AbortSignal) => fileApi.uploadFile(
+          item.file,
+          folder,
+          onProgress,
+          uploadSignal,
+          target,
+          session => attachUploadSession(input, session),
+        );
+    await upload(progress => {
+      setUploadQueue(prev => prev.map(q => {
+        if (q.id !== item.id) return q;
+        const telemetry = updateUploadTelemetry(q.telemetry || createUploadTelemetry(progress.total), progress.loaded);
+        return {
+          ...q,
+          status: progress.percent === 100 ? 'processing' : 'uploading',
+          progress: progress.percent,
+          loadedBytes: progress.loaded,
+          totalBytes: progress.total,
+          bytesPerSecond: telemetry.bytesPerSecond,
+          etaSeconds: telemetry.etaSeconds,
+          telemetry,
+        };
+      }));
     }, signal);
   }));
   const [isQueueModalOpen, setIsQueueModalOpen] = useState(false);
+  const [isUploadQueuePaused, setIsUploadQueuePaused] = useState(false);
+  const [uploadCapabilities, setUploadCapabilities] = useState<UploadCapabilities | null>(null);
 
   const [storageStats, setStorageStats] = useState<StorageStatsType | null>(null);
-  const [, setStorageProvider] = useState<string>("local");
+  const [storageConfig, setStorageConfig] = useState<StorageConfig | null>(null);
 
   // 通知状态
   const [notification, setNotification] = useState<{
@@ -84,6 +119,7 @@ function App() {
   const [batchDeletePreview, setBatchDeletePreview] = useState<BatchDeletePreview | null>(null);
   const [batchDeleteResult, setBatchDeleteResult] = useState<BatchDeleteResult | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null); // 当前选中的文件夹
   const [isNavigationTapShieldActive, setIsNavigationTapShieldActive] = useState(false);
   const navigationTapShieldTimerRef = useRef<number | null>(null);
@@ -115,6 +151,23 @@ function App() {
   // 响应式列数监听
   const [columns, setColumns] = useState(2);
 
+  const loadIncompleteUploads = useCallback(async (openWhenFound = false) => {
+    try {
+      const sessions = await fileApi.getIncompleteChunkUploads();
+      setRecoveredUploads(sessions);
+      if (openWhenFound && sessions.length > 0) setIsQueueModalOpen(true);
+      return sessions;
+    } catch (error: any) {
+      if (error?.message === 'UNAUTHORIZED') {
+        authService.clearToken();
+        setIsAuthenticated(false);
+      } else {
+        console.error('加载未完成上传失败:', error);
+      }
+      return [];
+    }
+  }, []);
+
   useEffect(() => {
     const updateColumns = () => {
       const width = window.innerWidth;
@@ -129,6 +182,18 @@ function App() {
     window.addEventListener('resize', updateColumns);
     return () => window.removeEventListener('resize', updateColumns);
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setRecoveredUploads([]);
+      setUploadCapabilities(null);
+      return;
+    }
+    void loadIncompleteUploads(true);
+    void fileApi.getUploadCapabilities()
+      .then(setUploadCapabilities)
+      .catch(error => console.error('加载上传能力失败:', error));
+  }, [isAuthenticated, loadIncompleteUploads]);
 
   // 检查认证状态
   useEffect(() => {
@@ -185,7 +250,7 @@ function App() {
       setLoading(true);
       setQueryError(null);
       const options = buildFileQueryOptions(request.signal);
-      const includeFolders = currentFolder === null && currentCategory !== 'ytdlp';
+      const includeFolders = currentCategory !== 'ytdlp';
       const [page, globalFolders] = await Promise.all([
         fileApi.getFilesPage(options),
         includeFolders
@@ -265,7 +330,7 @@ function App() {
     if (!isAuthenticated) return;
     try {
       const config = await fileApi.getStorageConfig();
-      setStorageProvider(config.provider);
+      setStorageConfig(config);
     } catch (error) {
       console.error('加载存储配置失败:', error);
     }
@@ -334,6 +399,19 @@ function App() {
     return result;
   };
 
+  const handleLogout = useCallback(async () => {
+    uploadManagerRef.current.reset();
+    await authService.logout();
+    latestFileRequestRef.current.cancel();
+    setIsAuthenticated(false);
+    setFiles([]);
+    setFolderAggregations([]);
+    setUploadQueue([]);
+    setRecoveredUploads([]);
+    setResumingSessionIds([]);
+    setIsUploadQueuePaused(false);
+  }, []);
+
   // 派生上传状态
   const isUploading = useMemo(() => {
     return uploadQueue.some(item => item.status === 'pending' || item.status === 'uploading');
@@ -356,7 +434,7 @@ function App() {
       setPendingFiles(newFiles);
       setIsFolderModalOpen(true);
     } else {
-      startUpload(newFiles);
+      startUpload(newFiles, currentFolder || undefined);
     }
   };
 
@@ -365,7 +443,14 @@ function App() {
       const result = await fileApi.toggleFolderFavorite(folderName);
       if (result.success) {
         setFiles(prev => prev.map(file =>
-          file.folder === folderName ? { ...file, is_favorite: result.isFavorite } : file
+          file.folder && (file.folder === folderName || file.folder.startsWith(`${folderName}/`))
+            ? { ...file, is_favorite: result.isFavorite }
+            : file
+        ));
+        setFolderAggregations(prev => prev.map(folder =>
+          folder.name === folderName || folder.name.startsWith(`${folderName}/`)
+            ? { ...folder, isFavorite: result.isFavorite }
+            : folder
         ));
         setNotification({
           show: true,
@@ -389,27 +474,37 @@ function App() {
   };
 
   const startUpload = async (newFiles: File[], folder?: string) => {
+    const targetSnapshot: UploadTargetSnapshot = {
+      provider: activeStorageDisplay?.provider || storageConfig?.provider || 'local',
+      accountId: storageConfig?.activeAccountId || null,
+      accountName: activeStorageDisplay?.account || storageConfig?.activeAccountName || null,
+      folder: folder || null,
+    };
     // 1. 创建队列项
     const newItems: QueueItem[] = newFiles.map(file => ({
       id: `${file.name}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       file,
       status: 'pending',
-      progress: 0
+      progress: 0,
+      totalBytes: file.size,
+      loadedBytes: 0,
+      bytesPerSecond: 0,
+      etaSeconds: null,
+      telemetry: createUploadTelemetry(file.size),
+      targetLabel: `${activeStorageDisplay?.provider || storageConfig?.provider || '当前存储'} / ${activeStorageDisplay?.account || '当前账户'} / ${folder || '根目录'}`,
     }));
 
     // 2. 添加到队列
     setUploadQueue(prev => [...prev, ...newItems]);
 
-    // 3. 如果是多文件上传，打开队列弹窗
-    if (newFiles.length > 1) {
-      setIsQueueModalOpen(true);
-    }
+    // 单文件也立即展示目标和进度，避免上传状态藏在页面局部。
+    setIsQueueModalOpen(true);
 
     try {
       // 有界队列限制同时上传数量，避免大量文件把浏览器连接和服务器临时空间耗尽。
       const uploadPromises = newItems.map(async (item) => {
         try {
-          await uploadManagerRef.current.enqueue(item.id, { item, folder });
+          await uploadManagerRef.current.enqueue(item.id, createUploadQueueInput(item, folder, targetSnapshot));
           setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'completed', progress: 100 } : q));
         } catch (err: any) {
           if (err?.name === 'AbortError') {
@@ -432,14 +527,84 @@ function App() {
       await Promise.all(uploadPromises);
 
       // 5. 刷新列表
-      await Promise.all([loadFiles(), loadStorageStats()]);
+      await Promise.all([loadFiles(), loadStorageStats(), loadIncompleteUploads(false)]);
 
     } catch (error: any) {
       console.error('批量上传过程出错:', error);
     }
   };
 
-  // 关闭队列弹窗并清空已完成项目
+  const handleResumeUpload = async (session: ChunkUploadSession, file: File) => {
+    if (file.name !== session.filename || file.size !== session.totalSize) {
+      setNotification({ show: true, message: '所选文件的名称或大小与原上传任务不一致', type: 'error' });
+      return;
+    }
+    const item: QueueItem = {
+      id: `resume-${session.uploadId}-${Date.now()}`,
+      file,
+      status: 'pending',
+      progress: session.progress,
+      loadedBytes: session.receivedBytes,
+      totalBytes: session.totalSize,
+      bytesPerSecond: 0,
+      etaSeconds: null,
+      telemetry: { ...createUploadTelemetry(session.totalSize), loadedBytes: session.receivedBytes },
+      resumeSessionId: session.uploadId,
+      targetLabel: `${session.targetAccountName || session.targetProvider} / ${session.folder || '根目录'}`,
+    };
+    setUploadQueue(prev => [...prev, item]);
+    setResumingSessionIds(prev => [...prev, session.uploadId]);
+    setIsQueueModalOpen(true);
+    try {
+      const input = createUploadQueueInput<QueueItem, ChunkUploadSession>(item, session.folder, {
+        provider: session.targetProvider,
+        accountId: session.targetAccountId,
+        accountName: session.targetAccountName,
+      });
+      attachUploadSession(input, session);
+      await uploadManagerRef.current.enqueue(item.id, input);
+      setUploadQueue(prev => prev.map(entry => entry.id === item.id ? { ...entry, status: 'completed', progress: 100 } : entry));
+      setRecoveredUploads(prev => prev.filter(entry => entry.uploadId !== session.uploadId));
+      await Promise.all([loadFiles(), loadStorageStats()]);
+    } catch (error: any) {
+      const cancelled = error?.name === 'AbortError';
+      setUploadQueue(prev => prev.map(entry => entry.id === item.id
+        ? { ...entry, status: cancelled ? 'cancelled' : 'error', error: cancelled ? '已取消' : (error?.message || '续传失败') }
+        : entry));
+      await loadIncompleteUploads(false);
+    } finally {
+      setResumingSessionIds(prev => prev.filter(id => id !== session.uploadId));
+    }
+  };
+
+  const handleCancelRecoveredUpload = async (session: ChunkUploadSession) => {
+    setCancellingRecoveredUpload(session);
+  };
+
+  const confirmCancelRecoveredUpload = async () => {
+    const session = cancellingRecoveredUpload;
+    if (!session) return;
+    setCancellingRecoveredUpload(null);
+    try {
+      const cancellation = await fileApi.cancelChunkUpload(session.uploadId);
+      if (cancellation === 'busy') {
+        setNotification({ show: true, message: '服务器正在完成该上传，暂时不能取消；请稍后刷新确认结果', type: 'info' });
+        await loadIncompleteUploads(false);
+        return;
+      }
+      setRecoveredUploads(prev => prev.filter(entry => entry.uploadId !== session.uploadId));
+      setNotification({
+        show: true,
+        message: cancellation === 'cancelled' ? '上传会话已取消' : '上传会话已结束',
+        type: 'success',
+      });
+    } catch (error: any) {
+      setNotification({ show: true, message: error?.message || '取消上传会话失败', type: 'error' });
+      await loadIncompleteUploads(false);
+    }
+  };
+
+  // 最小化上传抽屉并清理此刻已结算的项目；活跃任务继续在后台运行。
   const handleCloseQueue = () => {
     setIsQueueModalOpen(false);
     const settledIds = new Set(uploadQueue
@@ -453,6 +618,16 @@ function App() {
 
   const handleCancelUpload = (id: string) => {
     uploadManagerRef.current.cancel(id);
+  };
+
+  const handleToggleUploadQueuePause = () => {
+    if (uploadManagerRef.current.isPaused()) {
+      uploadManagerRef.current.resume();
+      setIsUploadQueuePaused(false);
+    } else {
+      uploadManagerRef.current.pause();
+      setIsUploadQueuePaused(true);
+    }
   };
 
   const handleRetryUpload = async (id: string) => {
@@ -641,12 +816,13 @@ function App() {
   const handleFolderRename = async (newName: string) => {
     if (!renamingFolder) return;
     try {
-      await fileApi.renameFolder(renamingFolder, newName);
-      setFiles(prev => prev.map(f => f.folder === renamingFolder ? { ...f, folder: newName } : f));
-      if (currentFolder === renamingFolder) {
-        setCurrentFolder(newName);
+      const result = await fileApi.renameFolder(renamingFolder, newName);
+      const renamedPath = result.name;
+      if (currentFolder && (currentFolder === renamingFolder || currentFolder.startsWith(`${renamingFolder}/`))) {
+        setCurrentFolder(`${renamedPath}${currentFolder.slice(renamingFolder.length)}`);
       }
       setRenamingFolder(null);
+      await loadFiles();
     } catch (error: any) {
       if (error.message === 'UNAUTHORIZED') {
         authService.clearToken();
@@ -661,14 +837,15 @@ function App() {
   // 创建空文件夹
   const handleCreateFolder = async (folderName: string) => {
     try {
-      await fileApi.createFolder(folderName);
+      const finalPath = currentFolder ? `${currentFolder}/${folderName}` : folderName;
+      await fileApi.createFolder(finalPath);
       setNotification({
         show: true,
         message: '文件夹创建成功',
         type: 'success'
       });
       // 刷新列表
-      loadFiles();
+      await loadFiles();
     } catch (error: any) {
       console.error('创建文件夹失败:', error);
       setNotification({
@@ -699,48 +876,51 @@ function App() {
     });
   }, [files, currentCategory, searchQuery]);
 
-  // 按文件夹分组文件，生成文件夹列表
+  // 将数据库中的完整 folder 路径聚合成当前位置的直接子目录。
   const folders = useMemo(() => {
     if (currentCategory === 'ytdlp') {
       return [];
     }
-    const folderMap = new Map<string, FileData[]>();
+    const prefix = currentFolder ? `${currentFolder}/` : '';
+    const grouped = new Map<string, FolderData>();
 
-    // 只处理有文件夹的文件
-    filteredFiles.forEach(file => {
-      if (file.folder) {
-        if (!folderMap.has(file.folder)) {
-          folderMap.set(file.folder, []);
-        }
-        folderMap.get(file.folder)!.push(file);
+    for (const aggregation of folderAggregations) {
+      if (currentFolder && aggregation.name === currentFolder) continue;
+      if (prefix && !aggregation.name.startsWith(prefix)) continue;
+      const relative = prefix ? aggregation.name.slice(prefix.length) : aggregation.name;
+      const childSegment = relative.split('/')[0];
+      if (!childSegment) continue;
+      const childPath = prefix ? `${currentFolder}/${childSegment}` : childSegment;
+      const existing = grouped.get(childPath);
+      const candidateFiles = aggregation.coverFile ? [aggregation.coverFile] : [];
+      if (!existing) {
+        grouped.set(childPath, {
+          name: childPath,
+          displayName: childSegment,
+          files: candidateFiles,
+          fileCount: aggregation.fileCount,
+          coverFile: aggregation.coverFile || undefined,
+          latestDate: aggregation.latestDate,
+          isFavorite: aggregation.isFavorite,
+        });
+        continue;
       }
-    });
+      existing.fileCount += aggregation.fileCount;
+      existing.files.push(...candidateFiles);
+      existing.isFavorite = !!existing.isFavorite && aggregation.isFavorite;
+      if (!existing.latestDate || new Date(aggregation.latestDate) > new Date(existing.latestDate)) {
+        existing.latestDate = aggregation.latestDate;
+        existing.coverFile = aggregation.coverFile || existing.coverFile;
+      }
+    }
 
-    // 生成 FolderData 数组
-    const result: FolderData[] = [];
-    folderMap.forEach((files, name) => {
-      // 排除占位文件进行统计和封面展示
-      const realFiles = files.filter(f => f.name !== '.folder');
-      
-      // 找到第一个有缩略图的文件作为封面
-      const coverFile = realFiles.find(f => f.thumbnailUrl || f.type === 'image' || f.type === 'video') || realFiles[0];
-
-      result.push({
-        name,
-        files,
-        fileCount: realFiles.length,
-        coverFile,
-        latestDate: files.reduce((latest, file) => {
-          return !latest || new Date(file.created_at) > new Date(latest) ? file.created_at : latest;
-        }, '')
-      });
-    });
+    const result = Array.from(grouped.values());
 
     // 排序逻辑
     return result.sort((a, b) => {
       let comparison = 0;
       if (sortConfig.key === 'name') {
-        comparison = a.name.localeCompare(b.name, 'zh-CN');
+        comparison = (a.displayName || a.name).localeCompare(b.displayName || b.name, 'zh-CN');
       } else {
         // 文件夹日期排序使用其中最新文件的日期
         const dateA = a.latestDate ? new Date(a.latestDate).getTime() : 0;
@@ -749,7 +929,7 @@ function App() {
       }
       return sortConfig.direction === 'asc' ? comparison : -comparison;
     });
-  }, [filteredFiles, sortConfig]);
+  }, [currentCategory, currentFolder, folderAggregations, sortConfig]);
 
   const visibleFolders = useMemo(() => {
     if (isFoldersExpanded) return folders;
@@ -759,11 +939,9 @@ function App() {
   // 如果文件夹总数不超过一行，则不需要显示展开/折叠按钮
   const showFolderToggle = folders.length > columns;
 
-  // 没有文件夹的散文件
+  // 文件查询已经按当前位置精确过滤，排除目录占位索引即可展示。
   const looseFiles = useMemo(() => {
-    const files = currentCategory === 'ytdlp'
-      ? filteredFiles.filter(file => file.name !== '.folder')
-      : filteredFiles.filter(file => !file.folder && file.name !== '.folder');
+    const files = filteredFiles.filter(file => file.name !== '.folder');
 
     // 排序逻辑
     return files.sort((a, b) => {
@@ -797,7 +975,41 @@ function App() {
     });
   }, [currentFolder, displayFiles, folders, looseFiles]);
 
-  const allFolderNames = useMemo(() => Array.from(new Set(files.filter(f => f.folder).map(f => f.folder!))), [files]);
+  const allFolderNames = useMemo(() => {
+    const names = new Set<string>();
+    folderAggregations.forEach(folder => {
+      const segments = folder.name.split('/');
+      for (let index = 1; index <= segments.length; index++) {
+        names.add(segments.slice(0, index).join('/'));
+      }
+    });
+    return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }, [folderAggregations]);
+
+  const activeStorageDisplay = useMemo(() => {
+    if (!storageConfig) return null;
+    const providerLabels: Record<string, string> = {
+      local: '本地存储',
+      onedrive: 'OneDrive',
+      google_drive: 'Google Drive',
+      aliyun_oss: '阿里云 OSS',
+      s3: 'S3',
+      webdav: 'WebDAV',
+    };
+    const account = storageConfig.accounts.find(item => item.id === storageConfig.activeAccountId);
+    return {
+      provider: providerLabels[storageConfig.provider] || storageConfig.provider,
+      account: account?.name || (storageConfig.provider === 'local' ? '服务器本地目录' : '未命名账户'),
+    };
+  }, [storageConfig]);
+
+  const fileViewState = useMemo(() => describeFileViewState({
+    folder: currentFolder,
+    query: searchQuery,
+    category: currentCategory,
+    error: queryError,
+    stale: isStale,
+  }), [currentFolder, searchQuery, currentCategory, queryError, isStale]);
 
   const handleMoveFile = async (destinationFolder: string | null) => {
     if (!movingFile) return;
@@ -828,15 +1040,16 @@ function App() {
     try {
       const result = await fileApi.moveFolder(movingFolder, destinationFolder);
       if (result.success) {
-        setFiles(prev => prev.map(f => f.folder === movingFolder ? { ...f, folder: destinationFolder || undefined } : f));
-        if (currentFolder === movingFolder) {
-            setCurrentFolder(destinationFolder || null);
+        const finalPath = result.folder;
+        if (currentFolder && finalPath && (currentFolder === movingFolder || currentFolder.startsWith(`${movingFolder}/`))) {
+          setCurrentFolder(`${finalPath}${currentFolder.slice(movingFolder.length)}`);
         }
         setNotification({
           show: true,
           message: t("app.moveSuccess") || "移动成功",
           type: "success"
         });
+        await loadFiles();
       }
     } catch (error: any) {
       console.error("Move folder failed:", error);
@@ -849,6 +1062,12 @@ function App() {
       setMovingFolder(null);
     }
   };
+
+  const previewFolderMove = useCallback((destinationFolder: string | null, signal: AbortSignal) => {
+    if (!movingFolder) return Promise.reject(new Error('没有待移动的文件夹'));
+    return fileApi.previewMoveFolder(movingFolder, destinationFolder, signal);
+  }, [movingFolder]);
+
   // 正在检查认证状态
   if (authChecking) {
     return (
@@ -865,13 +1084,17 @@ function App() {
 
   return (
     <>
-      <AppLayout onCategoryChange={setCurrentCategory} storageStats={storageStats}>
+      <AppLayout onCategoryChange={setCurrentCategory} storageStats={storageStats} onLogout={handleLogout}>
         <div className="flex flex-col gap-8 max-w-7xl mx-auto min-h-full">
 
           {/* Main Content Area */}
           {currentCategory === "settings" ? (
             <Suspense fallback={<LazyFallback />}>
-              <SettingsPage storageStats={storageStats} />
+              <SettingsPage storageStats={storageStats} onSignedOut={() => setIsAuthenticated(false)} />
+            </Suspense>
+          ) : currentCategory === "tasks" ? (
+            <Suspense fallback={<LazyFallback />}>
+              <TasksPage onUnauthorized={() => setIsAuthenticated(false)} onOpenUploads={() => setIsQueueModalOpen(true)} />
             </Suspense>
           ) : (
             <>
@@ -894,9 +1117,20 @@ function App() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="h-10 w-10 rounded-full md:hidden"
+                    onClick={() => setIsMobileSearchOpen(open => !open)}
+                    aria-label={t("app.mobileSearch")}
+                  >
+                    <Search className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     className="h-10 w-10 rounded-full"
                     onClick={() => { loadFiles(); loadStorageStats(); }}
                     disabled={loading}
+                    aria-label={t("app.refresh")}
+                    title={t("app.refresh")}
                   >
                     <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
                   </Button>
@@ -947,13 +1181,45 @@ function App() {
                   </div>
                 </div>
               </div>
+              {isMobileSearchOpen && (
+                <div className="relative md:hidden">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    autoFocus
+                    className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                    placeholder={t("app.searchPlaceholder")}
+                    value={searchQuery}
+                    onChange={event => setSearchQuery(event.target.value)}
+                  />
+                  {searchQuery && <button className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground" onClick={() => setSearchQuery('')}>{t('app.cancel')}</button>}
+                </div>
+              )}
 
               {/* Upload Zone */}
+              {activeStorageDisplay && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-y border-border bg-muted/25 px-4 py-3 text-sm">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Cloud className="h-4 w-4 shrink-0 text-primary" />
+                    <span className="text-muted-foreground">当前存储范围与新任务默认目标</span>
+                    <strong className="truncate">{activeStorageDisplay.provider} / {activeStorageDisplay.account}</strong>
+                  </div>
+                  <span className="text-xs text-muted-foreground">上传位置：{currentFolder || '根目录'}</span>
+                </div>
+              )}
               <UploadZone
                 onDrop={handleDrop}
                 uploading={isUploading}
                 uploadProgress={totalUploadProgress}
+                capabilities={uploadCapabilities}
               />
+              {(uploadQueue.length > 0 || recoveredUploads.length > 0) && !isQueueModalOpen && (
+                <div className="sticky bottom-4 z-40 flex justify-end pointer-events-none">
+                  <Button className="pointer-events-auto gap-2 shadow-lg" onClick={() => setIsQueueModalOpen(true)}>
+                    <Upload className="h-4 w-4" />
+                    打开上传队列（{uploadQueue.filter(item => ['pending', 'uploading', 'processing'].includes(item.status)).length + recoveredUploads.length}）
+                  </Button>
+                </div>
+              )}
 
               <div className="sticky top-0 z-30 -mx-4 px-4 pt-2">
                 <BulkActionToolbar
@@ -967,27 +1233,41 @@ function App() {
                   }}
                   onDelete={handleBatchDelete}
                   onShare={handleShare}
+                  shareCapabilities={storageConfig?.capabilities}
                 />
               </div>
 
               {/* Files View */}
               <div className="flex-1 flex flex-col mt-8">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold flex items-center gap-2">
+                  <h3 className="text-lg font-semibold flex min-w-0 flex-wrap items-center gap-2">
                     {currentFolder ? (
                       <>
                         <Button
                           variant="ghost"
                           size="icon"
                           className="h-11 w-11 rounded-full touch-manipulation"
-                          onClick={() => setCurrentFolder(null)}
+                          onClick={() => setCurrentFolder(parentFolder(currentFolder))}
+                          aria-label="返回上级目录"
                         >
                           <ArrowLeft className="h-4 w-4" />
                         </Button>
-                        <span>{currentFolder}</span>
+                        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setCurrentFolder(null)}>根目录</button>
+                        {buildFolderBreadcrumbs(currentFolder).map(({ label: segment, path }) => {
+                          return (
+                            <Fragment key={path}>
+                              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                              <button className="max-w-40 truncate text-sm hover:text-primary" onClick={() => setCurrentFolder(path)}>{segment}</button>
+                            </Fragment>
+                          );
+                        })}
                         <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                          {displayFiles.length} 个文件
+                          {folders.length} 个子目录，{displayFiles.length} 个文件
                         </span>
+                        <Button variant="ghost" size="sm" className="h-10 px-3 text-xs" onClick={() => setIsCreateFolderModalOpen(true)}>
+                          <FolderPlus className="h-3.5 w-3.5" />
+                          新建子目录
+                        </Button>
                       </>
                     ) : (
                       <div className="flex items-center gap-3">
@@ -1010,11 +1290,11 @@ function App() {
 
                 </div>
 
-                {queryError && (
-                  <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-300">
+                {queryError && isStale && (
+                  <div className="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-200">
                     <div className="flex items-center justify-between gap-4">
-                      <span>{queryError}{isStale ? '（当前显示上次成功加载的数据）' : ''}</span>
-                      <Button variant="outline" size="sm" onClick={() => void loadFiles()}>重试</Button>
+                      <span>{t('empty.stale.title')}：{queryError}</span>
+                      <Button variant="outline" size="sm" onClick={() => void loadFiles()}>{t('empty.retry')}</Button>
                     </div>
                   </div>
                 )}
@@ -1022,65 +1302,69 @@ function App() {
                   <div className="flex items-center justify-center py-20">
                     <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
                   </div>
-                ) : filteredFiles.length === 0 ? (
-                  <EmptyState />
+                ) : queryError && !isStale ? (
+                  <EmptyState kind={fileViewState.kind} onRetry={() => void loadFiles()} />
+                ) : displayFiles.length === 0 && folders.length === 0 ? (
+                  <EmptyState
+                    kind={fileViewState.kind}
+                    onRetry={() => void loadFiles()}
+                    onClearSearch={() => setSearchQuery('')}
+                    onClearFilter={() => setCurrentCategory('all')}
+                  />
                 ) : currentFolder ? (
                   /* 文件夹内容视图 */
-                  <div className={viewMode === "grid" ? "grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5" : "flex flex-col gap-2"}>
-                    <AnimatePresence mode="wait">
-                      {displayFiles.map((file) => (
-                        <motion.div
-                          key={file.id}
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.15 }}
-                        >
-                          {viewMode === "grid" ? (
-                            <FileCard
-                              file={file}
-                              onPreview={() => setSelectedFile(file)}
-                              onDelete={() => verifyDelete(file)}
-                              onRename={() => setRenamingFile(file)}
-                              onToggleFavorite={() => handleToggleFavorite(file.id)}
-                               onMove={() => setMovingFile(file)}
-                              isSelectionMode={isSelectionMode}
-                              isSelected={selectedFileIds.includes(file.id)}
-                              onSelect={toggleFileSelection}
-                            />
-                          ) : (
-                            <div
-                              className={`flex min-h-[64px] items-center gap-4 p-3 rounded-xl border ${selectedFileIds.includes(file.id) ? 'border-primary bg-primary/5' : 'border-border bg-card'} shadow-sm cursor-pointer group hover:bg-muted/50 transition-colors touch-manipulation`}
-                              onClick={() => isSelectionMode ? toggleFileSelection(file.id) : setSelectedFile(file)}
-                            >
-                              {isSelectionMode && (
-                                <div className={`h-5 w-5 rounded-full border-2 flex items-center justify-center ${selectedFileIds.includes(file.id) ? 'bg-primary border-primary' : 'border-muted-foreground/30'}`}>
-                                  {selectedFileIds.includes(file.id) && <div className="h-2 w-2 bg-white rounded-full" />}
+                  <div className="space-y-8">
+                    {folders.length > 0 && (
+                      <div className={viewMode === "grid" ? "grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5" : "flex flex-col gap-2"}>
+                        {visibleFolders.map(folder => (
+                          <FolderCard
+                            key={folder.name}
+                            folder={folder}
+                            onClick={() => enterFolder(folder.name)}
+                            onRename={() => setRenamingFolder(folder.name)}
+                            onToggleFavorite={() => handleToggleFolderFavorite(folder.name)}
+                            onMove={() => setMovingFolder(folder.name)}
+                            onDelete={() => handleBatchDelete([], [folder.name])}
+                            isSelectionMode={isSelectionMode}
+                            isSelected={selectedFolderNames.includes(folder.name)}
+                            onSelect={toggleFolderSelection}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {displayFiles.length > 0 && (
+                      <div className={viewMode === "grid" ? "grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5" : "flex flex-col gap-2"}>
+                        <AnimatePresence mode="wait">
+                          {displayFiles.map((file) => (
+                            <motion.div key={file.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.15 }}>
+                              {viewMode === "grid" ? (
+                                <FileCard
+                                  file={file}
+                                  onPreview={() => setSelectedFile(file)}
+                                  onDelete={() => verifyDelete(file)}
+                                  onRename={() => setRenamingFile(file)}
+                                  onToggleFavorite={() => handleToggleFavorite(file.id)}
+                                  onMove={() => setMovingFile(file)}
+                                  isSelectionMode={isSelectionMode}
+                                  isSelected={selectedFileIds.includes(file.id)}
+                                  onSelect={toggleFileSelection}
+                                />
+                              ) : (
+                                <div
+                                  className={`flex min-h-[64px] items-center gap-4 p-3 rounded-xl border ${selectedFileIds.includes(file.id) ? 'border-primary bg-primary/5' : 'border-border bg-card'} shadow-sm cursor-pointer group hover:bg-muted/50 transition-colors touch-manipulation`}
+                                  onClick={() => isSelectionMode ? toggleFileSelection(file.id) : setSelectedFile(file)}
+                                >
+                                  <div className="h-12 w-12 rounded-lg bg-muted flex items-center justify-center text-xs font-bold text-muted-foreground uppercase">{file.type.slice(0, 3)}</div>
+                                  <div className="flex-1 min-w-0"><h4 className="font-medium truncate">{file.name}</h4><p className="text-xs text-muted-foreground">{file.date}</p></div>
+                                  <div className="text-sm font-medium tabular-nums text-muted-foreground">{file.size}</div>
+                                  <FileMenu onDelete={() => verifyDelete(file)} onToggleFavorite={() => handleToggleFavorite(file.id)} isFavorite={!!file.is_favorite} />
                                 </div>
                               )}
-                              <div className="h-12 w-12 rounded-lg bg-muted flex items-center justify-center text-xs font-bold text-muted-foreground uppercase tracking-wider group-hover:bg-background transition-colors">
-                                {file.type.slice(0, 3)}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h4 className="font-medium truncate group-hover:text-primary transition-colors">{file.name}</h4>
-                                <div className="flex items-center gap-2">
-                                  <p className="text-xs text-muted-foreground">{file.date}</p>
-                                  <span className="text-[10px] text-muted-foreground/60">•</span>
-                                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground/60">
-                                    {file.source === 'onedrive' ? <Cloud className="h-2.5 w-2.5" /> : (file.source === 'google_drive' ? <Database className="h-2.5 w-2.5" /> : (file.source === 'aliyun_oss' ? <Database className="h-2.5 w-2.5" /> : (file.source === 's3' ? <Package className="h-2.5 w-2.5" /> : (file.source === 'webdav' ? <Network className="h-2.5 w-2.5" /> : <HardDrive className="h-2.5 w-2.5" />))))}
-                                    <span>{file.source === 'onedrive' ? 'OneDrive' : (file.source === 'google_drive' ? 'Google Drive' : (file.source === 'aliyun_oss' ? 'Aliyun OSS' : (file.source === 's3' ? 'S3' : (file.source === 'webdav' ? 'WebDAV' : 'Local'))))}</span>
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="text-sm font-medium tabular-nums text-muted-foreground px-4">{file.size}</div>
-                              <div>
-                                <FileMenu onDelete={() => verifyDelete(file)} onToggleFavorite={() => handleToggleFavorite(file.id)} isFavorite={!!file.is_favorite} />
-                              </div>
-                            </div>
-                          )}
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   /* 主视图：文件夹 + 散文件 */
@@ -1273,7 +1557,13 @@ function App() {
               onClose={handleCloseQueue}
               onCancel={handleCancelUpload}
               onRetry={handleRetryUpload}
+              isPaused={isUploadQueuePaused}
+              onTogglePause={handleToggleUploadQueuePause}
               items={uploadQueue}
+              recoveredSessions={recoveredUploads.filter(session => !resumingSessionIds.includes(session.uploadId))}
+              resumingSessionIds={resumingSessionIds}
+              onResumeSession={handleResumeUpload}
+              onCancelSession={handleCancelRecoveredUpload}
             />
           )}
         </Suspense>
@@ -1297,6 +1587,15 @@ function App() {
           result={batchDeleteResult}
         />
 
+        <ConfirmDialog
+          isOpen={!!cancellingRecoveredUpload}
+          title="取消可续传上传？"
+          description={`将取消“${cancellingRecoveredUpload?.filename || ''}”的上传会话，并删除服务器已接收的分块。此操作无法撤销。`}
+          confirmLabel="取消上传"
+          onClose={() => setCancellingRecoveredUpload(null)}
+          onConfirm={confirmCancelRecoveredUpload}
+        />
+
         <RenameModal
           isOpen={!!renamingFile}
           onClose={() => setRenamingFile(null)}
@@ -1309,15 +1608,17 @@ function App() {
           isOpen={!!renamingFolder}
           onClose={() => setRenamingFolder(null)}
           onConfirm={handleFolderRename}
-          currentName={renamingFolder || ''}
+          currentName={renamingFolder?.split('/').pop() || ''}
           type="folder"
         />
 
         <FolderPromptModal
           isOpen={isFolderModalOpen}
           onClose={() => setIsFolderModalOpen(false)}
-          onConfirm={(folderName) => startUpload(pendingFiles, folderName)}
-          onCancel={() => startUpload(pendingFiles)}
+          onConfirm={(folderName) => startUpload(pendingFiles, currentFolder ? `${currentFolder}/${folderName}` : folderName)}
+          onCancel={() => startUpload(pendingFiles, currentFolder || undefined)}
+          onRoot={() => startUpload(pendingFiles)}
+          currentFolder={currentFolder}
         />
 
         <Suspense fallback={null}>
@@ -1326,6 +1627,7 @@ function App() {
               isOpen={isCreateFolderModalOpen}
               onClose={() => setIsCreateFolderModalOpen(false)}
               onConfirm={handleCreateFolder}
+              currentFolder={currentFolder}
             />
           )}
         </Suspense>
@@ -1340,9 +1642,14 @@ function App() {
             if (movingFile) handleMoveFile(dest);
             if (movingFolder) handleMoveFolder(dest);
           }}
-          currentFolder={movingFolder || movingFile?.folder || null}
+          currentFolder={movingFolder
+            ? (movingFolder.includes('/') ? movingFolder.split('/').slice(0, -1).join('/') : null)
+            : (movingFile?.folder || null)}
           folders={allFolderNames}
           title={movingFile ? t("file.move") : t("folder.move")}
+          sourceFolder={movingFolder || undefined}
+          isFolder={!!movingFolder}
+          onPreview={movingFolder ? previewFolderMove : undefined}
         />
       </AppLayout>
 

@@ -16,6 +16,7 @@ import { getUniqueStoredName } from '../utils/fileUtils.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { acquireStorageAccountOperationLease, type StorageAccountOperationLease } from '../services/storageAccountOperation.js';
+import { lockStorageTargetForUse } from '../services/storageAccountLifecycle.js';
 import {
     beginChunkCompletionReconciliation, claimChunkReconciliations, resolveClaimedChunkReconciliation,
     compensateChunkCompletionFailure,
@@ -30,6 +31,7 @@ import {
     verifyChunkIntegrity,
     type ChunkUploadSession,
 } from '../services/chunkUploadSessions.js';
+import { normalizeFolderPath } from '../utils/folderPath.js';
 
 const router = Router();
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
@@ -88,7 +90,11 @@ router.use(rateLimit({
 function ownerId(req: Request): string {
     const token = getAuthToken(req);
     if (!token) throw new ChunkUploadProtocolError('ChunkOwnerError', '缺少认证会话');
-    return crypto.createHash('sha256').update(token).digest('hex');
+    return stableWebAdminPrincipalId();
+}
+
+function stableWebAdminPrincipalId(): string {
+    return crypto.createHash('sha256').update('tg-vault:web-admin:v1').digest('hex');
 }
 
 function decodeFilename(filename: string): string {
@@ -130,8 +136,9 @@ function sendProtocolError(res: Response, error: unknown): Response {
 
 router.post('/init', async (req: Request, res: Response) => {
     let uploadDirectory = '';
+    let admissionLease: StorageAccountOperationLease | null = null;
     try {
-        const { filename, mimeType, totalSize, folder } = req.body;
+        const { filename, mimeType, totalSize, folder, targetProvider, targetAccountId } = req.body;
         const bytes = Number(totalSize);
         const chunks = Math.ceil(bytes / MAX_CHUNK_BYTES);
         if (typeof filename !== 'string' || !filename.trim() || typeof mimeType !== 'string') {
@@ -140,14 +147,41 @@ router.post('/init', async (req: Request, res: Response) => {
         if (!Number.isSafeInteger(chunks) || chunks < 1 || chunks > MAX_TOTAL_CHUNKS || !Number.isSafeInteger(bytes) || bytes < 1) {
             return res.status(400).json({ error: '上传参数无效' });
         }
-        const target = storageManager.getActiveTarget();
+        let normalizedFolder: string | null = null;
+        try {
+            normalizedFolder = typeof folder === 'string' && folder ? normalizeFolderPath(folder) : null;
+        } catch (error) {
+            return res.status(400).json({ error: error instanceof Error ? error.message : '文件夹路径无效' });
+        }
+        let target;
+        if (targetProvider) {
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+                const selected = await lockStorageTargetForUse(
+                    client,
+                    String(targetProvider),
+                    targetAccountId ? String(targetAccountId) : null,
+                );
+                admissionLease = await acquireStorageAccountOperationLease(pool, selected.accountId, 'chunk_admission');
+                await client.query('COMMIT');
+                target = storageManager.getTarget(selected.provider, selected.accountId);
+            } catch (error) {
+                await client.query('ROLLBACK').catch(() => undefined);
+                throw error;
+            } finally {
+                client.release();
+            }
+        } else {
+            target = storageManager.getActiveTarget();
+        }
         const now = new Date();
         const session: ChunkUploadSession = {
             uploadId: crypto.randomUUID(),
             ownerId: ownerId(req),
             filename: decodeFilename(filename).slice(0, 255),
             mimeType: mimeType.slice(0, 100),
-            folder: typeof folder === 'string' && folder ? folder.slice(0, 255) : null,
+            folder: normalizedFolder,
             totalSize: bytes,
             totalChunks: chunks,
             receivedBytes: 0,
@@ -171,10 +205,21 @@ router.post('/init', async (req: Request, res: Response) => {
             expiresAt: session.expiresAt.toISOString(),
             maxChunkBytes: MAX_CHUNK_BYTES,
             totalChunks: chunks,
+            target: {
+                provider: target.provider.name,
+                accountId: target.accountId,
+                folder: normalizedFolder,
+            },
         });
     } catch (error) {
         if (uploadDirectory) await fsPromises.rm(uploadDirectory, { recursive: true, force: true }).catch(() => undefined);
-        sendProtocolError(res, error);
+        if (/上传目标|存储账户/.test(error instanceof Error ? error.message : '')) {
+            res.status(409).json({ error: error instanceof Error ? error.message : '上传目标无效' });
+        } else {
+            sendProtocolError(res, error);
+        }
+    } finally {
+        await admissionLease?.release();
     }
 });
 
@@ -415,6 +460,9 @@ router.post('/complete', async (req: Request, res: Response) => {
                 previewUrl: getSignedUrl(file.id, 'preview'),
                 date: file.created_at,
                 source: target.provider.name,
+                folder: storageFolder,
+                storageAccountId: session.targetAccountId,
+                target: { provider: target.provider.name, accountId: session.targetAccountId, folder: storageFolder },
             },
         });
     } catch (error) {
@@ -435,10 +483,46 @@ router.post('/:uploadId/retry', async (req: Request<{ uploadId: string }>, res: 
     } catch (error) { sendProtocolError(res, error); }
 });
 
+router.get('/sessions', async (req: Request, res: Response) => {
+    try {
+        const sessions = await chunkStore.list(ownerId(req));
+        const accountIds = [...new Set(sessions.map(session => session.targetAccountId).filter((id): id is string => !!id))];
+        const accountRows = accountIds.length > 0
+            ? await query('SELECT id, name FROM storage_accounts WHERE id = ANY($1::uuid[])', [accountIds])
+            : { rows: [] as Array<{ id: string; name: string }> };
+        const accountNames = new Map(accountRows.rows.map(row => [String(row.id), String(row.name)]));
+        const payload = await Promise.all(sessions.map(async session => {
+            const chunks = await chunkStore.chunks(session.uploadId, session.ownerId);
+            return {
+                uploadId: session.uploadId,
+                filename: session.filename,
+                mimeType: session.mimeType,
+                folder: session.folder,
+                status: session.status,
+                totalChunks: session.totalChunks,
+                uploadedChunks: chunks.map(chunk => chunk.index),
+                uploadedChunkHashes: Object.fromEntries(chunks.map(chunk => [chunk.index, chunk.sha256])),
+                receivedBytes: session.receivedBytes,
+                totalSize: session.totalSize,
+                progress: Math.round((session.receivedBytes / session.totalSize) * 100),
+                maxChunkBytes: MAX_CHUNK_BYTES,
+                targetProvider: session.targetProvider,
+                targetAccountId: session.targetAccountId,
+                targetAccountName: session.targetAccountId ? accountNames.get(session.targetAccountId) || null : '服务器本地目录',
+                expiresAt: session.expiresAt,
+                error: session.lastError,
+            };
+        }));
+        res.json({ sessions: payload });
+    } catch (error) {
+        sendProtocolError(res, error);
+    }
+});
+
 router.delete('/:uploadId', async (req: Request<{ uploadId: string }>, res: Response) => {
     try {
         const result = await chunkStore.cancel(req.params.uploadId, ownerId(req));
-        if (result === 'busy') return res.status(409).json({ error: '上传正在完成，暂时不能取消' });
+        if (result === 'busy') return res.status(409).json({ error: '上传正在完成，暂时不能取消', status: result });
         if (result === 'cancelled') await fsPromises.rm(path.join(CHUNK_DIR, req.params.uploadId), { recursive: true, force: true });
         res.status(result === 'not_found' ? 404 : 200).json({ success: result !== 'not_found', status: result });
     } catch (error) { sendProtocolError(res, error); }
@@ -455,6 +539,7 @@ router.get('/:uploadId/status', async (req: Request<{ uploadId: string }>, res: 
             status: session.status,
             totalChunks: session.totalChunks,
             uploadedChunks: chunks.map(chunk => chunk.index),
+            uploadedChunkHashes: Object.fromEntries(chunks.map(chunk => [chunk.index, chunk.sha256])),
             receivedBytes: session.receivedBytes,
             totalSize: session.totalSize,
             progress: Math.round((session.receivedBytes / session.totalSize) * 100),

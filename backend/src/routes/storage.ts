@@ -18,6 +18,13 @@ import { getOAuthRouteConfig, renderOAuthSuccessPage } from '../services/oauthRo
 import { deleteStorageAccountWithClient, StorageAccountConflictError, StorageAccountNotFoundError } from '../services/storageAccountLifecycle.js';
 import { logOperationalEvent } from '../services/operationalEvents.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
+import { StorageProbeError } from '../services/storage.js';
+import { getTelegramUserClientStatus } from '../services/telegramUserClientStatus.js';
+import { maintenanceImpact } from '../utils/maintenanceActions.js';
+import { buildStorageCapabilities, buildStorageStatsPayload } from '../utils/storageProductContract.js';
+import { buildAdvancedSettings, normalizeAdvancedSettingsPatch } from '../utils/advancedSettings.js';
+import { getFileDownloadConcurrency, setFileDownloadConcurrency } from '../services/telegramUpload.js';
+import { startPeriodicCleanup, stopPeriodicCleanup } from '../services/orphanCleanup.js';
 
 // ESM compatibility
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
@@ -25,6 +32,19 @@ const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceMo
 const router = Router();
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
+
+function sendStorageOperationError(res: Response, error: unknown, fallback: string): void {
+    if (error instanceof StorageProbeError) {
+        res.status(error.causeCode === 'ACCOUNT_NOT_FOUND' ? 404 : 422).json({
+            error: error.message,
+            code: 'STORAGE_PROBE_FAILED',
+            provider: error.provider,
+            retryable: true,
+        });
+        return;
+    }
+    res.status(500).json({ error: fallback });
+}
 
 function sendOAuthSuccessPage(res: Response, input: {
     provider: OAuthProvider;
@@ -60,40 +80,61 @@ function sendOAuthFlowError(res: Response, error: unknown): void {
     throw error;
 }
 
-// 获取存储统计
+// 获取存储统计：服务器临时空间、当前账户索引量和远端 quota 分开表达。
 router.get('/stats', requireAuth, async (_req: Request, res: Response) => {
     try {
-        // 获取服务器磁盘空间（使用上传目录所在的路径，Docker 中反映卷的空间）
         const diskPath = os.platform() === 'win32' ? 'C:' : path.resolve(UPLOAD_DIR);
         const diskSpace = await checkDiskSpace(diskPath);
-
-        // 获取当前存储范围内 TG Vault 使用的空间
         const scope = await getCurrentStorageScope();
         const result = await query(`
-            SELECT
-                COUNT(*) as file_count,
-                COALESCE(SUM(size), 0) as total_size
-            FROM files
-            WHERE ${scope.clause}
+            SELECT COUNT(*) as file_count, COALESCE(SUM(size), 0) as total_size
+            FROM files WHERE ${scope.clause}
         `, scope.params);
-
-        const tgVaultStats = result.rows[0];
-
+        const { storageManager } = await import('../services/storage.js');
+        const provider = storageManager.getProvider();
+        const activeAccountId = storageManager.getActiveAccountId();
+        const account = activeAccountId
+            ? (await query(`SELECT last_probe_status, last_probed_at FROM storage_accounts WHERE id = $1`, [activeAccountId])).rows[0]
+            : null;
+        const cooldown = activeAccountId
+            ? (await query(`SELECT reason, cooldown_until FROM storage_account_cooldowns
+                            WHERE storage_account_id = $1 AND cooldown_until > NOW()
+                            ORDER BY cooldown_until DESC LIMIT 1`, [activeAccountId])).rows[0]
+            : null;
+        let remoteQuota: { totalBytes: number; usedBytes: number } | null = null;
+        if (provider.getQuota) {
+            try { remoteQuota = await provider.getQuota(); }
+            catch (error) { console.warn('获取远端存储配额失败:', (error as Error).message); }
+        }
+        const payload = buildStorageStatsPayload({
+            disk: { totalBytes: diskSpace.size, freeBytes: diskSpace.free },
+            indexed: {
+                usedBytes: Number(result.rows[0]?.total_size || 0),
+                fileCount: Number(result.rows[0]?.file_count || 0),
+            },
+            remoteQuota,
+            health: {
+                probeStatus: account?.last_probe_status || (provider.name === 'local' ? 'available' : null),
+                lastProbedAt: account?.last_probed_at ? new Date(account.last_probed_at).toISOString() : null,
+                cooldownUntil: cooldown?.cooldown_until ? new Date(cooldown.cooldown_until).toISOString() : null,
+                cooldownReason: cooldown?.reason || null,
+            },
+        });
         res.json({
+            ...payload,
+            provider: provider.name,
+            accountId: activeAccountId,
+            capabilities: buildStorageCapabilities(provider.name),
+            // Transitional aliases for already-deployed clients. Indexed usage has no fake percentage.
             server: {
-                total: formatBytes(diskSpace.size),
-                totalBytes: diskSpace.size,
-                used: formatBytes(diskSpace.size - diskSpace.free),
-                usedBytes: diskSpace.size - diskSpace.free,
-                free: formatBytes(diskSpace.free),
-                freeBytes: diskSpace.free,
-                usedPercent: Math.round(((diskSpace.size - diskSpace.free) / diskSpace.size) * 100),
+                total: formatBytes(payload.temporary.totalBytes), totalBytes: payload.temporary.totalBytes,
+                used: formatBytes(payload.temporary.usedBytes), usedBytes: payload.temporary.usedBytes,
+                free: formatBytes(payload.temporary.freeBytes), freeBytes: payload.temporary.freeBytes,
+                usedPercent: payload.temporary.usedPercent,
             },
             tgvault: {
-                used: formatBytes(parseInt(tgVaultStats.total_size)),
-                usedBytes: parseInt(tgVaultStats.total_size),
-                fileCount: parseInt(tgVaultStats.file_count),
-                usedPercent: Math.round((parseInt(tgVaultStats.total_size) / diskSpace.size) * 100),
+                used: formatBytes(payload.indexed.usedBytes), usedBytes: payload.indexed.usedBytes,
+                fileCount: payload.indexed.fileCount,
             },
         });
     } catch (error) {
@@ -149,6 +190,7 @@ router.get('/config', requireAuth, async (req: Request, res: Response) => {
 
         // 获取所有账户概览（不包含敏感配置）
         const accounts = await storageManager.getAccounts();
+        const activeAccount = accounts.find(account => String(account.id) === String(activeAccountId || ''));
         const telegramUserDownloadEnabled = await getSetting('telegram_user_download_enabled', 'false');
         const telegramAllowedUserIds = await getConfiguredTelegramAllowedUsers();
         const telegramAllowedUserIdsFromEnv = parseTelegramAllowedUserIds(process.env.TELEGRAM_ALLOWED_USER_IDS || '').length > 0;
@@ -161,17 +203,62 @@ router.get('/config', requireAuth, async (req: Request, res: Response) => {
         res.json({
             provider: provider.name,
             activeAccountId,
-            accounts,
+            activeAccountName: activeAccount?.name || (provider.name === 'local' ? '服务器本地目录' : undefined),
+            capabilities: buildStorageCapabilities(provider.name),
+            accounts: accounts.map(account => ({ ...account, capabilities: buildStorageCapabilities(String(account.type)) })),
             redirectUri: oneDriveOAuth.redirectUri,
             googleDriveRedirectUri: googleDriveOAuth.redirectUri,
             telegramUserDownloadEnabled: telegramUserDownloadEnabled === 'true',
             telegramUserSessionReady,
+            telegramUserClientStatus: getTelegramUserClientStatus(),
             telegramAllowedUserIds,
             telegramAllowedUserIdsFromEnv,
         });
     } catch (error) {
         console.error('获取存储配置失败:', error);
         res.status(500).json({ error: '获取存储配置失败' });
+    }
+});
+
+router.get('/config/advanced-tasks', requireAuth, async (_req: Request, res: Response) => {
+    try {
+        res.json(buildAdvancedSettings({
+            telegramDownloadWorkers: await getSetting('telegram_download_workers', process.env.TELEGRAM_DOWNLOAD_WORKERS || '4'),
+            telegramFileConcurrency: await getSetting('telegram_file_download_concurrency', String(getFileDownloadConcurrency())),
+            duplicateMode: await getSetting('duplicate_file_mode', process.env.DUPLICATE_FILE_MODE || 'copy'),
+            autoCleanupOrphans: await getSetting('auto_cleanup_orphans', process.env.AUTO_CLEANUP_ORPHANS || 'true'),
+        }));
+    } catch (error) {
+        console.error('获取高级任务设置失败:', error);
+        res.status(500).json({ error: '获取高级任务设置失败' });
+    }
+});
+
+router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const { confirmed, ...requestedPatch } = req.body || {};
+        const patch = normalizeAdvancedSettingsPatch(requestedPatch);
+        if (patch.highRisk && confirmed !== true) {
+            return res.status(409).json({ error: '高并发设置需要二次确认', code: 'CONFIRMATION_REQUIRED' });
+        }
+        if ('telegramDownloadWorkers' in patch) {
+            await setSetting('telegram_download_workers', String(patch.telegramDownloadWorkers));
+            process.env.TELEGRAM_DOWNLOAD_WORKERS = String(patch.telegramDownloadWorkers);
+        } else if ('telegramFileConcurrency' in patch) {
+            await setSetting('telegram_file_download_concurrency', String(patch.telegramFileConcurrency));
+            setFileDownloadConcurrency(Number(patch.telegramFileConcurrency));
+        } else if ('duplicateMode' in patch) {
+            await setSetting('duplicate_file_mode', String(patch.duplicateMode));
+            process.env.DUPLICATE_FILE_MODE = String(patch.duplicateMode);
+        } else if ('autoCleanupOrphans' in patch) {
+            const enabled = Boolean(patch.autoCleanupOrphans);
+            await setSetting('auto_cleanup_orphans', String(enabled));
+            process.env.AUTO_CLEANUP_ORPHANS = String(enabled);
+            if (enabled) startPeriodicCleanup(); else stopPeriodicCleanup();
+        }
+        return res.json({ success: true, ...patch });
+    } catch (error) {
+        res.status(400).json({ error: (error as Error).message });
     }
 });
 
@@ -212,6 +299,16 @@ router.post('/config/telegram-allowed-users', requireAuth, async (req: Request, 
 router.post('/maintenance/download-items/cleanup', requireAuth, async (req: Request, res: Response) => {
     try {
         const retentionDays = Math.min(365, Math.max(1, parseInt(String(req.body?.retentionDays ?? '7'), 10) || 7));
+        const preview = await query(
+            `SELECT COUNT(*)::int AS count FROM telegram_download_items
+             WHERE status IN ('success', 'failed', 'skipped')
+               AND COALESCE(completed_at, updated_at, created_at) < NOW() - ($1::int * INTERVAL '1 day')`,
+            [retentionDays]
+        );
+        const dryRunCount = Number(preview.rows[0]?.count || 0);
+        if (req.body?.dryRun === true) {
+            return res.json({ success: true, retentionDays, ...maintenanceImpact('DELETE_TASK_HISTORY', dryRunCount) });
+        }
         const result = await query(
             `DELETE FROM telegram_download_items
              WHERE status IN ('success', 'failed', 'skipped')
@@ -222,6 +319,7 @@ router.post('/maintenance/download-items/cleanup', requireAuth, async (req: Requ
             success: true,
             deletedCount: result.rowCount || 0,
             retentionDays,
+            ...maintenanceImpact('DELETE_TASK_HISTORY', dryRunCount),
         });
     } catch (error) {
         console.error('清理下载任务明细失败:', error);
@@ -449,7 +547,7 @@ router.post('/config/aliyun-oss', requireAuth, async (req: Request, res: Respons
         res.json({ success: true, message: 'Aliyun OSS 账户已添加', accountId });
     } catch (error) {
         console.error('添加 Aliyun OSS 配置失败:', error);
-        res.status(500).json({ error: '添加 Aliyun OSS 配置失败' });
+        sendStorageOperationError(res, error, '添加 Aliyun OSS 配置失败');
     }
 });
 
@@ -470,7 +568,7 @@ router.post('/config/s3', requireAuth, async (req: Request, res: Response) => {
         res.json({ success: true, message: 'S3 存储账户已添加', accountId });
     } catch (error) {
         console.error('添加 S3 配置失败:', error);
-        res.status(500).json({ error: '添加 S3 配置失败' });
+        sendStorageOperationError(res, error, '添加 S3 配置失败');
     }
 });
 
@@ -491,7 +589,7 @@ router.post('/config/webdav', requireAuth, async (req: Request, res: Response) =
         res.json({ success: true, message: 'WebDAV 存储账户已添加', accountId });
     } catch (error) {
         console.error('添加 WebDAV 配置失败:', error);
-        res.status(500).json({ error: '添加 WebDAV 配置失败' });
+        sendStorageOperationError(res, error, '添加 WebDAV 配置失败');
     }
 });
 
@@ -503,11 +601,11 @@ router.post('/switch', requireAuth, async (req: Request, res: Response) => {
 
         if (provider === 'local') {
             await storageManager.switchToLocal();
-            return res.json({ success: true, message: '已切换到本地存储' });
+            return res.json({ success: true, message: '已切换到本地存储。该系统默认值只影响后续新任务，已提交任务目标保持不变。', scope: 'global_default', inFlightTargetsPreserved: true });
         } else if (provider === 'onedrive' || provider === 'aliyun_oss' || provider === 's3' || provider === 'webdav' || provider === 'google_drive') {
             if (accountId) {
                 await storageManager.switchAccount(accountId);
-                return res.json({ success: true, message: `已切换 ${provider} 账户` });
+                return res.json({ success: true, message: `已切换 ${provider} 账户。该系统默认值只影响后续新任务，已提交任务目标保持不变。`, scope: 'global_default', inFlightTargetsPreserved: true });
             } else {
                 // 如果没有指定 accountId，尝试切换到最后一个激活的或第一个该类型的账户
                 const accounts = await storageManager.getAccounts();
@@ -516,14 +614,14 @@ router.post('/switch', requireAuth, async (req: Request, res: Response) => {
                     return res.status(400).json({ error: `未配置任何 ${provider} 账户` });
                 }
                 await storageManager.switchAccount(account.id);
-                return res.json({ success: true, message: `已切换到 ${provider}` });
+                return res.json({ success: true, message: `已切换到 ${provider}。该系统默认值只影响后续新任务，已提交任务目标保持不变。`, scope: 'global_default', inFlightTargetsPreserved: true });
             }
         } else {
             return res.status(400).json({ error: '无效的存储提供商' });
         }
     } catch (error) {
         console.error('切换存储失败:', error);
-        res.status(500).json({ error: '切换存储失败' });
+        sendStorageOperationError(res, error, '切换存储失败，当前默认账户未改变');
     }
 });
 
@@ -539,14 +637,55 @@ router.get('/accounts', requireAuth, async (req: Request, res: Response) => {
     }
 });
 
-// 为账户及其索引删除签发一次性确认令牌
+// 对现有账户执行只读连接测试，不创建、修改或删除远端对象。
+router.post('/accounts/:id/probe', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const { storageManager } = await import('../services/storage.js');
+        const result = await storageManager.probeAccount(req.params.id);
+        res.json({ success: true, ...result });
+    } catch (error) {
+        console.error('存储账户连接测试失败:', error);
+        sendStorageOperationError(res, error, '存储账户连接测试失败');
+    }
+});
+
+// 为账户及其索引删除签发一次性确认令牌，同时返回当前影响快照。
 router.post('/accounts/:id/delete-confirmation', requireAuth, async (req: Request, res: Response) => {
     const account = await query('SELECT id, name, type, is_active FROM storage_accounts WHERE id = $1', [req.params.id]);
     if (!account.rows[0]) return res.status(404).json({ error: '存储账户不存在' });
     if (account.rows[0].is_active) return res.status(409).json({ error: '不能删除当前正在使用的存储账户' });
     const authToken = getAuthToken(req);
     if (!authToken) return res.status(401).json({ error: '未认证' });
-    res.json(webDestructiveConfirmationStore.issue({ authToken, action: 'delete_storage_account', objectId: req.params.id }));
+    const [impact, leases, tasks, uploads] = await Promise.all([
+        query(`SELECT COUNT(*)::int AS file_count,
+                      COALESCE(SUM(size), 0)::bigint AS total_size,
+                      COUNT(DISTINCT folder) FILTER (WHERE folder IS NOT NULL AND folder <> '')::int AS folder_count,
+                      encode(digest(COALESCE(string_agg(id::text, ',' ORDER BY id), ''), 'sha256'), 'hex') AS file_fingerprint
+               FROM files WHERE storage_account_id = $1`, [req.params.id]),
+        query(`SELECT COUNT(*)::int AS count FROM storage_account_leases
+               WHERE storage_account_id = $1 AND released_at IS NULL AND expires_at > NOW()`, [req.params.id]),
+        query(`SELECT COUNT(*)::int AS count FROM transfer_tasks
+               WHERE target_account_id = $1
+                 AND (status IN ('pending', 'running', 'paused', 'interrupted', 'retry_required') OR retryable = true)`, [req.params.id]),
+        query(`SELECT COUNT(*)::int AS count FROM chunk_upload_sessions
+               WHERE target_account_id = $1 AND status IN ('open', 'completing', 'failed')`, [req.params.id]),
+    ]);
+    const snapshot = impact.rows[0] || {};
+    res.json({
+        ...webDestructiveConfirmationStore.issue({ authToken, action: 'delete_storage_account', objectId: req.params.id, context: String(snapshot.file_fingerprint) }),
+        impact: {
+            accountId: req.params.id,
+            accountName: String(account.rows[0].name),
+            provider: String(account.rows[0].type),
+            fileCount: Number(snapshot.file_count || 0),
+            totalSizeBytes: Number(snapshot.total_size || 0),
+            folderCount: Number(snapshot.folder_count || 0),
+            activeLeaseCount: Number(leases.rows[0]?.count || 0),
+            activeTaskCount: Number(tasks.rows[0]?.count || 0),
+            activeUploadCount: Number(uploads.rows[0]?.count || 0),
+            remoteObjectsDeleted: false,
+        },
+    });
 });
 
 // 删除账户
@@ -554,9 +693,7 @@ router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) 
     const { id } = req.params;
     const authToken = getAuthToken(req);
     const confirmationToken = String(req.header('x-confirmation-token') || '');
-    if (!authToken || !confirmationToken || webDestructiveConfirmationStore.consume(confirmationToken, { authToken, action: 'delete_storage_account', objectId: id }).status !== 'ok') {
-        return res.status(409).json({ error: '需要一次性删除确认令牌', code: 'CONFIRMATION_REQUIRED' });
-    }
+    if (!authToken || !confirmationToken) return res.status(409).json({ error: '需要一次性删除确认令牌', code: 'CONFIRMATION_REQUIRED' });
     const { storageManager } = await import('../services/storage.js');
     const client = await pool.connect();
     let accountName = '';
@@ -564,6 +701,23 @@ router.delete('/accounts/:id', requireAuth, async (req: Request, res: Response) 
     let deletedFiles = 0;
     try {
         await client.query('BEGIN');
+        const lockedAccount = await client.query('SELECT id FROM storage_accounts WHERE id = $1 FOR UPDATE', [id]);
+        if (!lockedAccount.rows[0]) throw new StorageAccountNotFoundError();
+        const fingerprint = await client.query(
+            `SELECT encode(digest(COALESCE(string_agg(id::text, ',' ORDER BY id), ''), 'sha256'), 'hex') AS value
+             FROM files WHERE storage_account_id = $1`,
+            [id],
+        );
+        const confirmation = webDestructiveConfirmationStore.consume(confirmationToken, {
+            authToken,
+            action: 'delete_storage_account',
+            objectId: id,
+            context: String(fingerprint.rows[0]?.value || ''),
+        });
+        if (confirmation.status !== 'ok') {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ error: '账户内容已变化，请重新预览并确认', code: 'CONFIRMATION_REQUIRED' });
+        }
         const deleted = await deleteStorageAccountWithClient(client, id);
         if (storageManager.getActiveAccountId() === id) throw new StorageAccountConflictError('active');
         accountName = deleted.name;

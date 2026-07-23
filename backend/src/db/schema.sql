@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS storage_accounts (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_status VARCHAR(20);
+ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_error TEXT;
+ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probed_at TIMESTAMPTZ;
 
 CREATE OR REPLACE TRIGGER storage_accounts_updated_at
     BEFORE UPDATE ON storage_accounts
@@ -226,6 +229,93 @@ CREATE OR REPLACE TRIGGER chunk_upload_sessions_updated_at
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();
 
+-- Cross-entry-point task records. Channel jobs and browser chunk sessions retain
+-- their specialized tables, while this table persists ordinary Bot and yt-dlp tasks.
+CREATE TABLE IF NOT EXISTS transfer_tasks (
+    source_type VARCHAR(30) NOT NULL,
+    id VARCHAR(128) NOT NULL,
+    kind VARCHAR(50) NOT NULL,
+    title TEXT NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    stage VARCHAR(50) NOT NULL DEFAULT 'waiting',
+    progress NUMERIC(5,2) NOT NULL DEFAULT 0,
+    owner_user_id BIGINT,
+    chat_id TEXT,
+    source TEXT,
+    target_provider VARCHAR(50),
+    target_account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
+    target_folder TEXT,
+    total_items INT NOT NULL DEFAULT 0,
+    completed_items INT NOT NULL DEFAULT 0,
+    failed_items INT NOT NULL DEFAULT 0,
+    total_bytes BIGINT NOT NULL DEFAULT 0,
+    transferred_bytes BIGINT NOT NULL DEFAULT 0,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error TEXT,
+    retryable BOOLEAN NOT NULL DEFAULT false,
+    cancel_requested BOOLEAN NOT NULL DEFAULT false,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_type, id)
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_tasks_updated ON transfer_tasks(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transfer_tasks_status ON transfer_tasks(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transfer_tasks_owner ON transfer_tasks(owner_user_id, chat_id, updated_at DESC);
+ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS execution_generation BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS snapshot_version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS lease_token UUID;
+ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_transfer_tasks_claim ON transfer_tasks(source_type, status, lease_expires_at, updated_at);
+
+CREATE TABLE IF NOT EXISTS ytdlp_write_reconciliations (
+    operation_id UUID PRIMARY KEY,
+    source_type VARCHAR(30) NOT NULL DEFAULT 'ytdlp' CHECK (source_type = 'ytdlp'),
+    task_id VARCHAR(128) NOT NULL,
+    execution_generation BIGINT NOT NULL,
+    task_lease_token UUID NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
+    stored_path VARCHAR(2000),
+    file_id UUID,
+    object_state VARCHAR(20) NOT NULL DEFAULT 'unknown' CHECK (object_state IN ('unknown', 'present', 'deleted')),
+    index_state VARCHAR(20) NOT NULL DEFAULT 'unknown' CHECK (index_state IN ('unknown', 'present', 'deleted')),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
+    resolution VARCHAR(30),
+    reason TEXT NOT NULL,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    FOREIGN KEY (source_type, task_id) REFERENCES transfer_tasks(source_type, id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ytdlp_reconciliation_pending_task
+    ON ytdlp_write_reconciliations(task_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_ytdlp_reconciliation_status
+    ON ytdlp_write_reconciliations(status, created_at);
+
+CREATE OR REPLACE TRIGGER transfer_tasks_updated_at
+    BEFORE UPDATE ON transfer_tasks
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();
+
+-- 持久化 Telegram /p（下一次）和 /ps（会话）路径状态。
+CREATE TABLE IF NOT EXISTS telegram_path_states (
+    chat_id TEXT NOT NULL,
+    mode VARCHAR(10) NOT NULL CHECK (mode IN ('once', 'session')),
+    folder TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (chat_id, mode)
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_path_states_expiry ON telegram_path_states(expires_at);
+
+CREATE OR REPLACE TRIGGER telegram_path_states_updated_at
+    BEFORE UPDATE ON telegram_path_states
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at();
+
 -- Telegram 频道订阅表
 CREATE TABLE IF NOT EXISTS telegram_channel_subscriptions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -252,6 +342,10 @@ ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS source_type 
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS folder_override TEXT;
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_reason TEXT;
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ;
+ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS last_scan_at TIMESTAMPTZ;
+ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS last_success_at TIMESTAMPTZ;
+ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS last_error TEXT;
+ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS last_result JSONB;
 
 CREATE OR REPLACE TRIGGER telegram_channel_subscriptions_updated_at
     BEFORE UPDATE ON telegram_channel_subscriptions

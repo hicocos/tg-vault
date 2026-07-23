@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
+import { recordTelegramUserClientFailure, recordTelegramUserClientReady } from './telegramUserClientStatus.js';
 
 let userClient: TelegramClient | null = null;
 let userSessionFilePath = '';
@@ -22,6 +23,7 @@ export async function initTelegramUserClient(): Promise<void> {
   const apiId = getUserApiId();
   const apiHash = getUserApiHash();
   if (!apiId || !apiHash) {
+    recordTelegramUserClientFailure('not_configured', '未配置 Telegram API');
     console.log('⚠️ 未配置 Telegram 用户账号下载器，跳过 user client 初始化');
     return;
   }
@@ -37,6 +39,7 @@ export async function initTelegramUserClient(): Promise<void> {
     : '';
 
   if (!sessionString) {
+    recordTelegramUserClientFailure('missing_session', 'Telegram 用户 session 文件为空或不存在');
     console.log('⚠️ Telegram 用户 session 为空，先运行登录脚本生成 session 后再启用 user client');
     return;
   }
@@ -53,6 +56,7 @@ export async function initTelegramUserClient(): Promise<void> {
 
   await userClient.connect();
   if (!(await userClient.checkAuthorization())) {
+    recordTelegramUserClientFailure('expired', 'Telegram 用户 session 无效或已过期');
     console.log('⚠️ Telegram 用户 session 无效或已过期，user client 未启用');
     userClient = null;
     return;
@@ -60,6 +64,11 @@ export async function initTelegramUserClient(): Promise<void> {
 
   fs.writeFileSync(userSessionFilePath, userClient.session.save() as unknown as string, { mode: 0o600 });
   fs.chmodSync(userSessionFilePath, 0o600);
+  const me = await userClient.getMe();
+  recordTelegramUserClientReady({
+    userId: String((me as any)?.id || ''),
+    username: (me as any)?.username || null,
+  });
   console.log('🤖 Telegram 用户账号下载器已连接');
 }
 

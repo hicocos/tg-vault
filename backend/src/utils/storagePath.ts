@@ -134,8 +134,19 @@ export function buildStorageFolder(options: StoragePathOptions): string | null {
 }
 
 export function buildStorageFolderWithRules(options: StoragePathOptions, rules: StoragePathRules): string | null {
+    // An explicit folder is an immutable task target. Preserve its hierarchy and do
+    // not append automatic source/type segments after the task has been submitted.
+    if (options.folder) {
+        const explicitPath = options.folder
+            .split('/')
+            .filter(Boolean)
+            .map(segment => normalizeSegment(segment, 'folder'))
+            .join('/');
+        return explicitPath || null;
+    }
+
     if (!shouldClassifyStoragePath()) {
-        return options.folder ? normalizeSegment(options.folder, 'folder') : null;
+        return null;
     }
 
     const segments: string[] = [];
@@ -145,10 +156,6 @@ export function buildStorageFolderWithRules(options: StoragePathOptions, rules: 
         if (options.chatName) {
             addUniqueSegment(segments, options.chatName, 'chat');
         }
-    }
-
-    if (options.folder) {
-        addUniqueSegment(segments, options.folder, 'folder');
     }
 
     if (rules.byType) {

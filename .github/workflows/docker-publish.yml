@@ -14,19 +14,50 @@ on:
   workflow_dispatch:
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Verify backend
+        working-directory: backend
+        run: npm ci && npm audit --omit=dev --audit-level=high && npm test && npm run typecheck && npm run build
+      - name: Verify frontend
+        working-directory: frontend
+        run: npm ci && npm audit --omit=dev --audit-level=high && npm test && npm run lint && npm run build
+      - name: Generate CycloneDX SBOM release assets
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file backend-sbom.cdx.json backend/package-lock.json
+          npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file frontend-sbom.cdx.json frontend/package-lock.json
+      - name: Upload CycloneDX SBOM release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cyclonedx-sboms-${{ github.sha }}
+          path: |
+            backend-sbom.cdx.json
+            frontend-sbom.cdx.json
+          if-no-files-found: error
+
   # 构建 Backend 镜像
   build-backend:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -34,7 +65,7 @@ jobs:
       - name: Extract metadata for Backend
         if: github.event_name != 'pull_request'
         id: meta-backend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-backend
           tags: |
@@ -47,34 +78,45 @@ jobs:
 
       - name: Build Backend image for PR
         if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./backend
           push: false
           tags: tg-vault-backend:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=pr-${{ github.event.pull_request.number }}
+          sbom: true
+          provenance: mode=max
 
       - name: Build and push Backend
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./backend
           push: true
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=${{ github.ref_name }}
+          sbom: true
+          provenance: mode=max
 
   # 构建 Frontend 镜像
   build-frontend:
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
@@ -82,7 +124,7 @@ jobs:
       - name: Extract metadata for Frontend
         if: github.event_name != 'pull_request'
         id: meta-frontend
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-frontend
           tags: |
@@ -95,17 +137,29 @@ jobs:
 
       - name: Build Frontend image for PR
         if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./frontend
           push: false
           tags: tg-vault-frontend:pr-${{ github.event.pull_request.number }}
+          build-args: |
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=pr-${{ github.event.pull_request.number }}
+          sbom: true
+          provenance: mode=max
 
       - name: Build and push Frontend
         if: github.event_name != 'pull_request'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./frontend
           push: true
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
+          build-args: |
+            VITE_API_URL=${{ vars.VITE_API_URL }}
+            SOURCE_REVISION=${{ github.sha }}
+            SOURCE_VERSION=${{ github.ref_name }}
+          sbom: true
+          provenance: mode=max

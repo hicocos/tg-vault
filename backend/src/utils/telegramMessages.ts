@@ -7,6 +7,7 @@
 
 import { Api } from 'telegram';
 import { formatBytes, getTypeEmoji } from './telegramUtils.js';
+import { buildBotHelpSections, type BotCommandDefinition } from './telegramCommandRegistry.js';
 // ─── 存储提供商显示名称 ───────────────────────────────────────
 
 const PROVIDER_DISPLAY_MAP: Record<string, string> = {
@@ -178,21 +179,9 @@ export function buildWelcomeBack(): string {
     return [
         `👋 **欢迎回来！**`,
         ``,
-        `您已通过验证，可以直接使用：`,
+        `发送或转发文件即可上传。`,
         ``,
-        `📤  发送/转发文件即可上传 (最大 2GB，账号级下载器不受此限制)`,
-        `📁  /path_rules — 保存路径/自定义目录`,
-        `📡  /tg_sub — 订阅频道自动同步`,
-        `📦  /tg_download — 按日期/标签下载频道文件`,
-        `⚙️  /download_workers — 单文件分片并发设置`,
-        `📦  /file_concurrency — 同时下载文件数`,
-        `🧬  /duplicate_mode — 重复文件处理`,
-        `🧹  /cleanup_settings — 自动清理设置`,
-        `📊  /storage — 存储统计/清理本地文件`,
-        `🔧  /tasks — 实时任务队列`,
-        `🔐  /setup_2fa — 配置双重验证`,
-        `📥  /ytdlp — 解析并下载链接`,
-        `❓  /help — 完整帮助`,
+        `请从下方四个主入口开始；完整能力可使用 /help 查看。`,
     ].join('\n');
 }
 
@@ -213,7 +202,17 @@ export function buildStartPrompt(): string {
 }
 
 /** /help 帮助文本 */
+function formatRegistryCommand(command: BotCommandDefinition): string {
+    const usage = command.usage ? ` ${command.usage}` : '';
+    return `  /${command.command}${usage} — ${command.helpDescription}`;
+}
+
 export function buildHelp(): string {
+    const sections = buildBotHelpSections().flatMap(section => [
+        `**${section.title}**`,
+        ...section.commands.map(formatRegistryCommand),
+        ``,
+    ]);
     return [
         `📖 **TG Vault Bot 帮助**`,
         LINE,
@@ -223,31 +222,9 @@ export function buildHelp(): string {
         `  支持所有类型，最大 2 GB，账号级下载器不受此限制`,
         `  多文件同时发送会自动归为一组`,
         ``,
-        `**🛠 可用命令**`,
-        `  /start — 身份认证 / 开始使用`,
-        `  /setup\\_2fa — 配置双重验证 (TOTP)`,
-        `  /path_rules — 保存路径/自定义目录面板`,
-        `  /p <目录> — 下一次下载保存到指定目录`,
-        `  /ps <目录> — 本会话持续保存到指定目录`,
-        `  /pc — 清除自定义目录`,
-        `  /tg_sub <频道> — 订阅频道新文件自动同步`,
-        `  /tg_download — 按日期/标签下载频道文件`,
-        `  /tg_download date <频道> <开始日期> <结束日期> — 按日期下载`,
-        `  /tg_download tag <频道> <#标签> — 按标签下载`,
-        `  /tg_download 向导中可选择“频道 + 评论区”；开启后只下载评论区里的文件/图片/视频/音频，文字评论会忽略`,
-        `  评论区每个帖子默认最多扫描 ${process.env.TELEGRAM_COMMENTS_MAX_PER_POST || '200'} 条评论，可用 TELEGRAM_COMMENTS_MAX_PER_POST 调整`,
-        `  /download_workers — 设置单文件分片并发`,
-        `  /file_concurrency — 设置同时下载文件数`,
-        `  /duplicate_mode — 设置重复文件处理`,
-        `  /cleanup_settings — 设置自动清理开关`,
-        `  /storage — 存储统计/清理本地文件`,
-        `  /tasks — 实时传输任务队列`,
-        `  /ytdlp <url> — 下载视频链接到存储`,
-        `  /delete <ID或序号> — 删除指定文件`,
-        `  /help — 显示此帮助`,
-        ``,
+        ...sections,
         LINE,
-        `💡 **提示**：转发文件给 Bot 即可开始上传`,
+        `💡 **提示**：转发文件给 Bot 即可开始上传；自动清理临时文件、删除本地实体文件和删除任务历史是三种不同操作。`,
     ].join('\n');
 }
 

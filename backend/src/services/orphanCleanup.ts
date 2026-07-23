@@ -12,7 +12,16 @@ import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const THUMBNAIL_DIR = path.resolve(process.env.THUMBNAIL_DIR || './data/thumbnails');
+const YTDLP_WORK_DIR = path.resolve(process.env.YTDLP_WORK_DIR || path.join(UPLOAD_DIR, 'ytdlp'));
 const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
+
+export function isReservedTransientUploadPath(filePath: string, reservedDirs: string[] = [YTDLP_WORK_DIR]): boolean {
+    const resolvedPath = path.resolve(filePath);
+    return reservedDirs.some(directory => {
+        const resolvedDirectory = path.resolve(directory);
+        return resolvedPath === resolvedDirectory || resolvedPath.startsWith(`${resolvedDirectory}${path.sep}`);
+    });
+}
 
 export function isAutoCleanupEnabled(): boolean {
     return ['1', 'true', 'yes', 'on'].includes((process.env.AUTO_CLEANUP_ORPHANS || 'true').toLowerCase());
@@ -36,7 +45,14 @@ function formatBytes(bytes: number): string {
 }
 
 // 递归获取目录下所有文件
-function getAllFiles(dirPath: string, arrayOfFiles: { name: string; path: string; size: number }[] = []): { name: string; path: string; size: number }[] {
+export function getAllFiles(
+    dirPath: string,
+    arrayOfFiles: { name: string; path: string; size: number }[] = [],
+    reservedDirs: string[] = [YTDLP_WORK_DIR],
+): { name: string; path: string; size: number }[] {
+    if (isReservedTransientUploadPath(dirPath, reservedDirs)) {
+        return arrayOfFiles;
+    }
     if (!fs.existsSync(dirPath)) {
         return arrayOfFiles;
     }
@@ -47,10 +63,15 @@ function getAllFiles(dirPath: string, arrayOfFiles: { name: string; path: string
         for (const file of files) {
             const fullPath = path.join(dirPath, file);
             try {
-                const stat = fs.statSync(fullPath);
+                const stat = fs.lstatSync(fullPath);
+                if (stat.isSymbolicLink()) {
+                    continue;
+                }
                 if (stat.isDirectory()) {
-                    getAllFiles(fullPath, arrayOfFiles);
-                } else {
+                    if (!isReservedTransientUploadPath(fullPath, reservedDirs)) {
+                        getAllFiles(fullPath, arrayOfFiles, reservedDirs);
+                    }
+                } else if (!isReservedTransientUploadPath(fullPath, reservedDirs)) {
                     arrayOfFiles.push({
                         name: file,
                         path: fullPath,
@@ -79,7 +100,10 @@ function removeEmptyDirectories(dirPath: string): void {
         for (const file of files) {
             const fullPath = path.join(dirPath, file);
             try {
-                if (fs.statSync(fullPath).isDirectory()) {
+                if (isReservedTransientUploadPath(fullPath)) continue;
+                const stat = fs.lstatSync(fullPath);
+                if (stat.isSymbolicLink()) continue;
+                if (stat.isDirectory()) {
                     removeEmptyDirectories(fullPath);
                 }
             } catch (e) { /* ignore */ }

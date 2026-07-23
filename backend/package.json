@@ -1,6 +1,6 @@
 {
     "name": "tg-vault-backend",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "type": "module",
     "scripts": {
         "dev": "tsx watch src/index.ts",
@@ -29,7 +29,7 @@
         "otplib": "^13.4.1",
         "pg": "^8.22.0",
         "qrcode": "^1.5.4",
-        "sharp": "^0.33.5",
+        "sharp": "^0.35.3",
         "telegram": "^2.26.22",
         "ua-parser-js": "^2.0.10",
         "uuid": "^11.1.1",
