@@ -48,6 +48,32 @@
   }
 }
  
+@layer utilities {
+  @keyframes indeterminate-spinner-rotate {
+    to { transform: rotate(360deg); }
+  }
+
+  .indeterminate-spinner {
+    animation: indeterminate-spinner-rotate 0.8s linear infinite;
+    transform-origin: center;
+  }
+
+  .indeterminate-spinner__track {
+    opacity: 1;
+  }
+
+  .indeterminate-spinner__arc {
+    transform-origin: center;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .indeterminate-spinner {
+      animation: none;
+      transform: rotate(-90deg);
+    }
+  }
+}
+
 @layer base {
   * {
     @apply border-border;

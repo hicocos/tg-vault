@@ -9,6 +9,7 @@ import { google } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { safeJoin } from '../utils/localPath.js';
 import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
+import { MediaSourceMissingError } from './mediaProxyError.js';
 import {
     decryptSettingValue,
     decryptStorageConfig,
@@ -84,7 +85,13 @@ export interface IStorageProvider {
      * 获取文件流（用于下载）
      * @param storedPath 存储路径或标识符
      */
-    getFileStream(storedPath: string): Promise<NodeJS.ReadableStream>;
+    getFileStream(storedPath: string, options?: { range?: string }): Promise<NodeJS.ReadableStream>;
+
+    /** Checks whether a remote media source still exists without downloading its bytes. */
+    getFileAvailability?(storedPath: string): Promise<{ available: true }>;
+
+    /** Probes whether the source bytes can be read without downloading the whole object. */
+    probeFileReadable?(storedPath: string): Promise<{ available: true }>;
 
     /**
      * 获取预览URL（可能是临时的）
@@ -1263,14 +1270,56 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         }
     }
 
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
+    async getFileAvailability(storedPath: string): Promise<{ available: true }> {
         await this.ensureAuthenticated();
+        try {
+            const response = await this.drive.files.get(this.withSharedDriveSupport({
+                fileId: storedPath,
+                fields: 'id,trashed',
+            }));
+            if (response.data.trashed) throw new MediaSourceMissingError('trashed');
+            return { available: true };
+        } catch (error: any) {
+            if (error instanceof MediaSourceMissingError) throw error;
+            if (error?.code === 404 || error?.response?.status === 404) {
+                throw new MediaSourceMissingError('not_found');
+            }
+            throw error;
+        }
+    }
+
+    async probeFileReadable(storedPath: string): Promise<{ available: true }> {
+        await this.getFileAvailability(storedPath);
         try {
             const response = await this.drive.files.get(
                 this.withSharedDriveSupport({ fileId: storedPath, alt: 'media' }),
-                { responseType: 'stream' }
+                { responseType: 'stream', headers: { Range: 'bytes=0-0' } },
             );
-            return response.data;
+            (response.data as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+            return { available: true };
+        } catch (error: any) {
+            console.error('[GoogleDrive] Readability probe failed:', error.message);
+            throw new Error(`Google Drive readability probe failed: ${error.message}`);
+        }
+    }
+
+    async getFileStream(storedPath: string, options?: { range?: string }): Promise<NodeJS.ReadableStream> {
+        await this.getFileAvailability(storedPath);
+        try {
+            const response = await this.drive.files.get(
+                this.withSharedDriveSupport({ fileId: storedPath, alt: 'media' }),
+                {
+                    responseType: 'stream',
+                    ...(options?.range ? { headers: { Range: options.range } } : {}),
+                }
+            );
+            const stream = response.data as NodeJS.ReadableStream & {
+                upstreamStatus?: number;
+                upstreamHeaders?: Record<string, string | number | string[] | undefined>;
+            };
+            stream.upstreamStatus = response.status;
+            stream.upstreamHeaders = response.headers as Record<string, string | number | string[] | undefined>;
+            return stream;
         } catch (error: any) {
             console.error('[GoogleDrive] Get stream failed:', error.message);
             throw new Error(`Google Drive get stream failed: ${error.message}`);

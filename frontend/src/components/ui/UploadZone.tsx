@@ -1,9 +1,10 @@
 import { useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { UploadCloud, File as FileIcon, Loader2 } from "lucide-react";
+import { UploadCloud, File as FileIcon } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
 import type { UploadCapabilities } from "../../services/api";
+import { IndeterminateSpinner } from "./IndeterminateSpinner";
 
 interface UploadZoneProps {
     onDrop?: (files: File[]) => void;
@@ -108,7 +109,7 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, capa
                 className="z-10 bg-background p-4 rounded-full shadow-sm mb-4 ring-1 ring-border group-hover:shadow-md transition-shadow"
             >
                 {uploading ? (
-                    <Loader2 className="h-8 w-8 text-primary animate-spin" />
+                    <IndeterminateSpinner label="正在处理上传" size="lg" />
                 ) : (
                     <UploadCloud className={cn("h-8 w-8 transition-colors", isDragActive ? "text-primary" : "text-muted-foreground")} />
                 )}

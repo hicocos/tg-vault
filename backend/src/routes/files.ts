@@ -18,6 +18,8 @@ import {
     type FileQueryScope,
 } from '../services/fileQuery.js';
 import { normalizeFolderPath } from '../utils/folderPath.js';
+import { classifyMediaProxyError } from '../services/mediaProxyError.js';
+import { buildCloudMediaResponse } from '../services/cloudMediaResponse.js';
 
 const router = Router();
 
@@ -76,6 +78,45 @@ async function serveLocalPathWithRange(req: Request, res: Response, filePath: st
 
     res.set('Content-Length', String(stat.size));
     fs.createReadStream(filePath).pipe(res);
+}
+
+async function serveCloudMediaStream(
+    req: Request,
+    res: Response,
+    provider: { getFileStream(path: string, options?: { range?: string }): Promise<NodeJS.ReadableStream> },
+    storedPath: string,
+    mimeType: string,
+): Promise<void> {
+    const range = req.headers.range;
+    const stream = await provider.getFileStream(storedPath, range ? { range } : undefined) as NodeJS.ReadableStream & {
+        upstreamStatus?: number;
+        upstreamHeaders?: Record<string, string | number | string[] | undefined> | { get(name: string): unknown };
+        once(event: string, listener: (...args: any[]) => void): unknown;
+        pipe(destination: NodeJS.WritableStream): unknown;
+        destroy?(error?: Error): void;
+    };
+    const upstream = buildCloudMediaResponse({
+        upstreamStatus: stream.upstreamStatus,
+        upstreamHeaders: stream.upstreamHeaders,
+        requestedRange: range,
+    });
+    res.status(upstream.status).set({
+        'Content-Type': mimeType || 'application/octet-stream',
+        'Cache-Control': 'private, no-store',
+        ...upstream.headers,
+    });
+    stream.once('error', (error: Error) => {
+        console.error('云端媒体流中断:', error);
+        if (!res.headersSent) {
+            const response = classifyMediaProxyError(error);
+            if (response.retryAfter) res.set('Retry-After', String(response.retryAfter));
+            res.status(response.status).json({ code: response.code, error: response.error });
+        } else {
+            res.destroy(error);
+        }
+    });
+    req.once('aborted', () => stream.destroy?.());
+    stream.pipe(res);
 }
 
 function parseRangeHeader(range: string | undefined, size: number): { start: number; end: number } | null {
@@ -356,6 +397,43 @@ router.get('/:id([0-9a-fA-F-]{36})', async (req: Request, res: Response) => {
     }
 });
 
+// 查询媒体源状态（媒体标签本身无法读取错误响应正文）
+router.get('/:id([0-9a-fA-F-]{36})/media-status', async (req: Request, res: Response) => {
+    try {
+        const file = await getScopedFileById(req.params.id);
+        if (!file) return res.status(404).json({ code: 'FILE_NOT_FOUND', error: '文件记录不存在' });
+
+        if (file.preview_path && (file.type === 'image' || file.type === 'video')) {
+            const localPreviewPath = path.join(PREVIEW_DIR, path.basename(file.preview_path));
+            if (fs.existsSync(localPreviewPath)) {
+                return res.json({ available: true, source: 'local_preview' });
+            }
+        }
+
+        if (file.source === 'local' || file.source === 'web') {
+            const filePath = await getSafeLocalFilePath(file);
+            return fs.existsSync(filePath)
+                ? res.json({ available: true, source: 'local' })
+                : res.status(410).json({ code: 'MEDIA_SOURCE_MISSING', error: '服务器中的源文件已不存在。', reason: 'not_found' });
+        }
+
+        const { storageManager } = await import('../services/storage.js');
+        const provider = storageManager.getProvider(`${file.source}:${file.storage_account_id}`);
+        if (provider.probeFileReadable) await provider.probeFileReadable(file.path);
+        else if (provider.getFileAvailability) await provider.getFileAvailability(file.path);
+        return res.json({ available: true, source: file.source });
+    } catch (error) {
+        console.error('查询媒体源状态失败:', error);
+        const response = classifyMediaProxyError(error);
+        if (response.retryAfter) res.set('Retry-After', String(response.retryAfter));
+        return res.status(response.status).json({
+            code: response.code,
+            error: response.error,
+            ...(response.reason ? { reason: response.reason } : {}),
+        });
+    }
+});
+
 // 预览文件
 router.get('/:id([0-9a-fA-F-]{36})/preview', async (req: Request, res: Response) => {
     try {
@@ -364,6 +442,21 @@ router.get('/:id([0-9a-fA-F-]{36})/preview', async (req: Request, res: Response)
 
         if (!file) {
             return res.status(404).json({ error: '文件不存在' });
+        }
+
+        const localPreviewPath = file.preview_path && (file.type === 'image' || file.type === 'video')
+            ? path.join(PREVIEW_DIR, path.basename(file.preview_path))
+            : null;
+        if (localPreviewPath && fs.existsSync(localPreviewPath)) {
+            await serveLocalPathWithRange(
+                req,
+                res,
+                localPreviewPath,
+                file.type === 'video' ? 'video/mp4' : 'image/webp',
+                'public, max-age=86400',
+                `"${file.id}-${file.updated_at}-${file.preview_path}"`,
+            );
+            return;
         }
 
         if (file.source === 'onedrive' || file.source === 'aliyun_oss' || file.source === 's3' || file.source === 'webdav' || file.source === 'google_drive') {
@@ -375,19 +468,21 @@ router.get('/:id([0-9a-fA-F-]{36})/preview', async (req: Request, res: Response)
                 if (url) {
                     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
                     return res.redirect(url);
-                } else {
-                    // 如果提供商不支持预览 URL（如 WebDAV），则流式传输
-                    const stream = await provider.getFileStream(file.path);
-                    res.set({
-                        'Content-Type': file.mime_type || 'application/octet-stream',
-                        'Cache-Control': 'public, max-age=86400',
-                    });
-                    (stream as any).pipe(res);
-                    return;
                 }
+
+                await serveCloudMediaStream(
+                    req,
+                    res,
+                    provider,
+                    file.path,
+                    file.mime_type || 'application/octet-stream',
+                );
+                return;
             } catch (err) {
                 console.error(`获取 ${file.source} 预览链接/流失败:`, err);
-                return res.status(500).json({ error: '获取预览失败' });
+                const response = classifyMediaProxyError(err);
+                if (response.retryAfter) res.set('Retry-After', String(response.retryAfter));
+                return res.status(response.status).json({ code: response.code, error: response.error });
             }
         }
 
@@ -455,20 +550,29 @@ router.get('/:id([0-9a-fA-F-]{36})/original', async (req: Request, res: Response
         if (!file) return res.status(404).json({ error: '文件不存在' });
 
         if (file.source === 'onedrive' || file.source === 'aliyun_oss' || file.source === 's3' || file.source === 'webdav' || file.source === 'google_drive') {
-            const { storageManager } = await import('../services/storage.js');
-            const provider = storageManager.getProvider(`${file.source}:${file.storage_account_id}`);
-            const url = await provider.getPreviewUrl(file.path);
-            if (url) {
-                res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-                return res.redirect(url);
+            try {
+                const { storageManager } = await import('../services/storage.js');
+                const provider = storageManager.getProvider(`${file.source}:${file.storage_account_id}`);
+                const url = await provider.getPreviewUrl(file.path);
+                if (url) {
+                    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+                    return res.redirect(url);
+                }
+
+                await serveCloudMediaStream(
+                    req,
+                    res,
+                    provider,
+                    file.path,
+                    file.mime_type || 'application/octet-stream',
+                );
+                return;
+            } catch (error) {
+                console.error('获取原始文件失败:', error);
+                const response = classifyMediaProxyError(error);
+                if (response.retryAfter) res.set('Retry-After', String(response.retryAfter));
+                return res.status(response.status).json({ code: response.code, error: response.error });
             }
-            const stream = await provider.getFileStream(file.path);
-            res.set({
-                'Content-Type': file.mime_type || 'application/octet-stream',
-                'Cache-Control': 'public, max-age=86400',
-            });
-            (stream as any).pipe(res);
-            return;
         }
 
         const filePath = await getSafeLocalFilePath(file);

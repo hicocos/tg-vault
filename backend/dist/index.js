@@ -145,6 +145,14 @@ async function initializeDatabase() {
             created_at TIMESTAMPTZ DEFAULT NOW()
         )`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS task_center_dismissals (
+            source_type VARCHAR(30) NOT NULL,
+            task_id VARCHAR(128) NOT NULL,
+            task_updated_at TIMESTAMPTZ NOT NULL,
+            dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source_type, task_id)
+        )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_center_dismissals_version ON task_center_dismissals(source_type, task_id, task_updated_at)`);
     await pool.query(`CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE CASCADE,
@@ -445,6 +453,62 @@ var init_storageProbe = __esm({
   }
 });
 
+// src/services/mediaProxyError.ts
+function errorText(error) {
+  if (error instanceof Error) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+function classifyMediaProxyError(error) {
+  if (error instanceof MediaSourceMissingError) {
+    return {
+      status: 410,
+      code: "MEDIA_SOURCE_MISSING",
+      error: "\u4E91\u76D8\u4E2D\u7684\u6E90\u6587\u4EF6\u5DF2\u5220\u9664\u6216\u5DF2\u79FB\u5165\u56DE\u6536\u7AD9\u3002",
+      reason: error.reason
+    };
+  }
+  const text = errorText(error).toLowerCase();
+  if (text.includes("downloadquotaexceeded") || text.includes("download quota")) {
+    return {
+      status: 429,
+      code: "MEDIA_QUOTA_EXCEEDED",
+      error: "\u4E91\u7AEF\u6587\u4EF6\u4E0B\u8F7D\u989D\u5EA6\u5DF2\u7528\u5B8C\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u6216\u6539\u7528\u5176\u4ED6\u5B58\u50A8\u3002",
+      retryAfter: 3600
+    };
+  }
+  if (text.includes("ratelimit") || text.includes("rate limit") || text.includes("too many requests")) {
+    return {
+      status: 429,
+      code: "MEDIA_RATE_LIMITED",
+      error: "\u4E91\u7AEF\u5B58\u50A8\u8BF7\u6C42\u8FC7\u4E8E\u9891\u7E41\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002",
+      retryAfter: 60
+    };
+  }
+  return {
+    status: 503,
+    code: "MEDIA_UPSTREAM_UNAVAILABLE",
+    error: "\u4E91\u7AEF\u5A92\u4F53\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002"
+  };
+}
+var MediaSourceMissingError;
+var init_mediaProxyError = __esm({
+  "src/services/mediaProxyError.ts"() {
+    "use strict";
+    MediaSourceMissingError = class extends Error {
+      constructor(reason) {
+        super(reason === "trashed" ? "Remote media source is trashed" : "Remote media source was not found");
+        this.reason = reason;
+        this.name = "MediaSourceMissingError";
+      }
+      reason;
+    };
+  }
+});
+
 // src/services/storageCooldown.ts
 async function ensureStorageCooldownSchema() {
   await query(`
@@ -723,6 +787,7 @@ var init_storage = __esm({
     init_db();
     init_localPath();
     init_storageProbe();
+    init_mediaProxyError();
     init_credentialCrypto();
     init_storageCooldown();
     init_storageAccountLifecycle();
@@ -1731,14 +1796,51 @@ var init_storage = __esm({
           throw new Error(`Google Drive upload failed: ${error.message}`);
         }
       }
-      async getFileStream(storedPath) {
+      async getFileAvailability(storedPath) {
         await this.ensureAuthenticated();
+        try {
+          const response = await this.drive.files.get(this.withSharedDriveSupport({
+            fileId: storedPath,
+            fields: "id,trashed"
+          }));
+          if (response.data.trashed) throw new MediaSourceMissingError("trashed");
+          return { available: true };
+        } catch (error) {
+          if (error instanceof MediaSourceMissingError) throw error;
+          if (error?.code === 404 || error?.response?.status === 404) {
+            throw new MediaSourceMissingError("not_found");
+          }
+          throw error;
+        }
+      }
+      async probeFileReadable(storedPath) {
+        await this.getFileAvailability(storedPath);
         try {
           const response = await this.drive.files.get(
             this.withSharedDriveSupport({ fileId: storedPath, alt: "media" }),
-            { responseType: "stream" }
+            { responseType: "stream", headers: { Range: "bytes=0-0" } }
           );
-          return response.data;
+          response.data.destroy?.();
+          return { available: true };
+        } catch (error) {
+          console.error("[GoogleDrive] Readability probe failed:", error.message);
+          throw new Error(`Google Drive readability probe failed: ${error.message}`);
+        }
+      }
+      async getFileStream(storedPath, options) {
+        await this.getFileAvailability(storedPath);
+        try {
+          const response = await this.drive.files.get(
+            this.withSharedDriveSupport({ fileId: storedPath, alt: "media" }),
+            {
+              responseType: "stream",
+              ...options?.range ? { headers: { Range: options.range } } : {}
+            }
+          );
+          const stream = response.data;
+          stream.upstreamStatus = response.status;
+          stream.upstreamHeaders = response.headers;
+          return stream;
         } catch (error) {
           console.error("[GoogleDrive] Get stream failed:", error.message);
           throw new Error(`Google Drive get stream failed: ${error.message}`);
@@ -12921,9 +13023,9 @@ function isPrivateIPv6(ip) {
   return normalized === "::1" || normalized === "::" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
 }
 function isPrivateAddress(ip) {
-  const version = net.isIP(ip);
-  if (version === 4) return isPrivateIPv4(ip);
-  if (version === 6) return isPrivateIPv6(ip);
+  const version2 = net.isIP(ip);
+  if (version2 === 4) return isPrivateIPv4(ip);
+  if (version2 === 6) return isPrivateIPv6(ip);
   return true;
 }
 async function assertPublicHttpUrl(rawUrl) {
@@ -15137,7 +15239,7 @@ var WebDestructiveConfirmationStore = class {
       return { status: "mismatch" };
     }
     this.values.delete(token);
-    return { status: "ok" };
+    return { status: "ok", context: value.context };
   }
 };
 var webDestructiveConfirmationStore = new WebDestructiveConfirmationStore();
@@ -15349,6 +15451,31 @@ function isFolderWithin(folder, ancestor) {
 }
 
 // src/routes/files.ts
+init_mediaProxyError();
+
+// src/services/cloudMediaResponse.ts
+function firstHeader(headers, name) {
+  if (!headers) return void 0;
+  const getter = headers.get;
+  const value = typeof getter === "function" ? getter.call(headers, name) : headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
+  if (Array.isArray(value)) return value[0];
+  return value === void 0 || value === null ? void 0 : String(value);
+}
+function buildCloudMediaResponse(input) {
+  const upstreamStatus = input.upstreamStatus === 206 ? 206 : 200;
+  const contentRange = firstHeader(input.upstreamHeaders, "content-range");
+  const contentLength = firstHeader(input.upstreamHeaders, "content-length");
+  const acceptRanges = firstHeader(input.upstreamHeaders, "accept-ranges");
+  const status = upstreamStatus === 206 && contentRange ? 206 : 200;
+  const headers = {
+    "Accept-Ranges": acceptRanges || "bytes"
+  };
+  if (contentRange && status === 206) headers["Content-Range"] = contentRange;
+  if (contentLength) headers["Content-Length"] = contentLength;
+  return { status, headers };
+}
+
+// src/routes/files.ts
 var router2 = Router2();
 var UPLOAD_DIR5 = path17.resolve(process.env.UPLOAD_DIR || "./data/uploads");
 var THUMBNAIL_DIR5 = path17.resolve(process.env.THUMBNAIL_DIR || "./data/thumbnails");
@@ -15400,6 +15527,32 @@ async function serveLocalPathWithRange(req, res, filePath, mimeType, cacheContro
   }
   res.set("Content-Length", String(stat.size));
   fs12.createReadStream(filePath).pipe(res);
+}
+async function serveCloudMediaStream(req, res, provider, storedPath, mimeType) {
+  const range = req.headers.range;
+  const stream = await provider.getFileStream(storedPath, range ? { range } : void 0);
+  const upstream = buildCloudMediaResponse({
+    upstreamStatus: stream.upstreamStatus,
+    upstreamHeaders: stream.upstreamHeaders,
+    requestedRange: range
+  });
+  res.status(upstream.status).set({
+    "Content-Type": mimeType || "application/octet-stream",
+    "Cache-Control": "private, no-store",
+    ...upstream.headers
+  });
+  stream.once("error", (error) => {
+    console.error("\u4E91\u7AEF\u5A92\u4F53\u6D41\u4E2D\u65AD:", error);
+    if (!res.headersSent) {
+      const response = classifyMediaProxyError(error);
+      if (response.retryAfter) res.set("Retry-After", String(response.retryAfter));
+      res.status(response.status).json({ code: response.code, error: response.error });
+    } else {
+      res.destroy(error);
+    }
+  });
+  req.once("aborted", () => stream.destroy?.());
+  stream.pipe(res);
 }
 function parseRangeHeader(range, size) {
   if (!range) return null;
@@ -15645,12 +15798,54 @@ router2.get("/:id([0-9a-fA-F-]{36})", async (req, res) => {
     res.status(500).json({ error: "\u83B7\u53D6\u6587\u4EF6\u4FE1\u606F\u5931\u8D25" });
   }
 });
+router2.get("/:id([0-9a-fA-F-]{36})/media-status", async (req, res) => {
+  try {
+    const file = await getScopedFileById(req.params.id);
+    if (!file) return res.status(404).json({ code: "FILE_NOT_FOUND", error: "\u6587\u4EF6\u8BB0\u5F55\u4E0D\u5B58\u5728" });
+    if (file.preview_path && (file.type === "image" || file.type === "video")) {
+      const localPreviewPath = path17.join(PREVIEW_DIR3, path17.basename(file.preview_path));
+      if (fs12.existsSync(localPreviewPath)) {
+        return res.json({ available: true, source: "local_preview" });
+      }
+    }
+    if (file.source === "local" || file.source === "web") {
+      const filePath = await getSafeLocalFilePath(file);
+      return fs12.existsSync(filePath) ? res.json({ available: true, source: "local" }) : res.status(410).json({ code: "MEDIA_SOURCE_MISSING", error: "\u670D\u52A1\u5668\u4E2D\u7684\u6E90\u6587\u4EF6\u5DF2\u4E0D\u5B58\u5728\u3002", reason: "not_found" });
+    }
+    const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+    const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
+    if (provider.probeFileReadable) await provider.probeFileReadable(file.path);
+    else if (provider.getFileAvailability) await provider.getFileAvailability(file.path);
+    return res.json({ available: true, source: file.source });
+  } catch (error) {
+    console.error("\u67E5\u8BE2\u5A92\u4F53\u6E90\u72B6\u6001\u5931\u8D25:", error);
+    const response = classifyMediaProxyError(error);
+    if (response.retryAfter) res.set("Retry-After", String(response.retryAfter));
+    return res.status(response.status).json({
+      code: response.code,
+      error: response.error,
+      ...response.reason ? { reason: response.reason } : {}
+    });
+  }
+});
 router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
   try {
     const { id } = req.params;
     const file = await getScopedFileById(id);
     if (!file) {
       return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728" });
+    }
+    const localPreviewPath = file.preview_path && (file.type === "image" || file.type === "video") ? path17.join(PREVIEW_DIR3, path17.basename(file.preview_path)) : null;
+    if (localPreviewPath && fs12.existsSync(localPreviewPath)) {
+      await serveLocalPathWithRange(
+        req,
+        res,
+        localPreviewPath,
+        file.type === "video" ? "video/mp4" : "image/webp",
+        "public, max-age=86400",
+        `"${file.id}-${file.updated_at}-${file.preview_path}"`
+      );
+      return;
     }
     if (file.source === "onedrive" || file.source === "aliyun_oss" || file.source === "s3" || file.source === "webdav" || file.source === "google_drive") {
       try {
@@ -15660,18 +15855,20 @@ router2.get("/:id([0-9a-fA-F-]{36})/preview", async (req, res) => {
         if (url) {
           res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
           return res.redirect(url);
-        } else {
-          const stream = await provider.getFileStream(file.path);
-          res.set({
-            "Content-Type": file.mime_type || "application/octet-stream",
-            "Cache-Control": "public, max-age=86400"
-          });
-          stream.pipe(res);
-          return;
         }
+        await serveCloudMediaStream(
+          req,
+          res,
+          provider,
+          file.path,
+          file.mime_type || "application/octet-stream"
+        );
+        return;
       } catch (err) {
         console.error(`\u83B7\u53D6 ${file.source} \u9884\u89C8\u94FE\u63A5/\u6D41\u5931\u8D25:`, err);
-        return res.status(500).json({ error: "\u83B7\u53D6\u9884\u89C8\u5931\u8D25" });
+        const response = classifyMediaProxyError(err);
+        if (response.retryAfter) res.set("Retry-After", String(response.retryAfter));
+        return res.status(response.status).json({ code: response.code, error: response.error });
       }
     }
     const filePath = await getSafeLocalFilePath(file);
@@ -15720,20 +15917,28 @@ router2.get("/:id([0-9a-fA-F-]{36})/original", async (req, res) => {
     const file = await getScopedFileById(id);
     if (!file) return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728" });
     if (file.source === "onedrive" || file.source === "aliyun_oss" || file.source === "s3" || file.source === "webdav" || file.source === "google_drive") {
-      const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
-      const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
-      const url = await provider.getPreviewUrl(file.path);
-      if (url) {
-        res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
-        return res.redirect(url);
+      try {
+        const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
+        const provider = storageManager2.getProvider(`${file.source}:${file.storage_account_id}`);
+        const url = await provider.getPreviewUrl(file.path);
+        if (url) {
+          res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+          return res.redirect(url);
+        }
+        await serveCloudMediaStream(
+          req,
+          res,
+          provider,
+          file.path,
+          file.mime_type || "application/octet-stream"
+        );
+        return;
+      } catch (error) {
+        console.error("\u83B7\u53D6\u539F\u59CB\u6587\u4EF6\u5931\u8D25:", error);
+        const response = classifyMediaProxyError(error);
+        if (response.retryAfter) res.set("Retry-After", String(response.retryAfter));
+        return res.status(response.status).json({ code: response.code, error: response.error });
       }
-      const stream = await provider.getFileStream(file.path);
-      res.set({
-        "Content-Type": file.mime_type || "application/octet-stream",
-        "Cache-Control": "public, max-age=86400"
-      });
-      stream.pipe(res);
-      return;
     }
     const filePath = await getSafeLocalFilePath(file);
     if (!fs12.existsSync(filePath)) return res.status(404).json({ error: "\u6587\u4EF6\u4E0D\u5B58\u5728\u4E8E\u670D\u52A1\u5668" });
@@ -16639,7 +16844,7 @@ var handleUpload = async (req, res, source = "web") => {
         });
       }
     }
-    if (provider.name === "local" && (mimeType.startsWith("image/") || mimeType.startsWith("video/"))) {
+    if (mimeType.startsWith("image/") || mimeType.startsWith("video/")) {
       try {
         const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
         if (thumbResult) {
@@ -16655,7 +16860,7 @@ var handleUpload = async (req, res, source = "web") => {
         console.error("\u751F\u6210\u7F29\u7565\u56FE\u5931\u8D25:", error);
       }
     }
-    if (provider.name === "local" && mimeType.startsWith("image/")) {
+    if (mimeType.startsWith("image/")) {
       try {
         const previewResult = await generateMediaPreview(tempPath, storedName, mimeType);
         if (previewResult) {
@@ -16681,15 +16886,19 @@ var handleUpload = async (req, res, source = "web") => {
         [originalName, storedName, type, mimeType, size, savedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
       );
     });
-    if (fs13.existsSync(tempPath)) fs13.unlinkSync(tempPath);
     const newFile = result.rows[0];
-    if (provider.name === "local" && type === "video") {
-      void generateMediaPreview(storedPath, storedName, mimeType).then(async (previewResult) => {
+    if (type === "video") {
+      const previewSource = provider.name === "local" ? storedPath : tempPath;
+      void generateMediaPreview(previewSource, storedName, mimeType).then(async (previewResult) => {
         if (!previewResult) return;
         const generatedPreviewName = path18.basename(previewResult);
         await query("UPDATE files SET preview_path = $1, updated_at = NOW() WHERE id = $2", [generatedPreviewName, newFile.id]);
         console.log(`[Upload] \u{1F39E}\uFE0F Video preview generated async: ${generatedPreviewName}`);
-      }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error));
+      }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error)).finally(() => {
+        if (provider.name !== "local" && fs13.existsSync(tempPath)) fs13.unlinkSync(tempPath);
+      });
+    } else if (fs13.existsSync(tempPath)) {
+      fs13.unlinkSync(tempPath);
     }
     res.json({
       success: true,
@@ -18700,14 +18909,14 @@ router6.post("/complete", async (req, res) => {
     let previewPath = null;
     let width = null;
     let height = null;
-    if (target.provider.name === "local" && (session.mimeType.startsWith("image/") || session.mimeType.startsWith("video/"))) {
+    if (session.mimeType.startsWith("image/") || session.mimeType.startsWith("video/")) {
       const thumbnail = await generateThumbnail(tempMergedPath, storedName, session.mimeType).catch(() => null);
       thumbnailPath = thumbnail ? path21.basename(thumbnail) : null;
       const dimensions = await getImageDimensions(tempMergedPath, session.mimeType).catch(() => ({ width: null, height: null }));
       width = dimensions.width;
       height = dimensions.height;
     }
-    if (target.provider.name === "local" && session.mimeType.startsWith("image/")) {
+    if (session.mimeType.startsWith("image/")) {
       const preview = await generateMediaPreview(tempMergedPath, storedName, session.mimeType).catch(() => null);
       previewPath = preview ? path21.basename(preview) : null;
     }
@@ -18789,12 +18998,18 @@ router6.post("/complete", async (req, res) => {
       await compensateAfterCompletionFailure(completionError);
       throw completionError;
     }
-    await fsPromises2.rm(tempMergedPath, { force: true }).catch((error) => console.error("\u6E05\u7406\u5408\u5E76\u4E34\u65F6\u6587\u4EF6\u5931\u8D25:", error));
     await fsPromises2.rm(path21.join(CHUNK_DIR, uploadId), { recursive: true, force: true }).catch((error) => console.error("\u6E05\u7406\u5DF2\u5B8C\u6210\u4E0A\u4F20\u7684\u5206\u5757\u5931\u8D25:", error));
-    if (target.provider.name === "local" && type === "video") {
-      void generateMediaPreview(storedPath, storedName, session.mimeType).then(async (preview) => {
+    if (type === "video") {
+      const previewSource = target.provider.name === "local" ? storedPath : tempMergedPath;
+      void generateMediaPreview(previewSource, storedName, session.mimeType).then(async (preview) => {
         if (preview) await query("UPDATE files SET preview_path = $1 WHERE id = $2", [path21.basename(preview), file.id]);
-      }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error));
+      }).catch((error) => console.error("\u5F02\u6B65\u751F\u6210\u89C6\u9891\u9884\u89C8\u5931\u8D25:", error)).finally(async () => {
+        if (target.provider.name !== "local") {
+          await fsPromises2.rm(tempMergedPath, { force: true }).catch((error) => console.error("\u6E05\u7406\u5408\u5E76\u4E34\u65F6\u6587\u4EF6\u5931\u8D25:", error));
+        }
+      });
+    } else {
+      await fsPromises2.rm(tempMergedPath, { force: true }).catch((error) => console.error("\u6E05\u7406\u5408\u5E76\u4E34\u65F6\u6587\u4EF6\u5931\u8D25:", error));
     }
     res.json({
       success: true,
@@ -18903,6 +19118,38 @@ init_db();
 import { Router as Router7 } from "express";
 import fs17 from "node:fs/promises";
 import path22 from "node:path";
+
+// src/services/taskCenterDismissals.ts
+init_db();
+var DISMISSIBLE_STATES = /* @__PURE__ */ new Set(["completed", "failed", "cancelled", "disabled", "interrupted", "retry_required"]);
+function isTaskDismissible(task) {
+  return DISMISSIBLE_STATES.has(task.status);
+}
+function version(value) {
+  return new Date(value).getTime();
+}
+function filterDismissedTasks(tasks, dismissals) {
+  const hidden = new Set(dismissals.map((item) => `${item.sourceType}:${item.taskId}:${version(item.taskUpdatedAt)}`));
+  return tasks.filter((task) => !hidden.has(`${task.sourceType}:${task.id}:${version(task.updatedAt)}`));
+}
+async function loadTaskCenterDismissals() {
+  const result = await query("SELECT source_type, task_id, task_updated_at FROM task_center_dismissals");
+  return result.rows.map((row) => ({ sourceType: String(row.source_type), taskId: String(row.task_id), taskUpdatedAt: row.task_updated_at }));
+}
+async function saveTaskCenterDismissals(items) {
+  for (const item of items) {
+    await query(
+      `INSERT INTO task_center_dismissals (source_type, task_id, task_updated_at, dismissed_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (source_type, task_id) DO UPDATE
+             SET task_updated_at = EXCLUDED.task_updated_at, dismissed_at = NOW()`,
+      [item.sourceType, item.id, item.updatedAt]
+    );
+  }
+}
+
+// src/routes/tasks.ts
+import crypto24 from "node:crypto";
 var router7 = Router7();
 var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
 function parseJsonObject(value) {
@@ -18921,13 +19168,11 @@ function channelStatus(status) {
   if (status === "completed_with_errors") return "failed";
   return status;
 }
-router7.get("/", requireAuth, async (req, res) => {
-  try {
-    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 200)));
-    const [transfers, channels, chunks, subscriptions, accounts] = await Promise.all([
-      listTransferTasks({ limit }),
-      query(
-        `SELECT j.*,
+async function collectUnifiedTasks(limit) {
+  const [transfers, channels, chunks, subscriptions, accounts] = await Promise.all([
+    listTransferTasks({ limit }),
+    query(
+      `SELECT j.*,
                         COUNT(i.id)::int AS item_count,
                         COUNT(i.id) FILTER (WHERE i.status = 'success')::int AS completed_items,
                         COUNT(i.id) FILTER (WHERE i.status = 'failed')::int AS failed_items,
@@ -18937,137 +19182,143 @@ router7.get("/", requireAuth, async (req, res) => {
                  LEFT JOIN telegram_download_items i ON i.job_id = j.id
                  GROUP BY j.id
                  ORDER BY j.updated_at DESC LIMIT $1`,
-        [limit]
-      ),
-      query(
-        `SELECT * FROM chunk_upload_sessions
+      [limit]
+    ),
+    query(
+      `SELECT * FROM chunk_upload_sessions
                  WHERE status IN ('open','completing','failed') AND expires_at > NOW()
                  ORDER BY updated_at DESC LIMIT $1`,
-        [limit]
-      ),
-      query(
-        `SELECT * FROM telegram_channel_subscriptions
+      [limit]
+    ),
+    query(
+      `SELECT * FROM telegram_channel_subscriptions
                  ORDER BY updated_at DESC LIMIT $1`,
-        [limit]
-      ),
-      query("SELECT id, name FROM storage_accounts")
-    ]);
-    const accountNames = new Map(accounts.rows.map((row) => [String(row.id), String(row.name)]));
-    const tasks = transfers.map((task) => ({
-      id: task.id,
-      sourceType: task.sourceType,
-      kind: task.kind,
-      title: task.title,
-      status: task.status,
-      stage: task.stage,
-      progress: task.progress,
-      ownerUserId: task.ownerUserId,
-      chatId: task.chatId,
-      source: task.source,
+      [limit]
+    ),
+    query("SELECT id, name FROM storage_accounts")
+  ]);
+  const accountNames = new Map(accounts.rows.map((row) => [String(row.id), String(row.name)]));
+  const tasks = transfers.map((task) => ({
+    id: task.id,
+    sourceType: task.sourceType,
+    kind: task.kind,
+    title: task.title,
+    status: task.status,
+    stage: task.stage,
+    progress: task.progress,
+    ownerUserId: task.ownerUserId,
+    chatId: task.chatId,
+    source: task.source,
+    target: {
+      provider: task.targetProvider,
+      accountId: task.targetAccountId,
+      accountName: task.targetAccountId ? accountNames.get(task.targetAccountId) || null : task.targetProvider === "local" ? "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55" : null,
+      folder: task.targetFolder
+    },
+    counts: { total: task.totalItems, completed: task.completedItems, failed: task.failedItems },
+    bytes: { total: task.totalBytes, transferred: task.transferredBytes },
+    detail: task.payload,
+    error: task.error,
+    retryable: task.retryable,
+    cancellable: ["pending", "running", "paused"].includes(task.status),
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    finishedAt: task.finishedAt
+  }));
+  for (const row of channels.rows) {
+    const params = parseJsonObject(row.params);
+    const total = Math.max(Number(row.total_count || 0), Number(row.item_count || 0));
+    const completed = Number(row.completed_items || 0);
+    const failed = Number(row.failed_items || 0);
+    tasks.push({
+      id: String(row.id),
+      sourceType: "telegram_channel",
+      kind: String(row.kind),
+      title: row.source || "Telegram \u9891\u9053\u4EFB\u52A1",
+      status: channelStatus(String(row.status)),
+      stage: row.scan_status !== "completed" ? "scanning" : "downloading",
+      progress: total > 0 ? Math.min(100, (completed + failed + Number(row.skipped_count || 0)) / total * 100) : 0,
+      ownerUserId: Number(row.user_id),
+      chatId: row.chat_id == null ? null : String(row.chat_id),
+      source: row.source,
       target: {
-        provider: task.targetProvider,
-        accountId: task.targetAccountId,
-        accountName: task.targetAccountId ? accountNames.get(task.targetAccountId) || null : task.targetProvider === "local" ? "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55" : null,
-        folder: task.targetFolder
+        provider: params.storageProvider || null,
+        accountId: params.storageAccountId || null,
+        accountName: params.storageAccountId ? accountNames.get(String(params.storageAccountId)) || null : params.storageProvider === "local" ? "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55" : null,
+        folder: params.folderOverride || null
       },
-      counts: { total: task.totalItems, completed: task.completedItems, failed: task.failedItems },
-      bytes: { total: task.totalBytes, transferred: task.transferredBytes },
-      detail: task.payload,
-      error: task.error,
-      retryable: task.retryable,
-      cancellable: ["pending", "running", "paused"].includes(task.status),
-      createdAt: task.createdAt,
-      updatedAt: task.updatedAt,
-      finishedAt: task.finishedAt
-    }));
-    for (const row of channels.rows) {
-      const params = parseJsonObject(row.params);
-      const total = Math.max(Number(row.total_count || 0), Number(row.item_count || 0));
-      const completed = Number(row.completed_items || 0);
-      const failed = Number(row.failed_items || 0);
-      tasks.push({
-        id: String(row.id),
-        sourceType: "telegram_channel",
-        kind: String(row.kind),
-        title: row.source || "Telegram \u9891\u9053\u4EFB\u52A1",
-        status: channelStatus(String(row.status)),
-        stage: row.scan_status !== "completed" ? "scanning" : "downloading",
-        progress: total > 0 ? Math.min(100, (completed + failed + Number(row.skipped_count || 0)) / total * 100) : 0,
-        ownerUserId: Number(row.user_id),
-        chatId: row.chat_id == null ? null : String(row.chat_id),
-        source: row.source,
-        target: {
-          provider: params.storageProvider || null,
-          accountId: params.storageAccountId || null,
-          accountName: params.storageAccountId ? accountNames.get(String(params.storageAccountId)) || null : params.storageProvider === "local" ? "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55" : null,
-          folder: params.folderOverride || null
-        },
-        counts: { total, completed, failed },
-        bytes: { total: Number(row.total_bytes || 0), transferred: 0 },
-        detail: { scanStatus: row.scan_status, downloadStatus: row.download_status, skipped: Number(row.skipped_count || 0) },
-        error: row.error,
-        retryable: ["failed", "completed_with_errors"].includes(String(row.status)),
-        cancellable: ["queued", "running", "paused", "cooling"].includes(String(row.status)),
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        finishedAt: row.finished_at
-      });
-    }
-    for (const row of chunks.rows) {
-      const total = Number(row.total_size || 0);
-      const received = Number(row.received_bytes || 0);
-      tasks.push({
-        id: String(row.upload_id),
-        sourceType: "web_upload",
-        kind: "chunk_upload",
-        title: String(row.filename),
-        status: row.status === "open" ? "waiting" : String(row.status),
-        stage: row.status === "completing" ? "processing" : row.status === "open" ? "resumable" : "awaiting_file",
-        progress: total > 0 ? Math.round(received / total * 100) : 0,
-        ownerUserId: null,
-        chatId: null,
-        source: "Web",
-        target: {
-          provider: row.target_provider,
-          accountId: row.target_account_id,
-          accountName: row.target_account_id ? accountNames.get(String(row.target_account_id)) || null : "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55",
-          folder: row.folder
-        },
-        counts: { total: Number(row.total_chunks || 0), completed: 0, failed: row.status === "failed" ? 1 : 0 },
-        bytes: { total, transferred: received },
-        detail: { expiresAt: row.expires_at },
-        error: row.last_error,
-        retryable: row.status !== "completing",
-        cancellable: row.status !== "completing",
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        finishedAt: null
-      });
-    }
-    for (const row of subscriptions.rows) {
-      tasks.push({
-        id: String(row.id),
-        sourceType: "subscription",
-        kind: "telegram_subscription",
-        title: row.title || row.source,
-        status: row.enabled ? "scheduled" : "disabled",
-        stage: row.enabled ? "waiting_for_next_scan" : "disabled",
-        progress: 0,
-        ownerUserId: Number(row.user_id),
-        chatId: row.chat_id == null ? null : String(row.chat_id),
-        source: row.source,
-        target: { provider: null, accountId: null, accountName: null, folder: row.folder_override || null },
-        counts: { total: 0, completed: 0, failed: 0 },
-        bytes: { total: 0, transferred: 0 },
-        detail: { lastMessageId: Number(row.last_message_id || 0) },
-        error: row.disabled_reason,
-        retryable: false,
-        cancellable: false,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        finishedAt: null
-      });
-    }
+      counts: { total, completed, failed },
+      bytes: { total: Number(row.total_bytes || 0), transferred: 0 },
+      detail: { scanStatus: row.scan_status, downloadStatus: row.download_status, skipped: Number(row.skipped_count || 0) },
+      error: row.error,
+      retryable: ["failed", "completed_with_errors"].includes(String(row.status)),
+      cancellable: ["queued", "running", "paused", "cooling"].includes(String(row.status)),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      finishedAt: row.finished_at
+    });
+  }
+  for (const row of chunks.rows) {
+    const total = Number(row.total_size || 0);
+    const received = Number(row.received_bytes || 0);
+    tasks.push({
+      id: String(row.upload_id),
+      sourceType: "web_upload",
+      kind: "chunk_upload",
+      title: String(row.filename),
+      status: row.status === "open" ? "waiting" : String(row.status),
+      stage: row.status === "completing" ? "processing" : row.status === "open" ? "resumable" : "awaiting_file",
+      progress: total > 0 ? Math.round(received / total * 100) : 0,
+      ownerUserId: null,
+      chatId: null,
+      source: "Web",
+      target: {
+        provider: row.target_provider,
+        accountId: row.target_account_id,
+        accountName: row.target_account_id ? accountNames.get(String(row.target_account_id)) || null : "\u670D\u52A1\u5668\u672C\u5730\u76EE\u5F55",
+        folder: row.folder
+      },
+      counts: { total: Number(row.total_chunks || 0), completed: 0, failed: row.status === "failed" ? 1 : 0 },
+      bytes: { total, transferred: received },
+      detail: { expiresAt: row.expires_at },
+      error: row.last_error,
+      retryable: row.status !== "completing",
+      cancellable: row.status !== "completing",
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      finishedAt: null
+    });
+  }
+  for (const row of subscriptions.rows) {
+    tasks.push({
+      id: String(row.id),
+      sourceType: "subscription",
+      kind: "telegram_subscription",
+      title: row.title || row.source,
+      status: row.enabled ? "scheduled" : "disabled",
+      stage: row.enabled ? "waiting_for_next_scan" : "disabled",
+      progress: 0,
+      ownerUserId: Number(row.user_id),
+      chatId: row.chat_id == null ? null : String(row.chat_id),
+      source: row.source,
+      target: { provider: null, accountId: null, accountName: null, folder: row.folder_override || null },
+      counts: { total: 0, completed: 0, failed: 0 },
+      bytes: { total: 0, transferred: 0 },
+      detail: { lastMessageId: Number(row.last_message_id || 0) },
+      error: row.disabled_reason,
+      retryable: false,
+      cancellable: false,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      finishedAt: null
+    });
+  }
+  return tasks;
+}
+router7.get("/", requireAuth, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 200)));
+    const tasks = filterDismissedTasks(await collectUnifiedTasks(limit), await loadTaskCenterDismissals()).map((task) => ({ ...task, dismissible: isTaskDismissible(task) }));
     const source = String(req.query.source || "").trim();
     const status = String(req.query.status || "").trim();
     const filtered = tasks.filter((task) => !source || task.sourceType === source).filter((task) => !status || task.status === status).sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, limit);
@@ -19075,6 +19326,57 @@ router7.get("/", requireAuth, async (req, res) => {
   } catch (error) {
     console.error("\u83B7\u53D6\u7EDF\u4E00\u4EFB\u52A1\u5217\u8868\u5931\u8D25:", error);
     res.status(500).json({ error: "\u83B7\u53D6\u4EFB\u52A1\u5217\u8868\u5931\u8D25" });
+  }
+});
+router7.post("/dismissals/prepare", requireAuth, async (req, res) => {
+  try {
+    const authToken = getAuthToken(req);
+    if (!authToken) return res.status(401).json({ error: "\u672A\u8BA4\u8BC1" });
+    const source = String(req.body?.source || "").trim();
+    const status = String(req.body?.status || "").trim();
+    const requested = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+    const requestedKeys = new Set(requested.map((item) => `${String(item.sourceType)}:${String(item.id)}`));
+    const all = filterDismissedTasks(await collectUnifiedTasks(500), await loadTaskCenterDismissals());
+    const selected = all.filter((task) => isTaskDismissible(task)).filter((task) => requestedKeys.size > 0 ? requestedKeys.has(`${task.sourceType}:${task.id}`) : (!source || task.sourceType === source) && (!status || task.status === status)).map((task) => ({ sourceType: task.sourceType, id: task.id, status: task.status, title: task.title, updatedAt: task.updatedAt }));
+    if (selected.length === 0) return res.status(409).json({ error: "\u5F53\u524D\u8303\u56F4\u6CA1\u6709\u53EF\u5220\u9664\u7684\u7EC8\u6001\u8BB0\u5F55" });
+    const context = JSON.stringify(selected);
+    const snapshotId = crypto24.createHash("sha256").update(context).digest("hex");
+    const bySource = Object.fromEntries([...new Set(selected.map((item) => item.sourceType))].map((key) => [key, selected.filter((item) => item.sourceType === key).length]));
+    const byStatus = Object.fromEntries([...new Set(selected.map((item) => item.status))].map((key) => [key, selected.filter((item) => item.status === key).length]));
+    res.json({
+      ...webDestructiveConfirmationStore.issue({ authToken, action: "dismiss_tasks", objectId: snapshotId, context }),
+      snapshotId,
+      context,
+      impact: { count: selected.length, bySource, byStatus, filesDeleted: false, cloudObjectsDeleted: false, subscriptionsDeleted: false }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "\u521B\u5EFA\u5220\u9664\u9884\u89C8\u5931\u8D25" });
+  }
+});
+router7.post("/dismissals/confirm", requireAuth, async (req, res) => {
+  const authToken = getAuthToken(req);
+  const confirmationToken = String(req.header("x-confirmation-token") || "");
+  const snapshotId = String(req.body?.snapshotId || "");
+  const context = String(req.body?.context || "");
+  const confirmed = authToken && confirmationToken ? webDestructiveConfirmationStore.consume(confirmationToken, { authToken, action: "dismiss_tasks", objectId: snapshotId, context }) : { status: "missing" };
+  if (confirmed.status !== "ok") return res.status(409).json({ error: "\u9700\u8981\u4E00\u6B21\u6027\u4EFB\u52A1\u5220\u9664\u786E\u8BA4\u4EE4\u724C", code: "CONFIRMATION_REQUIRED" });
+  try {
+    const frozen = JSON.parse(context);
+    const live = await collectUnifiedTasks(500);
+    const liveMap = new Map(live.map((task) => [`${task.sourceType}:${task.id}`, task]));
+    const dismissed = [];
+    const failed = [];
+    for (const item of frozen) {
+      const task = liveMap.get(`${item.sourceType}:${item.id}`);
+      if (!task || !isTaskDismissible(task) || new Date(task.updatedAt).getTime() !== new Date(item.updatedAt).getTime()) {
+        failed.push({ sourceType: item.sourceType, id: item.id, reason: "\u4EFB\u52A1\u72B6\u6001\u6216\u7248\u672C\u5DF2\u53D8\u5316" });
+      } else dismissed.push(task);
+    }
+    await saveTaskCenterDismissals(dismissed);
+    const payload = { status: failed.length ? "partial" : "complete", dismissed: dismissed.map((task) => ({ sourceType: task.sourceType, id: task.id })), failed, filesDeleted: false, cloudObjectsDeleted: false };
+    return res.status(failed.length ? 207 : 200).json(payload);
+  } catch (error) {
+    return res.status(400).json({ error: "\u5220\u9664\u5FEB\u7167\u65E0\u6548" });
   }
 });
 router7.post("/:sourceType/:id/cancel-confirmation", requireAuth, async (req, res) => {
@@ -19169,7 +19471,7 @@ var tasks_default = router7;
 // src/index.ts
 init_db();
 import helmet from "helmet";
-import crypto24 from "node:crypto";
+import crypto25 from "node:crypto";
 
 // src/utils/runtimeConfig.ts
 var NUMBER_SPECS = [
@@ -19370,7 +19672,7 @@ app.use(cors({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
 app.use((req, res, next) => {
   const provided = normalizeRequestId(req.headers["x-request-id"]);
-  const requestId = provided || crypto24.randomUUID();
+  const requestId = provided || crypto25.randomUUID();
   res.locals.requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
   next();

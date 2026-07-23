@@ -43,21 +43,21 @@ const SidebarItem = ({ icon: Icon, label, isActive, onClick, collapsed, hasSubIt
     );
 };
 
-export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }: { children: React.ReactNode; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null; onLogout?: () => void | Promise<void> }) => {
+export const AppLayout = ({ children, activeCategory, onCategoryChange, storageStats, onLogout }: { children: React.ReactNode; activeCategory: string; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null; onLogout?: () => void | Promise<void> }) => {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState("all");
+
     const [mediaOpen, setMediaOpen] = useState(true);
     const { t } = useTranslation();
 
     const handleTabClick = (id: string) => {
-        setActiveTab(id);
         onCategoryChange?.(id);
         setIsMobileMenuOpen(false); // Close mobile menu on selection
     };
 
     const toggleMedia = () => {
         setMediaOpen(!mediaOpen);
+        handleTabClick("media");
     };
 
     const categories = [
@@ -95,7 +95,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }
                                     <SidebarItem
                                         icon={cat.icon}
                                         label={cat.label}
-                                        isActive={activeTab === cat.id}
+                                        isActive={activeCategory === cat.id}
                                         onClick={cat.onClick}
                                         collapsed={collapsed}
                                         hasSubItems
@@ -114,7 +114,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }
                                                         key={sub.id}
                                                         icon={sub.icon}
                                                         label={sub.label}
-                                                        isActive={activeTab === sub.id}
+                                                        isActive={activeCategory === sub.id}
                                                         onClick={() => handleTabClick(sub.id)}
                                                         collapsed={false}
                                                     />
@@ -127,7 +127,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }
                                 <SidebarItem
                                     icon={cat.icon}
                                     label={cat.label}
-                                    isActive={activeTab === cat.id}
+                                    isActive={activeCategory === cat.id}
                                     onClick={() => handleTabClick(cat.id)}
                                     collapsed={collapsed}
                                 />
@@ -239,7 +239,7 @@ export const AppLayout = ({ children, onCategoryChange, storageStats, onLogout }
                         <img src="/logo.png?v=tg-vault" alt="Logo" className="h-10 w-10 rounded-xl object-contain shadow-sm" />
                         <div className="flex flex-col justify-center h-full pt-4 pb-4">
                             <h1 className="text-xl font-bold tracking-tight text-foreground">{t("app.title")}</h1>
-                            <p className="text-xs text-muted-foreground">{categories.find(c => c.id === activeTab)?.label || activeTab}</p>
+                            <p className="text-xs text-muted-foreground">{categories.find(c => c.id === activeCategory)?.label || activeCategory}</p>
                         </div>
                     </div>
 

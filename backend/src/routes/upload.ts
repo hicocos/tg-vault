@@ -142,8 +142,8 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
         await assertStorageTargetWritable(target);
         console.log(`[Upload] 🛠️  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || 'none (local)'}`);
 
-        // 2. 在保存到永久存储前生成缩略图和获取尺寸
-        // 方案A：只在本地存储生成缩略图；OneDrive/S3/OSS/WebDAV/Google Drive 等第三方存储不生成本地缩略图。
+        // Media derivatives are generated from the upload source before cloud providers consume it.
+        // This keeps gallery thumbnails and previews independent from remote download quotas.
         let thumbnailPath = null;
         let previewPath = null;
         let width = null;
@@ -168,7 +168,7 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
             }
         }
 
-        if (provider.name === 'local' && (mimeType.startsWith('image/') || mimeType.startsWith('video/'))) {
+        if (mimeType.startsWith('image/') || mimeType.startsWith('video/')) {
             try {
                 const thumbResult = await generateThumbnail(tempPath, storedName, mimeType);
                 if (thumbResult) {
@@ -185,7 +185,7 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
             }
         }
 
-        if (provider.name === 'local' && mimeType.startsWith('image/')) {
+        if (mimeType.startsWith('image/')) {
             try {
                 const previewResult = await generateMediaPreview(tempPath, storedName, mimeType);
                 if (previewResult) {
@@ -217,19 +217,23 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
                 [originalName, storedName, type, mimeType, size, savedPath, thumbnailPath, previewPath, width, height, provider.name, storageFolder, activeAccountId]
             );
         });
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-
         const newFile = result!.rows[0];
 
-        if (provider.name === 'local' && type === 'video') {
-            void generateMediaPreview(storedPath, storedName, mimeType)
+        if (type === 'video') {
+            const previewSource = provider.name === 'local' ? storedPath : tempPath;
+            void generateMediaPreview(previewSource, storedName, mimeType)
                 .then(async (previewResult) => {
                     if (!previewResult) return;
                     const generatedPreviewName = path.basename(previewResult);
                     await query('UPDATE files SET preview_path = $1, updated_at = NOW() WHERE id = $2', [generatedPreviewName, newFile.id]);
                     console.log(`[Upload] 🎞️ Video preview generated async: ${generatedPreviewName}`);
                 })
-                .catch((error) => console.error('异步生成视频预览失败:', error));
+                .catch((error) => console.error('异步生成视频预览失败:', error))
+                .finally(() => {
+                    if (provider.name !== 'local' && fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+                });
+        } else if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
         }
 
         res.json({

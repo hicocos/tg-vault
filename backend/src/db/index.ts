@@ -115,6 +115,14 @@ async function initializeDatabase() {
             created_at TIMESTAMPTZ DEFAULT NOW()
         )`);
         await pool.query(`CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)`);
+        await pool.query(`CREATE TABLE IF NOT EXISTS task_center_dismissals (
+            source_type VARCHAR(30) NOT NULL,
+            task_id VARCHAR(128) NOT NULL,
+            task_updated_at TIMESTAMPTZ NOT NULL,
+            dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (source_type, task_id)
+        )`);
+        await pool.query(`CREATE INDEX IF NOT EXISTS idx_task_center_dismissals_version ON task_center_dismissals(source_type, task_id, task_updated_at)`);
         await pool.query(`CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE CASCADE,

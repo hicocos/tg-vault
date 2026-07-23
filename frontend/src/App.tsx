@@ -27,6 +27,9 @@ import { describeFileViewState } from "./services/fileViewState";
 import { buildFolderBreadcrumbs, parentFolder } from "./services/folderNavigation";
 import { attachUploadSession, createUploadQueueInput, type UploadQueueInput } from "./services/uploadQueueInput";
 import { ConfirmDialog } from "./components/ui/ConfirmDialog";
+import { appRouteHref, parseAppRoute, routeForCategory, routeForSettings, type AppRoute } from "./services/appRoute";
+import type { SettingsSectionId } from "./components/pages/settingsSections";
+import { IndeterminateSpinner } from "./components/ui/IndeterminateSpinner";
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
 const TasksPage = lazy(() => import("./components/pages/TasksPage").then(module => ({ default: module.TasksPage })));
@@ -36,11 +39,12 @@ const CreateFolderModal = lazy(() => import("./components/ui/CreateFolderModal")
 
 const LazyFallback = () => (
   <div className="flex min-h-32 items-center justify-center text-muted-foreground">
-    <RefreshCw className="h-5 w-5 animate-spin" />
+    <IndeterminateSpinner label="正在加载页面" size="md" />
   </div>
 );
 
 function App() {
+  const initialRoute = useMemo(() => parseAppRoute(window.location), []);
   // 认证状态
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [needsPassword, setNeedsPassword] = useState(true);
@@ -111,16 +115,17 @@ function App() {
   });
 
   const { t } = useTranslation();
-  const [currentCategory, setCurrentCategory] = useState("all");
+  const [currentCategory, setCurrentCategory] = useState(() => initialRoute.kind === 'files' ? initialRoute.category : initialRoute.kind);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [selectedFile, setSelectedFile] = useState<FileData | null>(null);
   const [deletingFile, setDeletingFile] = useState<FileData | null>(null);
   const [pendingBatchDelete, setPendingBatchDelete] = useState<{ fileIds: string[]; folderNames: string[] } | null>(null);
   const [batchDeletePreview, setBatchDeletePreview] = useState<BatchDeletePreview | null>(null);
   const [batchDeleteResult, setBatchDeleteResult] = useState<BatchDeleteResult | null>(null);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery, setSearchQuery] = useState(() => initialRoute.kind === 'files' ? initialRoute.query : '');
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
-  const [currentFolder, setCurrentFolder] = useState<string | null>(null); // 当前选中的文件夹
+  const [currentFolder, setCurrentFolder] = useState<string | null>(() => initialRoute.kind === 'files' ? initialRoute.folder : null); // 当前选中的文件夹
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => initialRoute.kind === 'settings' ? initialRoute.section : 'general');
   const [isNavigationTapShieldActive, setIsNavigationTapShieldActive] = useState(false);
   const navigationTapShieldTimerRef = useRef<number | null>(null);
 
@@ -150,6 +155,52 @@ function App() {
 
   // 响应式列数监听
   const [columns, setColumns] = useState(2);
+
+  const applyRoute = useCallback((route: AppRoute) => {
+    if (route.kind === 'files') {
+      setCurrentCategory(route.category);
+      setCurrentFolder(route.folder);
+      setSearchQuery(route.query);
+      return;
+    }
+    setCurrentCategory(route.kind);
+    setCurrentFolder(null);
+    setSearchQuery('');
+    if (route.kind === 'settings') setSettingsSection(route.section);
+  }, []);
+
+  const navigateRoute = useCallback((route: AppRoute, replace = false) => {
+    const href = appRouteHref(route);
+    if (replace) window.history.replaceState({}, '', href);
+    else window.history.pushState({}, '', href);
+    applyRoute(route);
+  }, [applyRoute]);
+
+  useEffect(() => {
+    if (initialRoute.needsReplace) navigateRoute(initialRoute, true);
+    const handlePopState = () => applyRoute(parseAppRoute(window.location));
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [applyRoute, initialRoute, navigateRoute]);
+
+  const handleCategoryChange = useCallback((category: string) => {
+    navigateRoute(routeForCategory(category));
+  }, [navigateRoute]);
+
+  const navigateFolder = useCallback((folder: string | null) => {
+    navigateRoute(routeForCategory(currentCategory, { folder, query: searchQuery }));
+  }, [currentCategory, navigateRoute, searchQuery]);
+
+  const updateSearchQuery = useCallback((query: string) => {
+    setSearchQuery(query);
+    if (!['tasks', 'settings'].includes(currentCategory)) {
+      window.history.replaceState({}, '', appRouteHref(routeForCategory(currentCategory, { folder: currentFolder, query })));
+    }
+  }, [currentCategory, currentFolder]);
+
+  const handleSettingsSectionChange = useCallback((section: SettingsSectionId) => {
+    navigateRoute(routeForSettings(section));
+  }, [navigateRoute]);
 
   const loadIncompleteUploads = useCallback(async (openWhenFound = false) => {
     try {
@@ -367,7 +418,7 @@ function App() {
   }, []);
 
   const enterFolder = useCallback((folderName: string) => {
-    setCurrentFolder(folderName);
+    navigateFolder(folderName);
     setIsNavigationTapShieldActive(true);
 
     if (navigationTapShieldTimerRef.current) {
@@ -378,7 +429,7 @@ function App() {
       setIsNavigationTapShieldActive(false);
       navigationTapShieldTimerRef.current = null;
     }, 450);
-  }, []);
+  }, [navigateFolder]);
 
   // 登录处理
   const handleLogin = async (password: string) => {
@@ -1072,7 +1123,7 @@ function App() {
   if (authChecking) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+        <IndeterminateSpinner label="正在验证登录状态" size="lg" />
       </div>
     );
   }
@@ -1084,13 +1135,18 @@ function App() {
 
   return (
     <>
-      <AppLayout onCategoryChange={setCurrentCategory} storageStats={storageStats} onLogout={handleLogout}>
+      <AppLayout activeCategory={currentCategory} onCategoryChange={handleCategoryChange} storageStats={storageStats} onLogout={handleLogout}>
         <div className="flex flex-col gap-8 max-w-7xl mx-auto min-h-full">
 
           {/* Main Content Area */}
           {currentCategory === "settings" ? (
             <Suspense fallback={<LazyFallback />}>
-              <SettingsPage storageStats={storageStats} onSignedOut={() => setIsAuthenticated(false)} />
+              <SettingsPage
+                storageStats={storageStats}
+                onSignedOut={() => setIsAuthenticated(false)}
+                activeSection={settingsSection}
+                onSectionChange={handleSettingsSectionChange}
+              />
             </Suspense>
           ) : currentCategory === "tasks" ? (
             <Suspense fallback={<LazyFallback />}>
@@ -1104,80 +1160,84 @@ function App() {
                   <h2 className="text-3xl font-bold tracking-tight text-foreground">{t("app.title")}</h2>
                   <p className="text-muted-foreground mt-1">{t("app.subtitle")}</p>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="relative hidden md:block group">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
-                    <input
-                      className="h-10 w-64 rounded-full border border-border bg-background pl-9 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-all shadow-sm focus:shadow-md"
-                      placeholder={t("app.searchPlaceholder")}
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-10 w-10 rounded-full md:hidden"
-                    onClick={() => setIsMobileSearchOpen(open => !open)}
-                    aria-label={t("app.mobileSearch")}
-                  >
-                    <Search className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-10 w-10 rounded-full"
-                    onClick={() => { loadFiles(); loadStorageStats(); }}
-                    disabled={loading}
-                    aria-label={t("app.refresh")}
-                    title={t("app.refresh")}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-                  </Button>
-
-                  {/* 多选切换按钮 */}
-                  <Button
-                    variant={isSelectionMode ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-11 px-4 text-sm flex items-center gap-2 touch-manipulation"
-                    onClick={() => {
-                      setIsSelectionMode(!isSelectionMode);
-                      setSelectedFileIds([]);
-                      setSelectedFolderNames([]);
-                    }}
-                  >
-                    <CheckSquare className="h-4 w-4" />
-                    <span>{isSelectionMode ? "退出选择" : "选择"}</span>
-                  </Button>
-
-                  {/* 排序按钮 */}
-                  <div className="bg-muted/50 rounded-lg p-1 flex items-center gap-1">
+                <div data-testid="file-toolbar" className="flex w-full flex-wrap items-center justify-between gap-2 sm:gap-3 md:w-auto md:flex-nowrap">
+                  <div data-testid="file-toolbar-primary" className="flex min-w-0 items-center gap-1 sm:gap-2 md:gap-3">
+                    <div className="relative hidden md:block group">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
+                      <input
+                        className="h-10 w-64 rounded-full border border-border bg-background pl-9 pr-4 text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-all shadow-sm focus:shadow-md"
+                        placeholder={t("app.searchPlaceholder")}
+                        value={searchQuery}
+                        onChange={(e) => updateSearchQuery(e.target.value)}
+                      />
+                    </div>
                     <Button
-                      variant={sortConfig.key === 'name' ? 'secondary' : 'ghost'}
-                      size="sm"
-                      className="h-10 px-3 text-xs touch-manipulation"
-                      onClick={() => setSortConfig(current => ({
-                        key: 'name',
-                        direction: current.key === 'name' && current.direction === 'asc' ? 'desc' : 'asc'
-                      }))}
+                      variant="ghost"
+                      size="icon"
+                      className="h-10 w-10 rounded-full md:hidden"
+                      onClick={() => setIsMobileSearchOpen(open => !open)}
+                      aria-label={t("app.mobileSearch")}
                     >
-                      名称 {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                      <Search className="h-4 w-4" />
                     </Button>
                     <Button
-                      variant={sortConfig.key === 'date' ? 'secondary' : 'ghost'}
-                      size="sm"
-                      className="h-10 px-3 text-xs touch-manipulation"
-                      onClick={() => setSortConfig(current => ({
-                        key: 'date',
-                        direction: current.key === 'date' && current.direction === 'asc' ? 'desc' : 'asc'
-                      }))}
+                      variant="ghost"
+                      size="icon"
+                      className="h-10 w-10 rounded-full"
+                      onClick={() => { loadFiles(); loadStorageStats(); }}
+                      disabled={loading}
+                      aria-label={t("app.refresh")}
+                      title={t("app.refresh")}
                     >
-                      日期 {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                      {loading ? <IndeterminateSpinner label="正在刷新文件" size="sm" /> : <RefreshCw className="h-4 w-4" />}
+                    </Button>
+
+                    {/* 多选切换按钮 */}
+                    <Button
+                      variant={isSelectionMode ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-11 px-2 text-sm flex items-center gap-1.5 touch-manipulation sm:px-4 sm:gap-2"
+                      onClick={() => {
+                        setIsSelectionMode(!isSelectionMode);
+                        setSelectedFileIds([]);
+                        setSelectedFolderNames([]);
+                      }}
+                    >
+                      <CheckSquare className="h-4 w-4" />
+                      <span>{isSelectionMode ? "退出选择" : "选择"}</span>
                     </Button>
                   </div>
 
-                  <div className="bg-muted/50 rounded-lg">
-                    <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
+                  <div data-testid="file-toolbar-secondary" className="flex shrink-0 items-center gap-2 sm:gap-3">
+                    {/* 排序按钮 */}
+                    <div className="bg-muted/50 rounded-lg p-1 flex items-center gap-1">
+                      <Button
+                        variant={sortConfig.key === 'name' ? 'secondary' : 'ghost'}
+                        size="sm"
+                        className="h-10 px-2 text-xs touch-manipulation sm:px-3"
+                        onClick={() => setSortConfig(current => ({
+                          key: 'name',
+                          direction: current.key === 'name' && current.direction === 'asc' ? 'desc' : 'asc'
+                        }))}
+                      >
+                        名称 {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                      </Button>
+                      <Button
+                        variant={sortConfig.key === 'date' ? 'secondary' : 'ghost'}
+                        size="sm"
+                        className="h-10 px-2 text-xs touch-manipulation sm:px-3"
+                        onClick={() => setSortConfig(current => ({
+                          key: 'date',
+                          direction: current.key === 'date' && current.direction === 'asc' ? 'desc' : 'asc'
+                        }))}
+                      >
+                        日期 {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                      </Button>
+                    </div>
+
+                    <div className="bg-muted/50 rounded-lg">
+                      <ViewToggle viewMode={viewMode} setViewMode={setViewMode} />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1189,9 +1249,9 @@ function App() {
                     className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-10 text-sm outline-none focus:ring-2 focus:ring-primary/20"
                     placeholder={t("app.searchPlaceholder")}
                     value={searchQuery}
-                    onChange={event => setSearchQuery(event.target.value)}
+                    onChange={event => updateSearchQuery(event.target.value)}
                   />
-                  {searchQuery && <button className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground" onClick={() => setSearchQuery('')}>{t('app.cancel')}</button>}
+                  {searchQuery && <button className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground" onClick={() => updateSearchQuery('')}>{t('app.cancel')}</button>}
                 </div>
               )}
 
@@ -1247,17 +1307,17 @@ function App() {
                           variant="ghost"
                           size="icon"
                           className="h-11 w-11 rounded-full touch-manipulation"
-                          onClick={() => setCurrentFolder(parentFolder(currentFolder))}
+                          onClick={() => navigateFolder(parentFolder(currentFolder))}
                           aria-label="返回上级目录"
                         >
                           <ArrowLeft className="h-4 w-4" />
                         </Button>
-                        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => setCurrentFolder(null)}>根目录</button>
+                        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => navigateFolder(null)}>根目录</button>
                         {buildFolderBreadcrumbs(currentFolder).map(({ label: segment, path }) => {
                           return (
                             <Fragment key={path}>
                               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                              <button className="max-w-40 truncate text-sm hover:text-primary" onClick={() => setCurrentFolder(path)}>{segment}</button>
+                              <button className="max-w-40 truncate text-sm hover:text-primary" onClick={() => navigateFolder(path)}>{segment}</button>
                             </Fragment>
                           );
                         })}
@@ -1300,7 +1360,7 @@ function App() {
                 )}
                 {loading && files.length === 0 && folderAggregations.length === 0 ? (
                   <div className="flex items-center justify-center py-20">
-                    <RefreshCw className="h-8 w-8 animate-spin text-muted-foreground" />
+                    <IndeterminateSpinner label="正在加载文件" size="lg" />
                   </div>
                 ) : queryError && !isStale ? (
                   <EmptyState kind={fileViewState.kind} onRetry={() => void loadFiles()} />
@@ -1308,8 +1368,8 @@ function App() {
                   <EmptyState
                     kind={fileViewState.kind}
                     onRetry={() => void loadFiles()}
-                    onClearSearch={() => setSearchQuery('')}
-                    onClearFilter={() => setCurrentCategory('all')}
+                    onClearSearch={() => updateSearchQuery('')}
+                    onClearFilter={() => handleCategoryChange('all')}
                   />
                 ) : currentFolder ? (
                   /* 文件夹内容视图 */
@@ -1499,7 +1559,7 @@ function App() {
                       disabled={loadingMoreFiles}
                       className="gap-2"
                     >
-                      <RefreshCw className={`h-4 w-4 ${loadingMoreFiles ? 'animate-spin' : ''}`} />
+                      {loadingMoreFiles ? <IndeterminateSpinner label="正在加载更多文件" size="sm" /> : <RefreshCw className="h-4 w-4" />}
                       {loadingMoreFiles ? '加载中…' : '加载更多'}
                     </Button>
                   </div>

@@ -8,6 +8,8 @@ import { listTransferTasks, getTransferTask, updateTransferTask } from '../servi
 import { cancelYtDlpTask, retryYtDlpTask } from '../services/ytDlpDownload.js';
 import { cancelDownloadTaskGroup, retryFailedDownloadTasks, cancelChannelExecutionGroup } from '../services/telegramUpload.js';
 import { cancelTelegramBackgroundJob, retryTelegramBackgroundJob } from '../services/telegramChannelJobs.js';
+import { filterDismissedTasks, isTaskDismissible, loadTaskCenterDismissals, saveTaskCenterDismissals } from '../services/taskCenterDismissals.js';
+import crypto from 'node:crypto';
 
 const router = Router();
 const CHUNK_DIR = process.env.CHUNK_DIR || './data/chunks';
@@ -30,9 +32,7 @@ function channelStatus(status: string): string {
     return status;
 }
 
-router.get('/', requireAuth, async (req: Request, res: Response) => {
-    try {
-        const limit = Math.max(1, Math.min(500, Number(req.query.limit || 200)));
+async function collectUnifiedTasks(limit: number): Promise<any[]> {
         const [transfers, channels, chunks, subscriptions, accounts] = await Promise.all([
             listTransferTasks({ limit }),
             query(
@@ -178,6 +178,14 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
             });
         }
 
+        return tasks;
+}
+
+router.get('/', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const limit = Math.max(1, Math.min(500, Number(req.query.limit || 200)));
+        const tasks = filterDismissedTasks(await collectUnifiedTasks(limit), await loadTaskCenterDismissals())
+            .map(task => ({ ...task, dismissible: isTaskDismissible(task) }));
         const source = String(req.query.source || '').trim();
         const status = String(req.query.status || '').trim();
         const filtered = tasks
@@ -189,6 +197,64 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     } catch (error) {
         console.error('获取统一任务列表失败:', error);
         res.status(500).json({ error: '获取任务列表失败' });
+    }
+});
+
+router.post('/dismissals/prepare', requireAuth, async (req: Request, res: Response) => {
+    try {
+        const authToken = getAuthToken(req);
+        if (!authToken) return res.status(401).json({ error: '未认证' });
+        const source = String(req.body?.source || '').trim();
+        const status = String(req.body?.status || '').trim();
+        const requested = Array.isArray(req.body?.tasks) ? req.body.tasks : [];
+        const requestedKeys = new Set(requested.map((item: any) => `${String(item.sourceType)}:${String(item.id)}`));
+        const all = filterDismissedTasks(await collectUnifiedTasks(500), await loadTaskCenterDismissals());
+        const selected = all
+            .filter(task => isTaskDismissible(task))
+            .filter(task => requestedKeys.size > 0 ? requestedKeys.has(`${task.sourceType}:${task.id}`) : (!source || task.sourceType === source) && (!status || task.status === status))
+            .map(task => ({ sourceType: task.sourceType, id: task.id, status: task.status, title: task.title, updatedAt: task.updatedAt }));
+        if (selected.length === 0) return res.status(409).json({ error: '当前范围没有可删除的终态记录' });
+        const context = JSON.stringify(selected);
+        const snapshotId = crypto.createHash('sha256').update(context).digest('hex');
+        const bySource = Object.fromEntries([...new Set(selected.map(item => item.sourceType))].map(key => [key, selected.filter(item => item.sourceType === key).length]));
+        const byStatus = Object.fromEntries([...new Set(selected.map(item => item.status))].map(key => [key, selected.filter(item => item.status === key).length]));
+        res.json({
+            ...webDestructiveConfirmationStore.issue({ authToken, action: 'dismiss_tasks', objectId: snapshotId, context }),
+            snapshotId,
+            context,
+            impact: { count: selected.length, bySource, byStatus, filesDeleted: false, cloudObjectsDeleted: false, subscriptionsDeleted: false },
+        });
+    } catch (error) {
+        res.status(500).json({ error: error instanceof Error ? error.message : '创建删除预览失败' });
+    }
+});
+
+router.post('/dismissals/confirm', requireAuth, async (req: Request, res: Response) => {
+    const authToken = getAuthToken(req);
+    const confirmationToken = String(req.header('x-confirmation-token') || '');
+    const snapshotId = String(req.body?.snapshotId || '');
+    const context = String(req.body?.context || '');
+    const confirmed = authToken && confirmationToken
+        ? webDestructiveConfirmationStore.consume(confirmationToken, { authToken, action: 'dismiss_tasks', objectId: snapshotId, context })
+        : { status: 'missing' as const };
+    if (confirmed.status !== 'ok') return res.status(409).json({ error: '需要一次性任务删除确认令牌', code: 'CONFIRMATION_REQUIRED' });
+    try {
+        const frozen = JSON.parse(context) as any[];
+        const live = await collectUnifiedTasks(500);
+        const liveMap = new Map(live.map(task => [`${task.sourceType}:${task.id}`, task]));
+        const dismissed: any[] = [];
+        const failed: any[] = [];
+        for (const item of frozen) {
+            const task = liveMap.get(`${item.sourceType}:${item.id}`);
+            if (!task || !isTaskDismissible(task) || new Date(task.updatedAt).getTime() !== new Date(item.updatedAt).getTime()) {
+                failed.push({ sourceType: item.sourceType, id: item.id, reason: '任务状态或版本已变化' });
+            } else dismissed.push(task);
+        }
+        await saveTaskCenterDismissals(dismissed);
+        const payload = { status: failed.length ? 'partial' : 'complete', dismissed: dismissed.map(task => ({ sourceType: task.sourceType, id: task.id })), failed, filesDeleted: false, cloudObjectsDeleted: false };
+        return res.status(failed.length ? 207 : 200).json(payload);
+    } catch (error) {
+        return res.status(400).json({ error: '删除快照无效' });
     }
 });
 

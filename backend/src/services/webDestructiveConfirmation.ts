@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 
 interface Confirmation {
     authTokenHash: string;
-    action: 'delete_file' | 'delete_storage_account' | 'cancel_task';
+    action: 'delete_file' | 'delete_storage_account' | 'cancel_task' | 'dismiss_tasks';
     objectId: string;
     context: string | null;
     expiresAt: number;
@@ -34,7 +34,7 @@ export class WebDestructiveConfirmationStore {
             return { status: 'mismatch' as const };
         }
         this.values.delete(token);
-        return { status: 'ok' as const };
+        return { status: 'ok' as const, context: value.context };
     }
 }
 

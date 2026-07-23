@@ -365,14 +365,14 @@ router.post('/complete', async (req: Request, res: Response) => {
         let previewPath: string | null = null;
         let width: number | null = null;
         let height: number | null = null;
-        if (target.provider.name === 'local' && (session.mimeType.startsWith('image/') || session.mimeType.startsWith('video/'))) {
+        if (session.mimeType.startsWith('image/') || session.mimeType.startsWith('video/')) {
             const thumbnail = await generateThumbnail(tempMergedPath, storedName, session.mimeType).catch(() => null);
             thumbnailPath = thumbnail ? path.basename(thumbnail) : null;
             const dimensions = await getImageDimensions(tempMergedPath, session.mimeType).catch(() => ({ width: null, height: null }));
             width = dimensions.width;
             height = dimensions.height;
         }
-        if (target.provider.name === 'local' && session.mimeType.startsWith('image/')) {
+        if (session.mimeType.startsWith('image/')) {
             const preview = await generateMediaPreview(tempMergedPath, storedName, session.mimeType).catch(() => null);
             previewPath = preview ? path.basename(preview) : null;
         }
@@ -441,13 +441,21 @@ router.post('/complete', async (req: Request, res: Response) => {
             await compensateAfterCompletionFailure(completionError);
             throw completionError;
         }
-        await fsPromises.rm(tempMergedPath, { force: true }).catch(error => console.error('清理合并临时文件失败:', error));
         await fsPromises.rm(path.join(CHUNK_DIR, uploadId), { recursive: true, force: true })
             .catch(error => console.error('清理已完成上传的分块失败:', error));
-        if (target.provider.name === 'local' && type === 'video') {
-            void generateMediaPreview(storedPath, storedName, session.mimeType)
+        if (type === 'video') {
+            const previewSource = target.provider.name === 'local' ? storedPath : tempMergedPath;
+            void generateMediaPreview(previewSource, storedName, session.mimeType)
                 .then(async preview => { if (preview) await query('UPDATE files SET preview_path = $1 WHERE id = $2', [path.basename(preview), file.id]); })
-                .catch(error => console.error('异步生成视频预览失败:', error));
+                .catch(error => console.error('异步生成视频预览失败:', error))
+                .finally(async () => {
+                    if (target.provider.name !== 'local') {
+                        await fsPromises.rm(tempMergedPath, { force: true })
+                            .catch(error => console.error('清理合并临时文件失败:', error));
+                    }
+                });
+        } else {
+            await fsPromises.rm(tempMergedPath, { force: true }).catch(error => console.error('清理合并临时文件失败:', error));
         }
         res.json({
             success: true,

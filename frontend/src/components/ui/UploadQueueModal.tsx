@@ -1,11 +1,12 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { FileText, CheckCircle2, AlertCircle, Loader2, RotateCcw, Trash2, X } from "lucide-react";
+import { FileText, CheckCircle2, AlertCircle, RotateCcw, Trash2, X } from "lucide-react";
 import { Button } from "./Button";
 import { cn } from "../../lib/utils";
 import { getUploadQueueOutcome } from "./uploadQueueOutcome";
 import type { ChunkUploadSession } from "../../services/api";
 import type { UploadTelemetry } from "../../services/uploadTelemetry";
+import { IndeterminateSpinner } from "./IndeterminateSpinner";
 
 export interface QueueItem {
     id: string;
@@ -98,7 +99,7 @@ export const UploadQueueModal = ({
                                         ? <AlertCircle className="w-5 h-5 text-red-500" />
                                         : outcome.kind === 'cancelled'
                                             ? <AlertCircle className="w-5 h-5 text-muted-foreground" />
-                                : <Loader2 className="w-5 h-5 text-primary animate-spin" />
+                                : <IndeterminateSpinner label="正在处理上传队列" size="md" />
                             }
                             {items.length === 0 && recoveredSessions.length > 0 ? '有上传等待恢复' : outcome.title}
                         </h3>
@@ -127,7 +128,7 @@ export const UploadQueueModal = ({
                                 >
                                     <div className="flex items-start gap-3">
                                         <div className="h-8 w-8 shrink-0 rounded bg-amber-100 flex items-center justify-center">
-                                            {isResuming ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4 text-amber-700" />}
+                                            {isResuming ? <IndeterminateSpinner label="正在恢复上传" size="sm" /> : <RotateCcw className="w-4 h-4 text-amber-700" />}
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <p className="text-sm font-medium truncate" title={session.filename}>{session.filename}</p>
@@ -204,7 +205,7 @@ export const UploadQueueModal = ({
                                         {item.status === 'completed' && <CheckCircle2 className="w-5 h-5 text-green-500" />}
                                         {item.status === 'error' && <AlertCircle className="w-5 h-5 text-red-500" />}
                                         {item.status === 'cancelled' && <AlertCircle className="w-5 h-5 text-muted-foreground" />}
-                                        {(item.status === 'uploading' || item.status === 'processing') && <div className="w-5 h-5 rounded-full border-2 border-primary border-t-transparent animate-spin" />}
+                                        {(item.status === 'uploading' || item.status === 'processing') && <IndeterminateSpinner label={item.status === 'processing' ? "正在处理上传" : "正在上传文件"} size="md" />}
                                     </div>
                                     {(item.status === 'pending' || item.status === 'uploading' || item.status === 'processing') && (
                                         <Button variant="outline" size="sm" onClick={() => onCancel(item.id)}>取消</Button>

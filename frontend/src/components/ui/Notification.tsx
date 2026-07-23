@@ -1,7 +1,8 @@
 import React, { useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Cloud, CheckCircle, Info, XCircle, Loader2 } from 'lucide-react';
+import { Cloud, CheckCircle, Info, XCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { IndeterminateSpinner } from './IndeterminateSpinner';
 
 export type NotificationType = 'info' | 'success' | 'error' | 'loading';
 
@@ -33,7 +34,7 @@ export const Notification: React.FC<NotificationProps> = ({
         info: <Info className="h-5 w-5 text-blue-500" />,
         success: <CheckCircle className="h-5 w-5 text-green-500" />,
         error: <XCircle className="h-5 w-5 text-red-500" />,
-        loading: <Loader2 className="h-5 w-5 text-primary animate-spin" />
+        loading: <IndeterminateSpinner label={message || "正在处理"} size="md" />
     };
 
     const bgColors = {

@@ -23,6 +23,14 @@ export interface FileData {
     is_favorite?: boolean;
 }
 
+export interface MediaStatus {
+    available: boolean;
+    source?: string;
+    code?: 'MEDIA_SOURCE_MISSING' | 'MEDIA_QUOTA_EXCEEDED' | 'MEDIA_RATE_LIMITED' | 'MEDIA_UPSTREAM_UNAVAILABLE' | 'FILE_NOT_FOUND';
+    error?: string;
+    reason?: 'not_found' | 'trashed';
+}
+
 export interface StorageCapabilities {
     share: boolean;
     sharePassword: boolean;
@@ -126,6 +134,7 @@ export interface UnifiedTask {
     error: string | null;
     retryable: boolean;
     cancellable: boolean;
+    dismissible: boolean;
     createdAt: string;
     updatedAt: string;
     finishedAt: string | null;
@@ -135,6 +144,29 @@ export interface UnifiedTaskList {
     tasks: UnifiedTask[];
     total: number;
     generatedAt: string;
+}
+
+export interface TaskDismissalPreview {
+    confirmationToken: string;
+    snapshotId: string;
+    context: string;
+    expiresAt: number;
+    impact: {
+        count: number;
+        bySource: Record<string, number>;
+        byStatus: Record<string, number>;
+        filesDeleted: false;
+        cloudObjectsDeleted: false;
+        subscriptionsDeleted: false;
+    };
+}
+
+export interface TaskDismissalResult {
+    status: 'complete' | 'partial';
+    dismissed: Array<{ sourceType: UnifiedTaskSource; id: string }>;
+    failed: Array<{ sourceType: UnifiedTaskSource; id: string; reason: string }>;
+    filesDeleted: false;
+    cloudObjectsDeleted: false;
 }
 
 export interface StorageAccount {
@@ -323,6 +355,22 @@ class FileAPI {
         return response.json();
     }
 
+    async getMediaStatus(fileId: string): Promise<MediaStatus> {
+        const response = await fetch(`${API_BASE}/api/files/${fileId}/media-status`, {
+            credentials: 'include',
+            headers: getHeaders(),
+        });
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        const payload = await response.json().catch(() => ({}));
+        return {
+            available: response.ok && payload.available !== false,
+            source: payload.source,
+            code: payload.code,
+            error: payload.error,
+            reason: payload.reason,
+        };
+    }
+
     // 智能上传：阈值和上限来自服务端能力契约，避免客户端文案/行为漂移。
     async uploadFile(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal, target?: UploadTargetSnapshot, onSession?: (session: ChunkUploadSession) => void): Promise<{ success: boolean; file: FileData }> {
         const capabilities = await this.getUploadCapabilities();
@@ -427,6 +475,39 @@ class FileAPI {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.message || payload.error || '任务操作失败');
         }
+    }
+
+    async prepareTaskDismissal(input: {
+        tasks?: Array<{ sourceType: UnifiedTaskSource; id: string }>;
+        source?: string;
+        status?: string;
+    }): Promise<TaskDismissalPreview> {
+        const response = await fetch(`${API_BASE}/api/tasks/dismissals/prepare`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: getHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify(input),
+        });
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error || '无法创建任务删除预览');
+        return payload;
+    }
+
+    async confirmTaskDismissal(preview: TaskDismissalPreview): Promise<TaskDismissalResult> {
+        const response = await fetch(`${API_BASE}/api/tasks/dismissals/confirm`, {
+            credentials: 'include',
+            method: 'POST',
+            headers: getHeaders({
+                'Content-Type': 'application/json',
+                'X-Confirmation-Token': preview.confirmationToken,
+            }),
+            body: JSON.stringify({ snapshotId: preview.snapshotId, context: preview.context }),
+        });
+        if (response.status === 401 || response.status === 428) throw new Error('UNAUTHORIZED');
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok && response.status !== 207) throw new Error(payload.error || '删除任务记录失败');
+        return payload;
     }
 
     // 简单上传（适用于小文件）

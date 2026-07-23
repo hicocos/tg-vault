@@ -269,6 +269,17 @@ ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS lease_token UUID;
 ALTER TABLE transfer_tasks ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_transfer_tasks_claim ON transfer_tasks(source_type, status, lease_expires_at, updated_at);
 
+-- Task-center dismissals hide only an exact terminal snapshot. Source rows and files remain untouched.
+CREATE TABLE IF NOT EXISTS task_center_dismissals (
+    source_type VARCHAR(30) NOT NULL,
+    task_id VARCHAR(128) NOT NULL,
+    task_updated_at TIMESTAMPTZ NOT NULL,
+    dismissed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (source_type, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_center_dismissals_version
+    ON task_center_dismissals(source_type, task_id, task_updated_at);
+
 CREATE TABLE IF NOT EXISTS ytdlp_write_reconciliations (
     operation_id UUID PRIMARY KEY,
     source_type VARCHAR(30) NOT NULL DEFAULT 'ytdlp' CHECK (source_type = 'ytdlp'),

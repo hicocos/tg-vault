@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { motion, AnimatePresence } from "framer-motion";
-import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen, KeyRound, LogOut, UserX, CircleHelp, XCircle, RefreshCw, Loader2, Gauge, Copy } from "lucide-react";
+import { HardDrive, ChevronRight, Moon, Sun, Monitor, Palette, Globe, Cloud, Server, Database, CheckCircle, Trash2, Network, Shield, ShieldAlert, ShieldCheck, ExternalLink, BookOpen, KeyRound, LogOut, UserX, CircleHelp, XCircle, RefreshCw, Gauge, Copy } from "lucide-react";
 import { Button } from "../ui/Button";
 import { LanguageToggle } from "../ui/LanguageToggle";
 import { useTheme } from "../../hooks/useTheme";
@@ -11,10 +11,13 @@ import { isTrustedOAuthPopupMessage } from "../../services/oauthPopupMessage";
 import { authService } from "../../services/auth";
 import { SETTINGS_SECTIONS, type SettingsSectionId } from "./settingsSections";
 import { useRuntimeUiLocalization } from "./useRuntimeUiLocalization";
+import { IndeterminateSpinner } from "../ui/IndeterminateSpinner";
 
 interface SettingsPageProps {
     storageStats?: StorageStats | null;
     onSignedOut?: () => void;
+    activeSection: SettingsSectionId;
+    onSectionChange: (section: SettingsSectionId) => void;
 }
 
 interface SettingsSectionProps {
@@ -82,7 +85,7 @@ const StorageProbeStatus = ({ account, busy, onProbe }: { account: StorageAccoun
             </span>
             {account.last_probed_at && <span className="text-muted-foreground break-words">{new Date(account.last_probed_at).toLocaleString('zh-CN', { hour12: false })}</span>}
             <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={onProbe}>
-                {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                {busy ? <IndeterminateSpinner label="正在测试存储连接" size="sm" /> : <RefreshCw className="h-3.5 w-3.5" />}
                 测试连接
             </Button>
             {status === 'failed' && account.last_probe_error && <p className="min-w-0 basis-full [overflow-wrap:anywhere] text-red-700">{account.last_probe_error}</p>}
@@ -129,10 +132,10 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
     );
 };
 
-export const SettingsPage = ({ storageStats, onSignedOut }: SettingsPageProps) => {
+export const SettingsPage = ({ storageStats, onSignedOut, activeSection, onSectionChange }: SettingsPageProps) => {
     const { t } = useTranslation();
     const { theme, setTheme } = useTheme();
-    const [activeSection, setActiveSection] = useState<SettingsSectionId>('general');
+
     const pageRef = useRef<HTMLDivElement>(null);
     useRuntimeUiLocalization(pageRef);
     const [actionDialog, setActionDialog] = useState<ActionDialogState | null>(null);
@@ -672,10 +675,11 @@ export const SettingsPage = ({ storageStats, onSignedOut }: SettingsPageProps) =
 
     return (
         <motion.div
+            data-testid="settings-page"
             ref={pageRef}
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="max-w-5xl mx-auto space-y-8 pb-10 mt-6"
+            className="mx-auto mt-6 w-full min-w-0 max-w-5xl space-y-8 pb-10"
         >
             {actionDialog && (
                 <ActionDialog
@@ -696,14 +700,18 @@ export const SettingsPage = ({ storageStats, onSignedOut }: SettingsPageProps) =
                 </div>
             </div>
 
-            <nav className="sticky top-0 z-20 -mx-1 flex gap-2 overflow-x-auto rounded-xl border border-border bg-background/95 p-2 shadow-sm backdrop-blur" aria-label={t('settings.title')}>
+            <nav
+                data-testid="settings-tabs"
+                className="sticky top-0 z-20 -mx-1 flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain rounded-xl border border-border bg-background/95 p-2 shadow-sm backdrop-blur touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                aria-label={t('settings.title')}
+            >
                 {SETTINGS_SECTIONS.map(section => (
                     <Button
                         key={section.id}
                         size="sm"
                         variant={activeSection === section.id ? 'default' : 'ghost'}
                         className="min-h-10 shrink-0"
-                        onClick={() => setActiveSection(section.id)}
+                        onClick={() => onSectionChange(section.id)}
                         aria-current={activeSection === section.id ? 'page' : undefined}
                     >
                         {t(section.labelKey)}

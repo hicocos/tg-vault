@@ -1,12 +1,13 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { createPortal } from "react-dom";
-import { X, FileText, Download, Video, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, Copy, Check } from "lucide-react";
+import { X, FileText, Download, Video, Music, ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Maximize2, RotateCcw, Copy, Check, Info, RefreshCw } from "lucide-react";
 import type { FileData } from "./FileCard";
 import { Button } from "./Button";
 import { useEffect, useRef, useState } from "react";
 import { fileApi } from "../../services/api";
 import { API_BASE } from "../../services/config";
 import { MobileMenu } from "./MobileMenu";
+import { IndeterminateSpinner } from "./IndeterminateSpinner";
 
 interface PreviewModalProps {
     file: FileData | null;
@@ -16,24 +17,34 @@ interface PreviewModalProps {
     onNavigate?: (file: FileData) => void;
 }
 
-// 浏览器原生支持的视频格式
-const SUPPORTED_VIDEO_MIMES = [
-    'video/mp4',
-    'video/webm',
-    'video/ogg',
-    'video/quicktime',
-];
+const resolveMediaErrorMessage = async (fileId: string, fallback: string): Promise<string> => {
+    try {
+        const status = await fileApi.getMediaStatus(fileId);
+        if (status.code === 'MEDIA_SOURCE_MISSING') return '云盘中的源文件已删除或已移入回收站';
+        if (status.code === 'MEDIA_QUOTA_EXCEEDED') return '云盘下载额度已用完，请稍后重试';
+        if (status.code === 'MEDIA_RATE_LIMITED') return '云盘请求过于频繁，请稍后重试';
+        if (status.error) return status.error;
+        return fallback;
+    } catch {
+        return fallback;
+    }
+};
 
 // 视频播放器组件
 const VideoPlayer = ({ file }: { file: FileData }) => {
     const [hasError, setHasError] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('云端媒体暂时无法读取，请稍后重试');
     const [isLoading, setIsLoading] = useState(true);
     const [isBuffering, setIsBuffering] = useState(false);
+    const [reloadKey, setReloadKey] = useState(0);
+    const videoRef = useRef<HTMLVideoElement>(null);
 
-    const isSupported = SUPPORTED_VIDEO_MIMES.some(mime =>
-        file.mime_type?.toLowerCase().startsWith(mime.split('/')[0]) &&
-        file.mime_type?.toLowerCase().includes(mime.split('/')[1])
-    ) || file.mime_type?.startsWith('video/mp4');
+    useEffect(() => {
+        setHasError(false);
+        setErrorMessage('云端媒体暂时无法读取，请稍后重试');
+        setIsLoading(true);
+        setIsBuffering(false);
+    }, [file.previewUrl]);
 
     const handleDownload = async () => {
         try {
@@ -43,24 +54,34 @@ const VideoPlayer = ({ file }: { file: FileData }) => {
         }
     };
 
-    if (hasError || !isSupported) {
+    const handleReload = () => {
+        setHasError(false);
+        setIsLoading(true);
+        setIsBuffering(false);
+        setReloadKey(key => key + 1);
+        window.setTimeout(() => videoRef.current?.load(), 0);
+    };
+
+    if (hasError) {
         return (
-            <div className="flex flex-col items-center gap-4 text-center p-8 text-white">
-                <div className="h-16 w-16 rounded-full bg-white/10 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-4 p-8 text-center text-white">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10">
                     <Video className="h-8 w-8 text-white/80" />
                 </div>
                 <div className="space-y-1">
-                    <p className="text-base font-medium text-white">
-                        {hasError ? "视频加载失败" : "不支持在线预览"}
-                    </p>
-                    <p className="text-xs text-white/60 max-w-xs mx-auto">
-                        {hasError ? "请下载后观看" : `格式 ${file.mime_type || '未知'} 不支持在线播放`}
-                    </p>
+                    <p className="text-base font-medium text-white">视频加载失败</p>
+                    <p className="mx-auto max-w-xs text-xs text-white/60">{errorMessage}</p>
                 </div>
-                <Button onClick={handleDownload} size="sm" variant="secondary" className="gap-2">
-                    <Download className="h-4 w-4" />
-                    下载视频
-                </Button>
+                <div className="flex gap-2">
+                    <Button onClick={handleReload} size="sm" variant="secondary" className="gap-2">
+                        <RefreshCw className="h-4 w-4" />
+                        重新加载
+                    </Button>
+                    <Button onClick={handleDownload} size="sm" variant="secondary" className="gap-2">
+                        <Download className="h-4 w-4" />
+                        下载视频
+                    </Button>
+                </div>
             </div>
         );
     }
@@ -68,26 +89,102 @@ const VideoPlayer = ({ file }: { file: FileData }) => {
     return (
         <div className="relative flex items-center justify-center">
             {(isLoading || isBuffering) && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 z-10 bg-black/20 rounded-lg">
-                    <div className="animate-spin rounded-full h-10 w-10 border-4 border-white/20 border-t-white" />
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 rounded-lg bg-black/35 pointer-events-none">
+                    <IndeterminateSpinner label={isLoading ? "正在加载预览" : "视频正在缓冲"} size="lg" tone="inverse" />
                     <span className="text-xs text-white/70">{isLoading ? '正在加载视频信息…' : '正在缓冲…'}</span>
                 </div>
             )}
             <video
+                key={`${file.previewUrl}-${reloadKey}`}
+                ref={videoRef}
                 src={file.previewUrl}
                 controls
                 preload="metadata"
                 poster={file.thumbnailUrl}
                 playsInline
-                className="max-w-[94vw] max-h-[82vh] w-auto h-auto shadow-2xl rounded-lg bg-black"
+                className="max-h-[82vh] max-w-[94vw] bg-black h-auto w-auto rounded-lg shadow-2xl"
                 onLoadedMetadata={() => setIsLoading(false)}
                 onCanPlay={() => { setIsLoading(false); setIsBuffering(false); }}
                 onWaiting={() => setIsBuffering(true)}
                 onPlaying={() => setIsBuffering(false)}
-                onError={() => { setIsLoading(false); setIsBuffering(false); setHasError(true); }}
+                onError={() => {
+                    setIsLoading(false);
+                    setIsBuffering(false);
+                    setHasError(true);
+                    void resolveMediaErrorMessage(file.id, '云端媒体暂时无法读取，请稍后重试').then(setErrorMessage);
+                }}
             >
                 您的浏览器不支持视频播放
             </video>
+        </div>
+    );
+};
+
+const AudioPlayer = ({ file }: { file: FileData }) => {
+    const [hasError, setHasError] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('云端媒体暂时无法读取，请稍后重试');
+    const [isLoading, setIsLoading] = useState(true);
+    const [reloadKey, setReloadKey] = useState(0);
+    const audioRef = useRef<HTMLAudioElement>(null);
+
+    useEffect(() => {
+        setHasError(false);
+        setErrorMessage('云端媒体暂时无法读取，请稍后重试');
+        setIsLoading(true);
+    }, [file.previewUrl]);
+
+    const handleReload = () => {
+        setHasError(false);
+        setIsLoading(true);
+        setReloadKey(key => key + 1);
+        window.setTimeout(() => audioRef.current?.load(), 0);
+    };
+
+    return (
+        <div className="flex w-full max-w-md flex-col items-center justify-center gap-6 p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex h-28 w-28 items-center justify-center rounded-full bg-white/10 shadow-2xl backdrop-blur-md">
+                <Music className="h-14 w-14 text-white" />
+            </div>
+            <div className="max-w-full space-y-1 text-center">
+                <h3 className="truncate text-lg font-medium text-white">{file.name}</h3>
+                <p className="text-sm text-white/60">{file.size}</p>
+            </div>
+            {hasError ? (
+                <div className="flex flex-col items-center gap-3 text-center text-white/80">
+                    <p className="font-medium text-white">音频加载失败</p>
+                    <p className="text-xs text-white/60">{errorMessage}</p>
+                    <Button onClick={handleReload} size="sm" variant="secondary" className="gap-2">
+                        <RefreshCw className="h-4 w-4" />
+                        重新加载
+                    </Button>
+                </div>
+            ) : (
+                <div className="relative w-full">
+                    {isLoading && (
+                        <div className="mb-3 flex justify-center">
+                            <IndeterminateSpinner label="正在加载音频" size="md" tone="inverse" />
+                        </div>
+                    )}
+                    <audio
+                        key={`${file.previewUrl}-${reloadKey}`}
+                        ref={audioRef}
+                        src={file.previewUrl}
+                        controls
+                        preload="metadata"
+                        playsInline
+                        className="w-full shadow-lg"
+                        onLoadedMetadata={() => setIsLoading(false)}
+                        onCanPlay={() => setIsLoading(false)}
+                        onError={() => {
+                            setIsLoading(false);
+                            setHasError(true);
+                            void resolveMediaErrorMessage(file.id, '云端媒体暂时无法读取，请稍后重试').then(setErrorMessage);
+                        }}
+                    >
+                        您的浏览器不支持音频播放
+                    </audio>
+                </div>
+            )}
         </div>
     );
 };
@@ -96,6 +193,9 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
     const [scale, setScale] = useState(1);
     const [imageLoaded, setImageLoaded] = useState(false);
     const [imageError, setImageError] = useState(false);
+    const [imageErrorMessage, setImageErrorMessage] = useState('云端媒体暂时无法读取，请稍后重试');
+    const [imageReloadKey, setImageReloadKey] = useState(0);
+    const [detailsOpen, setDetailsOpen] = useState(false);
     const [idCopied, setIdCopied] = useState(false);
     const touchStartXRef = useRef<number | null>(null);
     const openedAtRef = useRef<number>(0);
@@ -135,6 +235,8 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
             setScale(1);
             setImageLoaded(false);
             setImageError(false);
+            setImageErrorMessage('云端媒体暂时无法读取，请稍后重试');
+            setDetailsOpen(false);
             setIdCopied(false);
         }
 
@@ -226,7 +328,7 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                 >
                     {!imageLoaded && !imageError && (
                         <div className="absolute inset-0 flex items-center justify-center z-10">
-                            <div className="animate-spin rounded-full h-10 w-10 border-4 border-white/20 border-t-white" />
+                            <IndeterminateSpinner label="正在加载预览" size="lg" tone="inverse" />
                         </div>
                     )}
                     {file.thumbnailUrl && (
@@ -238,13 +340,30 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                         />
                     )}
                     {imageError ? (
-                        <div className="flex flex-col items-center gap-3 text-white/80 p-8">
+                        <div className="flex flex-col items-center gap-3 p-8 text-white/80">
                             <FileText className="h-16 w-16 opacity-60" />
                             <p>图片加载失败</p>
-                            <Button variant="secondary" onClick={handleOpenOriginal}>查看原图</Button>
+                            <p className="max-w-xs text-center text-xs text-white/60">{imageErrorMessage}</p>
+                            <div className="flex gap-2">
+                                <Button
+                                    variant="secondary"
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setImageError(false);
+                                        setImageLoaded(false);
+                                        setImageReloadKey(key => key + 1);
+                                    }}
+                                    className="gap-2"
+                                >
+                                    <RefreshCw className="h-4 w-4" />
+                                    重新加载
+                                </Button>
+                                <Button variant="secondary" onClick={handleOpenOriginal}>查看原图</Button>
+                            </div>
                         </div>
                     ) : (
                         <motion.img
+                            key={`${file.previewUrl}-${imageReloadKey}`}
                             src={file.previewUrl}
                             alt={file.name}
                             animate={{ scale }}
@@ -253,7 +372,10 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                             dragConstraints={{ left: -500, right: 500, top: -500, bottom: 500 }}
                             dragElastic={0.08}
                             onLoad={() => setImageLoaded(true)}
-                            onError={() => setImageError(true)}
+                            onError={() => {
+                                setImageError(true);
+                                void resolveMediaErrorMessage(file.id, '云端媒体暂时无法读取，请稍后重试').then(setImageErrorMessage);
+                            }}
                             className={`max-w-[94vw] max-h-[82vh] object-contain shadow-2xl rounded-lg cursor-grab active:cursor-grabbing transition-opacity ${imageLoaded ? 'opacity-100' : 'opacity-0'}`}
                         />
                     )}
@@ -268,25 +390,7 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
             );
         }
         if (file.type === "audio") {
-            return (
-                <div className="flex flex-col items-center justify-center gap-8 p-8 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-                    <div className="h-32 w-32 rounded-full bg-white/10 flex items-center justify-center shadow-2xl backdrop-blur-md">
-                        <FileText className="h-16 w-16 text-white" />
-                    </div>
-                    <div className="text-center space-y-2">
-                        <h3 className="text-xl font-medium text-white">{file.name}</h3>
-                        <p className="text-white/60">{file.size}</p>
-                    </div>
-                    <audio
-                        src={file.previewUrl}
-                        controls
-                        autoPlay
-                        className="w-full shadow-lg"
-                    >
-                        您的浏览器不支持音频播放
-                    </audio>
-                </div>
-            );
+            return <AudioPlayer file={file} />;
         }
         return (
             <div className="flex flex-col items-center justify-center gap-6 text-white/80 p-12 max-w-md text-center" onClick={(e) => e.stopPropagation()}>
@@ -321,33 +425,30 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                         className="flex items-center justify-between px-4 py-3 bg-gradient-to-b from-black/80 to-transparent shrink-0"
                         onClick={(e) => e.stopPropagation()}
                     >
-                        <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div className="text-white min-w-0">
-                                <h3 className="font-medium text-sm truncate max-w-[50vw]">{file.name}</h3>
-                                <p className="text-xs text-white/60">{file.size} • {file.date}</p>
-                                <div className="mt-1 flex max-w-[58vw] items-center gap-1 text-[10px] text-white/60">
-                                    <span className="font-mono break-all" title={file.id}>ID: {file.id}</span>
-                                    <button
-                                        type="button"
-                                        className="shrink-0 rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
-                                        onClick={handleCopyId}
-                                        title={idCopied ? '已复制文件 ID' : '复制文件 ID'}
-                                        aria-label={idCopied ? '文件 ID 已复制' : '复制文件 ID'}
-                                    >
-                                        {idCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                                    </button>
-                                </div>
-                            </div>
+                        <div className="min-w-0 flex-1 text-white">
+                            <h3 className="max-w-[42vw] truncate text-sm font-medium sm:max-w-[50vw]">{file.name}</h3>
                         </div>
 
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-9 w-9 rounded-full text-white/80 hover:bg-white/10 hover:text-white"
+                                onClick={(e) => { e.stopPropagation(); setDetailsOpen(true); }}
+                                title="查看文件详情"
+                                aria-label="查看文件详情"
+                            >
+                                <Info className="h-4 w-4" />
+                            </Button>
                             {file.type === 'image' && (
-                                <>
+                                <div className="hidden items-center sm:flex">
                                     <Button
                                         variant="ghost"
                                         size="icon"
                                         className="text-white/80 hover:text-white hover:bg-white/10 rounded-full h-9 w-9"
                                         onClick={handleZoomOut}
+                                        title="缩小"
+                                        aria-label="缩小图片"
                                     >
                                         <ZoomOut className="h-5 w-5" />
                                     </Button>
@@ -357,6 +458,8 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                                         size="icon"
                                         className="text-white/80 hover:text-white hover:bg-white/10 rounded-full h-9 w-9"
                                         onClick={handleZoomIn}
+                                        title="放大"
+                                        aria-label="放大图片"
                                     >
                                         <ZoomIn className="h-5 w-5" />
                                     </Button>
@@ -366,11 +469,12 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                                         className="text-white/80 hover:text-white hover:bg-white/10 rounded-full h-9 w-9"
                                         onClick={handleResetZoom}
                                         title="重置缩放"
+                                        aria-label="重置图片缩放"
                                     >
                                         <RotateCcw className="h-4 w-4" />
                                     </Button>
-                                    <div className="w-px h-5 bg-white/20 mx-1" />
-                                </>
+                                    <div className="mx-1 h-5 w-px bg-white/20" />
+                                </div>
                             )}
                             {(file.type === 'image' || file.type === 'video') && (
                                 <Button
@@ -401,6 +505,73 @@ export const PreviewModal = ({ file, onClose, onToggleFavorite, files = [], onNa
                             </Button>
                         </div>
                     </div>
+
+                    <AnimatePresence>
+                        {detailsOpen && (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="absolute inset-0 z-40 flex items-start justify-center bg-black/60 px-4 pt-20 backdrop-blur-sm sm:items-center sm:pt-4"
+                                onClick={(e) => { e.stopPropagation(); setDetailsOpen(false); }}
+                            >
+                                <motion.div
+                                    initial={{ opacity: 0, y: -12, scale: 0.98 }}
+                                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                                    exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                                    className="w-full max-w-md rounded-lg border border-white/15 bg-zinc-950 p-4 text-white shadow-2xl"
+                                    role="dialog"
+                                    aria-modal="true"
+                                    aria-labelledby="preview-file-details-title"
+                                    onClick={(e) => e.stopPropagation()}
+                                >
+                                    <div className="mb-4 flex items-center justify-between">
+                                        <h2 id="preview-file-details-title" className="text-base font-medium">文件详情</h2>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8 rounded-full text-white/70 hover:bg-white/10 hover:text-white"
+                                            onClick={() => setDetailsOpen(false)}
+                                            aria-label="关闭文件详情"
+                                        >
+                                            <X className="h-4 w-4" />
+                                        </Button>
+                                    </div>
+                                    <dl className="space-y-3 text-sm">
+                                        <div>
+                                            <dt className="mb-1 text-xs text-white/50">文件名</dt>
+                                            <dd className="break-words text-white/90">{file.name}</dd>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <dt className="mb-1 text-xs text-white/50">大小</dt>
+                                                <dd className="text-white/90">{file.size}</dd>
+                                            </div>
+                                            <div>
+                                                <dt className="mb-1 text-xs text-white/50">时间</dt>
+                                                <dd className="text-white/90">{file.date}</dd>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <dt className="mb-1 text-xs text-white/50">文件 ID</dt>
+                                            <dd className="flex items-start gap-2 rounded-md bg-white/5 p-2">
+                                                <span className="min-w-0 flex-1 break-all font-mono text-xs text-white/80">ID: {file.id}</span>
+                                                <button
+                                                    type="button"
+                                                    className="shrink-0 rounded p-1 text-white/70 hover:bg-white/10 hover:text-white"
+                                                    onClick={handleCopyId}
+                                                    title={idCopied ? '已复制文件 ID' : '复制文件 ID'}
+                                                    aria-label={idCopied ? '文件 ID 已复制' : '复制文件 ID'}
+                                                >
+                                                    {idCopied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                                </button>
+                                            </dd>
+                                        </div>
+                                    </dl>
+                                </motion.div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
 
                     {/* 内容区域 - 占满剩余空间并居中显示 */}
                     <div 

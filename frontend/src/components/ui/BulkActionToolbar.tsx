@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Trash2, X, CheckSquare, Share2, Copy, Calendar, Lock, Check } from "lucide-react";
 import { Button } from "./Button";
 import { DatePicker } from "./DatePicker";
+import { IndeterminateSpinner } from "./IndeterminateSpinner";
 
 import type { StorageCapabilities } from "../../services/api";
 
@@ -262,7 +263,7 @@ export const BulkActionToolbar = ({
                                                 >
                                                     {isCopying ? (
                                                         <span className="flex items-center gap-2">
-                                                            <div className="h-3 w-3 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                                                            <IndeterminateSpinner label="正在生成分享链接" size="sm" tone="current" />
                                                             生成中...
                                                         </span>
                                                     ) : (
