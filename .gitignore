@@ -13,8 +13,7 @@ data/
 backend/dist/*
 !backend/dist/index.js
 frontend/dist/
-dist/*
-!dist/index.js
+dist/
 
 # archives and local backups
 *.tar.gz
