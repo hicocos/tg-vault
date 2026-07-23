@@ -10,8 +10,8 @@ const backendPackage = JSON.parse(fs.readFileSync(new URL('../../package.json', 
 const frontendPackage = JSON.parse(fs.readFileSync(new URL('../../../frontend/package.json', import.meta.url), 'utf8'));
 
 test('release images use locked dependencies, pinned bases, verified yt-dlp and source labels', () => {
-    assert.equal(backendPackage.version, '2.0.0');
-    assert.equal(frontendPackage.version, '2.0.0');
+    assert.equal(backendPackage.version, '2.0.1');
+    assert.equal(frontendPackage.version, '2.0.1');
     assert.equal((backend.match(/npm ci/g) || []).length, 2);
     assert.doesNotMatch(backend, /npm install/);
     assert.match(backend, /node@sha256:/);

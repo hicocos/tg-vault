@@ -20,7 +20,7 @@ nano .env
 
 ```dotenv
 DB_PASSWORD=使用 openssl rand -hex 32 生成的随机值
-IMAGE_VERSION=v2.0.0
+IMAGE_VERSION=v2.0.1
 VITE_API_URL=https://api.example.com
 OAUTH_CALLBACK_BASE_URL=https://api.example.com
 OAUTH_FRONTEND_ORIGIN=https://cloud.example.com
