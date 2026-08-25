@@ -24,6 +24,8 @@
 
 .main-content {
   max-width: 72rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .docs-nav {
@@ -116,10 +118,84 @@
 .main-content table {
   display: table;
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+
+.main-content table th,
+.main-content table td {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.main-content pre {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre;
 }
 
 .main-content code {
+  max-width: 100%;
   overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.main-content pre code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+@media screen and (max-width: 42em) {
+  .main-content {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    padding: 1.5rem 1rem;
+    overflow-x: hidden;
+  }
+
+  .main-content pre {
+    overflow-x: hidden;
+    white-space: pre-wrap;
+  }
+
+  .main-content pre code {
+    white-space: inherit;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .main-content table {
+    font-size: .9rem;
+  }
+
+  .main-content table th,
+  .main-content table td {
+    padding: .45rem .5rem;
+  }
+
+  .main-content table th:first-child,
+  .main-content table td:first-child {
+    width: 35%;
+  }
+
+  .docs-nav {
+    gap: .35rem;
+    padding: .55rem;
+  }
+
+  .docs-nav a {
+    padding: .35rem .55rem;
+    font-size: .9rem;
+  }
+
+  .doc-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (prefers-color-scheme: dark) {
