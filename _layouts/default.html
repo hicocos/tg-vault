@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: 'zh-CN' }}">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="{{ page.description | default: site.description | escape }}">
+  <title>{{ page.title | default: site.title | escape }} | TG Vault</title>
+  <link rel="stylesheet" href="{{ '/assets/css/style.css?v=' | append: site.github.build_revision | relative_url }}">
+</head>
+<body>
+  <a id="skip-to-content" href="#content">跳到正文</a>
+  <header class="page-header" role="banner">
+    <h1 class="project-name">{{ page.title | default: site.title }}</h1>
+    <h2 class="project-tagline">{{ page.description | default: site.description }}</h2>
+    <a href="https://github.com/hicocos/tg-vault" class="btn">查看 GitHub 仓库</a>
+  </header>
+
+  <main id="content" class="main-content" role="main">
+    {{ content }}
+    <footer class="site-footer">
+      <span class="site-footer-owner"><a href="https://github.com/hicocos/tg-vault">TG Vault</a> 由 <a href="https://github.com/hicocos">hicocos</a> 维护。</span>
+      <span class="site-footer-credits">本文档由 <a href="https://pages.github.com/">GitHub Pages</a> 托管。</span>
+    </footer>
+  </main>
+</body>
+</html>

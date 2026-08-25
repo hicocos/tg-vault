@@ -1,0 +1,18 @@
+title: TG Vault 文档中心
+description: Telegram 转存、媒体归档与多存储源私有云系统
+lang: zh-CN
+theme: jekyll-theme-cayman
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+show_downloads: false
+repository: hicocos/tg-vault
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+exclude:
+  - Gemfile
+  - Gemfile.lock
