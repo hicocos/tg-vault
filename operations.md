@@ -11,10 +11,6 @@ description: 更新 TG Vault，检查健康状态，备份数据并安全清理 
 
 ## 更新
 
-<div class="callout warning">
-从 v2.0.5 或更早版本升级前，如果旧数据库仍包含废弃 AI 功能留下的 <code>vector</code> 扩展或 <code>public.ai_*</code> 表，不能直接重建 PostgreSQL 容器。请先按<a href="https://github.com/hicocos/tg-vault/blob/main/deploy/DEPLOY.md">部署指南</a>运行安全迁移脚本；安装向导检测到旧对象时会停止。
-</div>
-
 推荐让安装脚本同步刷新源码版本信息并重建服务：
 
 ```bash
