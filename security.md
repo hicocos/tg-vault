@@ -11,12 +11,12 @@ TG Vault 会接触 Telegram session、云存储凭据和用户文件。生产部
 
 ## 首次初始化
 
-首次访问 Web 时创建两类凭据：
+首次访问 Web 时始终创建网页管理员密码；如果此时已经通过环境变量配置了 Telegram Bot，还会同时要求创建 Bot PIN：
 
 - **网页管理员密码**：至少 8 位，使用 `scrypt` 加盐哈希后保存。
-- **Telegram Bot PIN**：只有在 Telegram Bot 已通过 Web 或环境变量配置时才需要创建；4 位数字，用于 Bot `/start` 身份验证，使用加盐哈希保存。
+- **Telegram Bot PIN**：4 位数字，用于 Bot `/start` 身份验证，使用加盐哈希保存。新安装也可以先完成网页初始化，之后在 **设置 → Telegram** 配置 Bot 时再创建 PIN。
 
-两者用途不同，不要设置成同一个值。网页登录成功后使用 HttpOnly Cookie，会话 token 不写入 `localStorage`。
+两者同时存在时不要设置成相同值。网页登录成功后使用 HttpOnly Cookie，会话 token 不写入 `localStorage`。
 
 ## HTTPS、Cookie 与 Origin
 
@@ -24,17 +24,15 @@ TG Vault 会接触 Telegram session、云存储凭据和用户文件。生产部
 
 ```dotenv
 VITE_API_URL=https://api.example.com
-OAUTH_CALLBACK_BASE_URL=https://api.example.com
-OAUTH_FRONTEND_ORIGIN=https://cloud.example.com
 CORS_ORIGIN=https://cloud.example.com
-DOMAIN=cloud.example.com
 COOKIE_SECURE=true
+COOKIE_SECURE_FORCE=true
 TRUST_PROXY=loopback
 ```
 
-修改类请求会校验 `Origin`。`CORS_ORIGIN` 和 `OAUTH_FRONTEND_ORIGIN` 必须使用精确 HTTPS origin，不要写路径或宽泛通配符。
+`OAUTH_CALLBACK_BASE_URL` 默认继承 `VITE_API_URL`，`OAUTH_FRONTEND_ORIGIN` 默认继承 `CORS_ORIGIN`；只有多入口或特殊反向代理部署才需要显式覆盖。修改类请求会校验 `Origin`，`CORS_ORIGIN` 必须使用精确 HTTPS origin，不要写路径或宽泛通配符。
 
-`COOKIE_SECURE=true` 时，浏览器只会通过 HTTPS 发送登录 Cookie。本地纯 HTTP 调试可临时设为 `false`，但不要把这个设置带到公网生产环境。
+正式安装脚本会设置 `COOKIE_SECURE=true` 和 `COOKIE_SECURE_FORCE=true`，确保浏览器只通过 HTTPS 发送登录 Cookie。本地纯 HTTP 调试必须同时将二者设为 `false`；不要把这个调试配置带到公网生产环境。
 
 ## 内部密钥和凭据加密
 
@@ -59,7 +57,7 @@ Web 管理的 Bot 凭据与 Telegram 用户 session 也由 `STORAGE_CREDENTIALS_
 
 ## Telegram 安全
 
-- 显式设置 `TELEGRAM_ALLOWED_USER_IDS`，不要长期依赖“第一个正确 PIN 用户”机制。
+- 推荐在 **设置 → Telegram → Telegram Bot 用户权限** 中显式维护允许用户，不要长期依赖“第一个正确 PIN 用户”机制；旧部署若设置 `TELEGRAM_ALLOWED_USER_IDS`，网页编辑会被锁定。
 - 使用 `TELEGRAM_ALLOWED_SOURCES` 限制账号级下载器可以读取的频道/群组。
 - 加密保存的 Telegram 用户 session 等同登录凭据；旧版明文 session 文件在迁移前也必须严密保护，禁止提交到 Git、公开网盘或聊天群。
 - `/logout` 可以撤销当前 Telegram 用户的 Bot 认证。

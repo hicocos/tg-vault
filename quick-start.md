@@ -7,7 +7,7 @@ description: 用安装脚本和 Docker Compose 快速部署 TG Vault
 
 # 快速部署
 
-TG Vault 的正式部署包含三个容器：`frontend`、`backend` 和 `postgres`。宿主机上的 Nginx、Caddy、宝塔面板或其他反向代理负责域名与 HTTPS；Compose 不包含 Nginx 或 Certbot。
+TG Vault 的正式部署包含三个容器：`frontend`、`backend` 和 `postgres`（PostgreSQL 16）。宿主机上的 Nginx、Caddy、宝塔面板或其他反向代理负责域名与 HTTPS；Compose 不包含 Nginx 或 Certbot。
 
 ## 最短部署流程
 
