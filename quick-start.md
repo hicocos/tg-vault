@@ -170,6 +170,10 @@ docker compose logs --tail=150 backend frontend postgres
 
 ## 7. 更新
 
+<div class="callout warning">
+从 v2.0.5 或更早版本升级前，如果旧数据库仍包含废弃 AI 功能留下的 <code>vector</code> 扩展或 <code>public.ai_*</code> 表，不能直接重建 PostgreSQL 容器。先用仓库的 <code>deploy/migrate-pgvector-to-postgres.sh</code> 完成备份、隔离恢复验证和迁移；安装脚本检测到旧对象时会安全停止。完整命令见<a href="https://github.com/hicocos/tg-vault/blob/main/deploy/DEPLOY.md">部署指南</a>。
+</div>
+
 先确认工作区没有未处理的本地修改，再更新并重新运行安装向导：
 
 ```bash
