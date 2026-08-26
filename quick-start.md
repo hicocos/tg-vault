@@ -41,10 +41,22 @@ Web 前端 URL：https://cloud.example.com
 
 ## 1. 准备条件
 
-- 一台安装了 Docker Engine、Docker Compose 插件、Git、OpenSSL 和 Python 3 的 Linux 服务器
+- 一台 Debian、Ubuntu、Fedora、RHEL 或兼容发行版的 Linux 服务器
+- 能使用 `root`，或普通用户拥有 `sudo` 权限
+- 服务器可以访问系统软件源和 Docker 镜像仓库
 - Web 域名，例如 `cloud.example.com`
 - API 域名，例如 `api.example.com`
 - 两个域名都已解析到服务器，并可配置 HTTPS
+
+不要求预先安装 OpenSSL。安装脚本使用 Python 标准库的安全随机数生成数据库密码和应用密钥；它**不负责 SSL/TLS 证书**，证书仍由宿主机 Nginx、Caddy、宝塔面板或其他反向代理处理。
+
+脚本启动时会检测 Docker Engine、Docker Compose 插件、Python 3 和 Git。如果有缺失，会让用户选择：
+
+1. 自动安装缺失环境
+2. 查看手动处理提示并退出
+3. 不做修改直接退出
+
+自动补全目前支持 `apt`、`dnf` 和 `yum` 系统；无法识别包管理器时不会擅自修改服务器。
 
 默认端口仅绑定宿主机回环地址：
 
@@ -57,13 +69,14 @@ Web 前端 URL：https://cloud.example.com
 
 `deploy/install.sh` 会：
 
-1. 检查 Docker、OpenSSL、Python 3 和项目目录。
-2. 在终端依次询问 Web 前端 URL 与后端 API URL，并立即校验格式、自动去掉末尾 `/`。
-3. 显示配置摘要；按 Enter 确认，输入 `e` 重新编辑，输入 `q` 安全退出且不创建 `.env`。
-4. 确认后创建权限为 `600` 的 `.env`。
-5. 生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
-6. 写入当前源码的 `SOURCE_REVISION`、`SOURCE_VERSION` 和 `IMAGE_VERSION`。
-7. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
+1. 检测 Docker Engine、Docker Compose 插件、Python 3 和 Git。
+2. 如果存在缺失项，让用户选择自动补全、查看手动提示或退出；只有明确选择自动安装后才会调用系统包管理器。
+3. 在终端依次询问 Web 前端 URL 与后端 API URL，并立即校验格式、自动去掉末尾 `/`。
+4. 显示配置摘要；按 Enter 确认，输入 `e` 重新编辑，输入 `q` 安全退出且不创建 `.env`。
+5. 确认后创建权限为 `600` 的 `.env`。
+6. 使用 Python 安全随机数生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
+7. 写入当前源码的 `SOURCE_REVISION`、`SOURCE_VERSION` 和 `IMAGE_VERSION`。
+8. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
 
 已有部署再次运行时，向导会显示当前 URL；直接按 Enter 即可保留。脚本不会覆盖已有密码和密钥。
 
@@ -86,7 +99,7 @@ VITE_API_URL=https://api.example.com \
 ./deploy/install.sh --non-interactive
 ```
 
-非交互模式缺少必填地址或地址格式无效时会直接退出，不会等待输入。查看参数说明：
+非交互模式会检测环境，但不会自动安装软件；缺少组件或地址格式无效时会直接退出，不会等待输入。查看参数说明：
 
 ```bash
 ./deploy/install.sh --help
