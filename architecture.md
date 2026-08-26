@@ -110,7 +110,7 @@ URL 安全校验
 
 ## 安全与持久化边界
 
-- PostgreSQL 不是全部状态：内部密钥、session、本地文件和中间状态位于 `file-storage`。
+- PostgreSQL 不是全部状态：内部密钥和本地文件位于 `file-storage`；Telegram 用户 session 由新版后端加密保存在数据库设置中，旧版明文 session 文件会在迁移成功后删除。
 - `file-storage` 也不是全部状态：文件索引、任务和账户元数据位于 PostgreSQL。
 - 可恢复备份必须在同一维护窗口同时覆盖两者。
 - 浏览器只获得会话 Cookie；云存储 Secret、Refresh Token 与 Telegram session 留在后端。

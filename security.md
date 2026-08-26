@@ -14,7 +14,7 @@ TG Vault 会接触 Telegram session、云存储凭据和用户文件。生产部
 首次访问 Web 时创建两类凭据：
 
 - **网页管理员密码**：至少 8 位，使用 `scrypt` 加盐哈希后保存。
-- **Telegram Bot PIN**：4 位数字，仅用于 Bot `/start` 身份验证，同样使用加盐哈希保存。
+- **Telegram Bot PIN**：只有在 Telegram Bot 已通过 Web 或环境变量配置时才需要创建；4 位数字，用于 Bot `/start` 身份验证，使用加盐哈希保存。
 
 两者用途不同，不要设置成同一个值。网页登录成功后使用 HttpOnly Cookie，会话 token 不写入 `localStorage`。
 
@@ -47,6 +47,8 @@ TOTP_SECRET=
 TG_VAULT_SECRET_DIR=/data/secrets
 ```
 
+Web 管理的 Bot 凭据与 Telegram 用户 session 也由 `STORAGE_CREDENTIALS_SECRET` 加密保存。
+
 也可以显式提供至少 32 个随机字符的值。无论采用哪种方式，恢复时都必须保留同一套密钥，否则可能出现：
 
 - 已有登录会话失效
@@ -59,7 +61,7 @@ TG_VAULT_SECRET_DIR=/data/secrets
 
 - 显式设置 `TELEGRAM_ALLOWED_USER_IDS`，不要长期依赖“第一个正确 PIN 用户”机制。
 - 使用 `TELEGRAM_ALLOWED_SOURCES` 限制账号级下载器可以读取的频道/群组。
-- Telegram 用户 session 文件等同登录凭据，禁止提交到 Git、公开网盘或聊天群。
+- 加密保存的 Telegram 用户 session 等同登录凭据；旧版明文 session 文件在迁移前也必须严密保护，禁止提交到 Git、公开网盘或聊天群。
 - `/logout` 可以撤销当前 Telegram 用户的 Bot 认证。
 - PIN 连续失败会触发限流和锁定；不要通过放宽限制来掩盖异常尝试。
 
@@ -75,13 +77,15 @@ TG Vault 支持 TOTP：
 
 ## 存储 Endpoint
 
-S3 和 WebDAV 默认只允许 HTTPS Endpoint：
+S3 和 WebDAV 默认只允许 HTTPS 公网 Endpoint。需要连接飞牛等可信局域网 WebDAV 时，可在 **设置 → 安全 → 网络与存储安全** 开启“允许内网和不安全的 WebDAV 地址”；系统会二次确认并标记为高风险模式。
+
+旧部署或应急场景仍可使用：
 
 ```dotenv
 ALLOW_INSECURE_STORAGE_ENDPOINTS=false
 ```
 
-只有明确隔离的可信内网测试环境才考虑允许 HTTP。公网 HTTP Endpoint 会暴露访问密钥、文件内容和元数据。
+开启后只会放宽存储地址准入规则，不会绕过 Docker 网络、DNS、防火墙或服务监听限制。`127.0.0.1` 指 backend 容器自身，不是宿主机；HTTP 还会明文传输用户名、密码和文件内容。只在明确隔离、可信的局域网中使用，公网 Endpoint 始终应使用 HTTPS。
 
 建议为 OSS/S3/WebDAV 创建 TG Vault 专用账户或访问密钥，并使用服务商支持的最小 Bucket/目录权限。
 

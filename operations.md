@@ -11,13 +11,17 @@ description: 更新 TG Vault，检查健康状态，备份数据并安全清理 
 
 ## 更新
 
+推荐让安装脚本同步刷新源码版本信息并重建服务：
+
 ```bash
 git fetch origin
 git status --short
 git pull --ff-only origin main
-docker compose up -d --build
+./deploy/install.sh
 docker compose ps
 ```
+
+也可手动执行 `docker compose up -d --build`，但应同时维护 `.env` 中的构建版本元数据。
 
 如果 `git status --short` 显示本地改动，先人工确认，不要强制覆盖。`docker compose up -d --build` 会重新构建前后端，同时保留 named volumes 中的数据库与文件。
 
@@ -89,7 +93,7 @@ BACKUP_DIR=./backups ./deploy/backup.sh
 - 数据库 schema 和关键行数
 - `/data/secrets` 可读
 - 已保存存储账户可以解密
-- Telegram session 文件存在且权限正确
+- Web 管理的 Telegram Bot 凭据和用户 session 可解密；旧部署仍应核对遗留 session 文件
 - `/readyz` 可以通过
 - 文件预览和下载链路可用
 
