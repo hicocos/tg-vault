@@ -14,30 +14,30 @@ TG Vault 的正式部署包含三个容器：`frontend`、`backend` 和 `postgre
 ```bash
 git clone https://github.com/hicocos/tg-vault.git
 cd tg-vault
-chmod +x deploy/install.sh
 ./deploy/install.sh
 ```
 
-第一次运行会安全创建 `.env`、数据库密码、应用密钥和构建版本信息。由于新文件内仍是示例域名，脚本会提示修改地址并停止，这是正常行为。
+脚本会在同一次运行中启动交互式向导：
 
-编辑 `.env`，新手只需修改两项：
+```text
+TG Vault 安装向导
 
-```dotenv
-VITE_API_URL=https://api.example.com
-CORS_ORIGIN=https://cloud.example.com
+请输入 Web 前端 URL
+示例：https://cloud.example.com
+> https://cloud.example.com
+
+请输入后端 API URL
+示例：https://api.example.com
+> https://api.example.com
+
+配置确认
+Web 前端 URL：https://cloud.example.com
+后端 API URL：https://api.example.com
+
+按 Enter 保存配置并开始安装，输入 e 重新编辑，输入 q 退出：
 ```
 
-- `VITE_API_URL`：浏览器访问后端 API 的公网地址。
-- `CORS_ORIGIN`：Web 前端的公网地址。
-- 两项都应是完整的 HTTP(S) origin，不带路径、查询参数、片段或末尾 `/`；生产环境请使用 HTTPS。
-
-保存后再次运行：
-
-```bash
-./deploy/install.sh
-```
-
-脚本会校验配置，执行 `docker compose up -d --build`，然后显示容器状态。Telegram 不需要写入 `.env` 才能完成基础部署；推荐在 Web 启动后配置。
+输入两个地址并按 Enter 确认后，脚本会一次性创建 `.env`、生成密钥、写入版本信息、构建并启动服务，不再要求手动编辑 `.env` 或重复运行脚本。
 
 ## 1. 准备条件
 
@@ -53,17 +53,19 @@ CORS_ORIGIN=https://cloud.example.com
 | Web 前端 | `127.0.0.1:47832` |
 | 后端 API | `127.0.0.1:51947` |
 
-## 2. 安装脚本会做什么
+## 2. 安装向导会做什么
 
 `deploy/install.sh` 会：
 
-1. 检查 Docker、OpenSSL 和项目目录。
-2. 首次创建权限为 `600` 的 `.env`。
-3. 生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
-4. 写入当前源码的 `SOURCE_REVISION`、`SOURCE_VERSION` 和 `IMAGE_VERSION`。
-5. 校验 Web/API 地址并运行 Compose。
+1. 检查 Docker、OpenSSL、Python 3 和项目目录。
+2. 在终端依次询问 Web 前端 URL 与后端 API URL，并立即校验格式、自动去掉末尾 `/`。
+3. 显示配置摘要；按 Enter 确认，输入 `e` 重新编辑，输入 `q` 安全退出且不创建 `.env`。
+4. 确认后创建权限为 `600` 的 `.env`。
+5. 生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
+6. 写入当前源码的 `SOURCE_REVISION`、`SOURCE_VERSION` 和 `IMAGE_VERSION`。
+7. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
 
-已有部署升级时，脚本不会突然用新值覆盖 `/data/secrets` 中已有的持久密钥，避免现有 2FA 与存储凭据失效。
+已有部署再次运行时，向导会显示当前 URL；直接按 Enter 即可保留。脚本不会覆盖已有密码和密钥。
 
 OAuth 默认继承这两项：
 
@@ -74,9 +76,23 @@ OAUTH_FRONTEND_ORIGIN   ← CORS_ORIGIN
 
 只有多入口或特殊反向代理部署才需要显式覆盖它们。完整变量以仓库的 [`.env.example`](https://github.com/hicocos/tg-vault/blob/main/.env.example) 为准。
 
-## 3. 不使用脚本时手动启动
+## 3. 非交互与自动化部署
 
-推荐优先使用安装脚本。如果需要手动管理 Compose，至少先创建 `.env` 并生成数据库密码：
+在 CI、初始化脚本或没有 TTY 的环境中，使用 `--non-interactive`。地址可来自现有 `.env`，也可显式传入环境变量：
+
+```bash
+CORS_ORIGIN=https://cloud.example.com \
+VITE_API_URL=https://api.example.com \
+./deploy/install.sh --non-interactive
+```
+
+非交互模式缺少必填地址或地址格式无效时会直接退出，不会等待输入。查看参数说明：
+
+```bash
+./deploy/install.sh --help
+```
+
+如果完全不使用安装脚本而手动管理 Compose，至少先创建 `.env`、生成数据库密码并填写两个 URL：
 
 ```bash
 cp .env.example .env
@@ -141,7 +157,7 @@ docker compose logs --tail=150 backend frontend postgres
 
 ## 7. 更新
 
-先确认工作区没有未处理的本地修改，再更新并重新运行安装脚本：
+先确认工作区没有未处理的本地修改，再更新并重新运行安装向导：
 
 ```bash
 git fetch origin
@@ -150,7 +166,7 @@ git pull --ff-only origin main
 ./deploy/install.sh
 ```
 
-安装脚本会刷新版本元数据并构建、启动服务。不要用强制拉取覆盖未确认的本地改动。
+`deploy/install.sh` 会显示已有 URL；升级时直接按三次 Enter（保留 Web URL、保留 API URL、确认安装）即可刷新版本元数据并构建、启动服务。不要用强制拉取覆盖未确认的本地改动。
 
 ## 下一步
 
