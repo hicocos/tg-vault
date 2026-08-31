@@ -143,6 +143,84 @@ export interface UnifiedTaskList {
     generatedAt: string;
 }
 
+export type TelegramAdFilterMode = 'off' | 'conservative' | 'aggressive';
+export type TelegramAdRuleKind = 'keyword' | 'domain' | 'username' | 'template' | 'media';
+export type TelegramAdRuleAction = 'allow' | 'block';
+
+export interface TelegramSubscription {
+    id: string;
+    source: string;
+    source_original: string | null;
+    source_type: string;
+    title: string | null;
+    last_message_id: number;
+    folder_override: string | null;
+    enabled: boolean;
+    disabled_reason: string | null;
+    last_scan_at: string | null;
+    last_success_at: string | null;
+    last_error: string | null;
+    next_scan_at: string | null;
+    ad_filter_mode: TelegramAdFilterMode;
+    ad_stats: { blocked_count: number; review_count: number; reviewed_count: number };
+    created_at: string;
+    updated_at: string;
+}
+
+export interface TelegramSubscriptionList {
+    subscriptions: TelegramSubscription[];
+    total: number;
+    limit: number;
+    offset: number;
+    summary: { enabled: number; protected: number; blocked: number; review: number };
+}
+
+export interface TelegramAdRule {
+    id: string;
+    subscription_id: string;
+    kind: TelegramAdRuleKind;
+    action: TelegramAdRuleAction;
+    pattern: string;
+    label: string | null;
+    enabled: boolean;
+    created_at: string;
+    updated_at: string;
+}
+
+export interface TelegramAdReason {
+    code: string;
+    label: string;
+    score: number;
+    ruleId?: string;
+}
+
+export interface TelegramAdDecision {
+    id: string;
+    subscription_id: string;
+    subscription_title: string | null;
+    subscription_source: string;
+    source_peer: string;
+    message_id: number;
+    message_ids: number[];
+    grouped_id: string | null;
+    decision: 'allow' | 'review' | 'blocked';
+    score: number;
+    reasons: TelegramAdReason[];
+    text_excerpt: string | null;
+    domains: string[];
+    usernames: string[];
+    manual_label: 'ad' | 'normal' | null;
+    manually_reviewed_at: string | null;
+    created_at: string;
+}
+
+export interface TelegramAdDecisionList {
+    decisions: TelegramAdDecision[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
 export interface CreateYtDlpTaskResult {
     success: true;
     task: UnifiedTask;
@@ -404,6 +482,7 @@ export interface AdvancedTaskSettings {
     telegramFileConcurrency: number;
     duplicateMode: 'copy' | 'skip';
     autoCleanupOrphans: boolean;
+    skipTelegramPhotosInBatch: boolean;
     telegramDownloadHistoryPolicy: 'errors_only' | 'all';
     highRisk: { telegramDownloadWorkers: boolean; telegramFileConcurrency: boolean };
 }

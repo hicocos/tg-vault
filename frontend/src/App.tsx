@@ -45,6 +45,7 @@ const FILE_RENDER_WINDOW_SIZE = 200;
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
 const TasksPage = lazy(() => import("./components/pages/TasksPage").then(module => ({ default: module.TasksPage })));
+const SubscriptionCenter = lazy(() => import("./components/pages/SubscriptionCenter").then(module => ({ default: module.SubscriptionCenter })));
 const PreviewModal = lazy(() => import("./components/ui/PreviewModal").then(module => ({ default: module.PreviewModal })));
 const UploadQueueModal = lazy(() => import("./components/ui/UploadQueueModal").then(module => ({ default: module.UploadQueueModal })));
 const CreateFolderModal = lazy(() => import("./components/ui/CreateFolderModal").then(module => ({ default: module.CreateFolderModal })));
@@ -283,7 +284,7 @@ function App() {
   const updateSearchQuery = useCallback((query: string) => {
     clearFileInteractionState();
     setSearchQuery(query);
-    if (!['upload', 'tasks', 'settings'].includes(currentCategory)) {
+    if (!['upload', 'tasks', 'subscriptions', 'settings'].includes(currentCategory)) {
       window.history.replaceState({}, '', appRouteHref(routeForCategory(currentCategory, { folder: currentFolder, query })));
     }
   }, [clearFileInteractionState, currentCategory, currentFolder]);
@@ -1248,6 +1249,10 @@ function App() {
                 activeSection={settingsSection}
                 onSectionChange={handleSettingsSectionChange}
               />
+            </Suspense>
+          ) : currentCategory === "subscriptions" ? (
+            <Suspense fallback={<LazyFallback />}>
+              <SubscriptionCenter onUnauthorized={markUnauthenticated} />
             </Suspense>
           ) : currentCategory === "tasks" ? (
             <Suspense fallback={<LazyFallback />}>

@@ -34,6 +34,13 @@ import type {
     TaskDismissalResult,
     TaskFilters,
     TelegramBotPublicConfig,
+    TelegramAdDecisionList,
+    TelegramAdFilterMode,
+    TelegramAdRule,
+    TelegramAdRuleAction,
+    TelegramAdRuleKind,
+    TelegramSubscription,
+    TelegramSubscriptionList,
     TelegramPermissionCheckResult,
     TelegramUserAccountStatus,
     TelegramUserAccountsOverview,
@@ -242,6 +249,69 @@ class FileAPI {
 
     async confirmTaskDismissal(preview: TaskDismissalPreview): Promise<TaskDismissalResult> {
         return tasksClient.confirmTaskDismissal(preview);
+    }
+
+    async getSubscriptions(filters: { limit?: number; offset?: number } = {}): Promise<TelegramSubscriptionList> {
+        const params = new URLSearchParams({ limit: String(filters.limit || 20), offset: String(filters.offset || 0) });
+        const response = await apiRequest(`${API_BASE}/api/subscriptions?${params.toString()}`, { credentials: 'include', headers: getHeaders() });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取订阅列表失败');
+        return response.json();
+    }
+
+    async updateSubscriptionAdFilter(subscriptionId: string, adFilterMode: TelegramAdFilterMode): Promise<TelegramSubscription> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+            credentials: 'include', method: 'PATCH', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ adFilterMode }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '更新广告过滤模式失败');
+        return (await response.json()).subscription;
+    }
+
+    async getSubscriptionAdRules(subscriptionId: string): Promise<TelegramAdRule[]> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules`, { credentials: 'include', headers: getHeaders() });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取过滤规则失败');
+        return (await response.json()).rules || [];
+    }
+
+    async createSubscriptionAdRule(subscriptionId: string, input: { kind: TelegramAdRuleKind; action: TelegramAdRuleAction; pattern: string; label?: string }): Promise<TelegramAdRule> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules`, {
+            credentials: 'include', method: 'POST', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(input),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '创建过滤规则失败');
+        return (await response.json()).rule;
+    }
+
+    async setSubscriptionAdRuleEnabled(subscriptionId: string, ruleId: string, enabled: boolean): Promise<TelegramAdRule> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules/${encodeURIComponent(ruleId)}`, {
+            credentials: 'include', method: 'PATCH', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ enabled }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '更新过滤规则失败');
+        return (await response.json()).rule;
+    }
+
+    async deleteSubscriptionAdRule(subscriptionId: string, ruleId: string): Promise<void> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules/${encodeURIComponent(ruleId)}`, {
+            credentials: 'include', method: 'DELETE', headers: getHeaders(),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '删除过滤规则失败');
+    }
+
+    async getSubscriptionAdDecisions(filters: { subscriptionId?: string; decision?: 'blocked' | 'review' | 'allow'; limit?: number; offset?: number } = {}): Promise<TelegramAdDecisionList> {
+        const params = new URLSearchParams();
+        if (filters.subscriptionId) params.set('subscriptionId', filters.subscriptionId);
+        if (filters.decision) params.set('decision', filters.decision);
+        params.set('limit', String(filters.limit || 100));
+        params.set('offset', String(filters.offset || 0));
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/decisions/list?${params.toString()}`, { credentials: 'include', headers: getHeaders() });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取过滤记录失败');
+        return response.json();
+    }
+
+    async reviewSubscriptionAdDecision(decisionId: string, label: 'ad' | 'normal', learnTemplate = true): Promise<{ restoredJobId?: string | null }> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/decisions/${encodeURIComponent(decisionId)}/review`, {
+            credentials: 'include', method: 'POST', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ label, learnTemplate }),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '修正过滤结果失败');
+        return response.json();
     }
 
     // 简单上传（适用于小文件）
@@ -567,7 +637,7 @@ class FileAPI {
         return response.json();
     }
 
-    async updateAdvancedTaskSetting(patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans' | 'telegramDownloadHistoryPolicy'>>, confirmed = false): Promise<{ success: boolean; deletedCount?: number }> {
+    async updateAdvancedTaskSetting(patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans' | 'skipTelegramPhotosInBatch' | 'telegramDownloadHistoryPolicy'>>, confirmed = false): Promise<{ success: boolean; deletedCount?: number }> {
         const response = await apiRequest(`${API_BASE}/api/storage/config/advanced-tasks`, {
             credentials: 'include', method: 'PATCH',
             headers: getHeaders({ 'Content-Type': 'application/json' }),

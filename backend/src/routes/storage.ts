@@ -298,6 +298,7 @@ router.get('/config/advanced-tasks', requireAuth, async (_req: Request, res: Res
             telegramFileConcurrency: await getSetting('telegram_file_download_concurrency', String(getFileDownloadConcurrency())),
             duplicateMode: await getSetting('duplicate_file_mode', process.env.DUPLICATE_FILE_MODE || 'copy'),
             autoCleanupOrphans: await getSetting('auto_cleanup_orphans', process.env.AUTO_CLEANUP_ORPHANS || 'true'),
+            skipTelegramPhotosInBatch: await getSetting('skip_telegram_photos_in_batch', 'false'),
             telegramDownloadHistoryPolicy: await getSetting(
                 TELEGRAM_DOWNLOAD_HISTORY_POLICY_SETTING,
                 DEFAULT_TELEGRAM_DOWNLOAD_HISTORY_POLICY,
@@ -314,7 +315,11 @@ router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Re
         const { confirmed, ...requestedPatch } = req.body || {};
         const patch = normalizeAdvancedSettingsPatch(requestedPatch);
         if (patch.highRisk && confirmed !== true) {
-            return res.status(409).json({ error: '高并发设置需要二次确认', code: 'CONFIRMATION_REQUIRED' });
+            const photoFilter = patch.skipTelegramPhotosInBatch === true;
+            return res.status(409).json({
+                error: photoFilter ? '开启跳过频道普通图片需要二次确认' : '高并发设置需要二次确认',
+                code: 'CONFIRMATION_REQUIRED',
+            });
         }
         if ('telegramDownloadWorkers' in patch) {
             await setSetting('telegram_download_workers', String(patch.telegramDownloadWorkers));
@@ -330,6 +335,9 @@ router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Re
             await setSetting('auto_cleanup_orphans', String(enabled));
             process.env.AUTO_CLEANUP_ORPHANS = String(enabled);
             if (enabled) startPeriodicCleanup(); else stopPeriodicCleanup();
+        } else if ('skipTelegramPhotosInBatch' in patch) {
+            const enabled = Boolean(patch.skipTelegramPhotosInBatch);
+            await setSetting('skip_telegram_photos_in_batch', String(enabled));
         } else if ('telegramDownloadHistoryPolicy' in patch) {
             await setSetting(TELEGRAM_DOWNLOAD_HISTORY_POLICY_SETTING, String(patch.telegramDownloadHistoryPolicy));
             const deletedCount = await compactTelegramDownloadHistory();

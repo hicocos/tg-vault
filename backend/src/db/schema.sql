@@ -438,10 +438,30 @@ ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS next_scan_at
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS target_mode VARCHAR(20) NOT NULL DEFAULT 'follow_global';
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS target_provider VARCHAR(50);
 ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS target_account_id UUID REFERENCES storage_accounts(id) ON DELETE RESTRICT;
+ALTER TABLE telegram_channel_subscriptions ADD COLUMN IF NOT EXISTS ad_filter_mode VARCHAR(20) NOT NULL DEFAULT 'off';
+DO $$ BEGIN
+    ALTER TABLE telegram_channel_subscriptions ADD CONSTRAINT telegram_subscription_ad_filter_mode_check CHECK (ad_filter_mode IN ('off', 'conservative', 'aggressive'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
     ALTER TABLE telegram_channel_subscriptions ADD CONSTRAINT telegram_subscription_target_mode_check CHECK (target_mode IN ('follow_global', 'fixed'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_tg_channel_subscriptions_target_account ON telegram_channel_subscriptions(target_account_id) WHERE target_account_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS telegram_subscription_ad_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id UUID NOT NULL REFERENCES telegram_channel_subscriptions(id) ON DELETE CASCADE,
+    kind VARCHAR(20) NOT NULL CHECK (kind IN ('keyword', 'domain', 'username', 'template', 'media')),
+    action VARCHAR(10) NOT NULL CHECK (action IN ('allow', 'block')),
+    pattern TEXT NOT NULL,
+    label TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_subscription_ad_rules_unique ON telegram_subscription_ad_rules(subscription_id, kind, action, pattern);
+CREATE INDEX IF NOT EXISTS idx_tg_subscription_ad_rules_subscription ON telegram_subscription_ad_rules(subscription_id, enabled, created_at DESC);
+DROP TRIGGER IF EXISTS telegram_subscription_ad_rules_updated_at ON telegram_subscription_ad_rules;
+CREATE TRIGGER telegram_subscription_ad_rules_updated_at BEFORE UPDATE ON telegram_subscription_ad_rules FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE OR REPLACE TRIGGER telegram_channel_subscriptions_updated_at
     BEFORE UPDATE ON telegram_channel_subscriptions
@@ -509,6 +529,44 @@ ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS paused_at TIMESTAM
 ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_pipeline ON telegram_background_jobs(status, scan_status, download_status);
 CREATE INDEX IF NOT EXISTS idx_tg_background_jobs_cooldown ON telegram_background_jobs(cooldown_until);
+
+CREATE TABLE IF NOT EXISTS telegram_subscription_ad_decisions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subscription_id UUID NOT NULL REFERENCES telegram_channel_subscriptions(id) ON DELETE CASCADE,
+    source_peer TEXT NOT NULL,
+    message_id INT NOT NULL,
+    grouped_id TEXT,
+    message_ids INT[] NOT NULL DEFAULT '{}',
+    decision VARCHAR(20) NOT NULL CHECK (decision IN ('allow', 'review', 'blocked')),
+    score INT NOT NULL DEFAULT 0 CHECK (score BETWEEN 0 AND 100),
+    reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+    text_excerpt TEXT,
+    text_fingerprint TEXT,
+    domains TEXT[] NOT NULL DEFAULT '{}',
+    usernames TEXT[] NOT NULL DEFAULT '{}',
+    media_keys TEXT[] NOT NULL DEFAULT '{}',
+    matched_rule_ids UUID[] NOT NULL DEFAULT '{}',
+    manual_label VARCHAR(20) CHECK (manual_label IN ('ad', 'normal')),
+    manually_reviewed_at TIMESTAMPTZ,
+    restored_job_id UUID REFERENCES telegram_background_jobs(id) ON DELETE SET NULL,
+    restored_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(subscription_id, source_peer, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tg_subscription_ad_decisions_subscription ON telegram_subscription_ad_decisions(subscription_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tg_subscription_ad_decisions_blocked ON telegram_subscription_ad_decisions(subscription_id, decision, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tg_subscription_ad_decisions_template ON telegram_subscription_ad_decisions(subscription_id, manual_label, created_at DESC) WHERE manual_label IS NOT NULL;
+DROP TRIGGER IF EXISTS telegram_subscription_ad_decisions_updated_at ON telegram_subscription_ad_decisions;
+CREATE TRIGGER telegram_subscription_ad_decisions_updated_at BEFORE UPDATE ON telegram_subscription_ad_decisions FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+ALTER TABLE telegram_background_jobs ADD COLUMN IF NOT EXISTS ad_decision_id UUID REFERENCES telegram_subscription_ad_decisions(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_background_jobs_ad_decision ON telegram_background_jobs(ad_decision_id) WHERE ad_decision_id IS NOT NULL;
+ALTER TABLE telegram_subscription_ad_decisions ADD COLUMN IF NOT EXISTS restore_status VARCHAR(20) NOT NULL DEFAULT 'not_requested';
+ALTER TABLE telegram_subscription_ad_decisions ADD COLUMN IF NOT EXISTS restore_error TEXT;
+ALTER TABLE telegram_subscription_ad_decisions ADD COLUMN IF NOT EXISTS restore_attempted_at TIMESTAMPTZ;
+DO $$ BEGIN
+    ALTER TABLE telegram_subscription_ad_decisions ADD CONSTRAINT telegram_subscription_ad_restore_status_check CHECK (restore_status IN ('not_requested', 'restoring', 'restored', 'failed'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE OR REPLACE TRIGGER telegram_background_jobs_updated_at
     BEFORE UPDATE ON telegram_background_jobs

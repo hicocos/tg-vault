@@ -6,6 +6,7 @@ export interface AdvancedSettings {
     telegramFileConcurrency: number;
     duplicateMode: DuplicateModeSetting;
     autoCleanupOrphans: boolean;
+    skipTelegramPhotosInBatch: boolean;
     telegramDownloadHistoryPolicy: TelegramDownloadHistoryPolicySetting;
     highRisk: { telegramDownloadWorkers: boolean; telegramFileConcurrency: boolean };
 }
@@ -23,6 +24,7 @@ export function buildAdvancedSettings(input: {
     telegramFileConcurrency: unknown;
     duplicateMode: unknown;
     autoCleanupOrphans: unknown;
+    skipTelegramPhotosInBatch: unknown;
     telegramDownloadHistoryPolicy: unknown;
 }): AdvancedSettings {
     const workers = Number(input.telegramDownloadWorkers);
@@ -34,6 +36,7 @@ export function buildAdvancedSettings(input: {
         telegramFileConcurrency: FILE_CONCURRENCY.has(fileConcurrency) ? fileConcurrency : 2,
         duplicateMode,
         autoCleanupOrphans: booleanValue(input.autoCleanupOrphans, true),
+        skipTelegramPhotosInBatch: booleanValue(input.skipTelegramPhotosInBatch, false),
         telegramDownloadHistoryPolicy,
         highRisk: { telegramDownloadWorkers: workers >= 12, telegramFileConcurrency: fileConcurrency >= 4 },
     };
@@ -60,6 +63,10 @@ export function normalizeAdvancedSettingsPatch(input: Record<string, unknown>): 
     if (key === 'autoCleanupOrphans') {
         if (typeof value !== 'boolean') throw new Error('autoCleanupOrphans 必须是布尔值');
         return { autoCleanupOrphans: value, highRisk: false };
+    }
+    if (key === 'skipTelegramPhotosInBatch') {
+        if (typeof value !== 'boolean') throw new Error('skipTelegramPhotosInBatch 必须是布尔值');
+        return { skipTelegramPhotosInBatch: value, highRisk: value };
     }
     if (key === 'telegramDownloadHistoryPolicy') {
         if (value !== 'errors_only' && value !== 'all') throw new Error('telegramDownloadHistoryPolicy 必须是 errors_only 或 all');

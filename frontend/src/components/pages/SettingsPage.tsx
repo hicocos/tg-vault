@@ -333,13 +333,18 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         return data;
     };
 
-    const updateAdvancedTask = async (patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans' | 'telegramDownloadHistoryPolicy'>>) => {
+    const updateAdvancedTask = async (patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans' | 'skipTelegramPhotosInBatch' | 'telegramDownloadHistoryPolicy'>>) => {
         let result: { success: boolean; deletedCount?: number };
         try {
             result = await fileApi.updateAdvancedTaskSetting(patch);
         } catch (error: unknown) {
             if (errorCode(error) !== 'CONFIRMATION_REQUIRED') throw error;
-            if (!(await requestConfirmation('该并发值可能触发 Telegram 限流、断流或账号风控。确认继续吗？', '高并发二次确认'))) return;
+            const enablingPhotoFilter = patch.skipTelegramPhotosInBatch === true;
+            const confirmationMessage = enablingPhotoFilter
+                ? '此功能一般不需要开启。仅适合频道同时发布一张普通图片和一个原图文件，而你只想保存原图文件的场景。\n\n开启后，订阅、按日期和按标签批量下载将跳过频道中的所有普通图片，只下载作为文件发送的图片及其他文件；如果频道只发普通图片，这些图片会被漏掉。确认开启吗？'
+                : '该并发值可能触发 Telegram 限流、断流或账号风控。确认继续吗？';
+            const confirmationTitle = enablingPhotoFilter ? '确认跳过频道普通图片' : '高并发二次确认';
+            if (!(await requestConfirmation(confirmationMessage, confirmationTitle))) return;
             result = await fileApi.updateAdvancedTaskSetting(patch, true);
         }
         await reloadAdvancedTasks();
@@ -1319,6 +1324,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.duplicateMode} onChange={event => void updateAdvancedTask({ duplicateMode: event.target.value as 'copy' | 'skip' })}>
                             <option value="copy">生成副本</option><option value="skip">跳过重复</option>
                         </select>
+                    } />
+                    <SettingsRow icon={Copy} label="跳过频道普通图片" description="一般不需要开启。仅适合频道同时发布预览图片和原图文件，而你只想保存原图文件的场景。开启后，订阅和按日期批量下载（以及按标签批量下载）会跳过所有普通图片；频道只发普通图片时会漏图。" action={
+                        <Button size="sm" variant={advancedTasks.skipTelegramPhotosInBatch ? 'default' : 'outline'} onClick={() => void updateAdvancedTask({ skipTelegramPhotosInBatch: !advancedTasks.skipTelegramPhotosInBatch })}>
+                            {advancedTasks.skipTelegramPhotosInBatch ? '已开启' : '已关闭'}
+                        </Button>
                     } />
                     <SettingsRow icon={Trash2} label="自动清理未索引临时文件" description="不删除文件索引或云端实体，只清理超过保护期的本地孤儿文件。" action={
                         <Button size="sm" variant={advancedTasks.autoCleanupOrphans ? 'default' : 'outline'} onClick={() => void updateAdvancedTask({ autoCleanupOrphans: !advancedTasks.autoCleanupOrphans })}>

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Folder, Settings, Menu, X, Star, Download, LogOut, ListChecks, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles } from "lucide-react";
+import { Folder, Settings, Menu, X, Star, Download, LogOut, ListChecks, ListFilter, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles } from "lucide-react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
@@ -128,6 +128,7 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
         { id: "ytdlp", href: "/files/ytdlp", icon: Download, label: "YT-DLP" },
         { id: "favorites", href: "/files/favorites", icon: Star, label: t("sidebar.favorites") },
         { id: "tasks", href: "/tasks", icon: ListChecks, label: t("sidebar.tasks") },
+        { id: "subscriptions", href: "/subscriptions", icon: ListFilter, label: "订阅中心" },
         { id: "settings", href: "/settings/general", icon: Settings, label: t("sidebar.settings") },
     ];
 

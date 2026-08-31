@@ -10,6 +10,7 @@ import uploadRouter, { apiRouter as apiUploadRouter } from './routes/upload.js';
 import storageRouter from './routes/storage.js';
 import chunkedUploadRouter from './routes/chunkedUpload.js';
 import tasksRouter from './routes/tasks.js';
+import subscriptionsRouter from './routes/subscriptions.js';
 import authRouter, { requireAuth } from './routes/auth.js';
 import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
@@ -184,6 +185,7 @@ app.use('/api/upload', requireAuth, uploadRouter);
 app.use('/api/v1/upload', apiUploadRouter);
 app.use('/api/chunked', requireAuth, chunkedUploadRouter);
 app.use('/api/tasks', tasksRouter);
+app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/storage', storageRouter);
 app.use('/api/system', createSystemRouter(updateChecker));
 

@@ -19,6 +19,7 @@ import { triggerTelegramAccountAccessSweep } from './telegramAccountAccessSweep.
 import { abortChannelExecutionForLeaseLoss, downloadTelegramChannelRange, getTelegramDownloadPreview, getChannelTaskAbortSignal, releaseChannelTaskAbortSignal, type TelegramDownloadMessageRef } from './telegramUpload.js';
 import { getSetting } from '../utils/settings.js';
 import { extractFileInfo, getEstimatedFileSize, type TelegramFileInfo } from '../utils/telegramMedia.js';
+import { filterTelegramBatchMessages } from '../utils/telegramBatchMediaFilter.js';
 import { annotateTelegramMediaGroup } from '../utils/telegramMediaGroup.js';
 import { lockStorageAccountForUse } from './storageAccountLifecycle.js';
 import { resolveTelegramWriteCommittedWithQuery, claimTelegramWriteReconciliations, resolveClaimedTelegramWrite } from './telegramWriteReconciliation.js';
@@ -26,6 +27,8 @@ import { parseDateOnlyStrict, parseTelegramDateRange } from './telegramDateRange
 import { enqueueTelegramNotification } from './telegramNotificationDelivery.js';
 import { resolveSubscriptionTarget } from './telegramSubscriptionManagement.js';
 import { compactTelegramDownloadHistory } from './telegramDownloadHistoryPolicy.js';
+import { filterTelegramSubscriptionAdvertisements } from './telegramSubscriptionAdFilter.js';
+import type { TelegramAdFilterMode } from './telegramAdClassifier.js';
 
 const SUBSCRIPTION_INTERVAL_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_SUBSCRIPTION_INTERVAL_MS || '300000', 10) || 300_000);
 const SUBSCRIPTION_SCAN_LIMIT = Math.max(1, parseInt(process.env.TELEGRAM_SUBSCRIPTION_SCAN_LIMIT || '100', 10) || 100);
@@ -326,6 +329,7 @@ export interface ChannelJobAdmissionInput {
     source: string;
     params: Record<string, unknown>;
     target?: StorageTargetSnapshot;
+    adDecisionId?: string;
 }
 
 export interface ChannelJobAdmissionDependencies {
@@ -347,10 +351,10 @@ export async function persistChannelJobAdmission(
     return dependencies.withTransaction(async client => {
         if (target.accountId) await dependencies.lockStorageAccount(client, target.accountId);
         const result = await client.query(
-            `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor)
-             VALUES ($1, $2, $3, $4, $5, 'queued', 'pending', 'pending', '{}'::jsonb)
+            `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor, ad_decision_id)
+             VALUES ($1, $2, $3, $4, $5, 'queued', 'pending', 'pending', '{}'::jsonb, $6)
              RETURNING id`,
-            [input.userId, input.chatId || null, input.kind, input.source, JSON.stringify(persistedParams)],
+            [input.userId, input.chatId || null, input.kind, input.source, JSON.stringify(persistedParams), input.adDecisionId || null],
         );
         return String(result.rows[0].id);
     });
@@ -456,6 +460,14 @@ async function getDiscussionMediaRefs(
     return { refs, scanned, mediaFound };
 }
 
+async function shouldSkipTelegramPhotosInBatch(): Promise<boolean> {
+    return ['1', 'true', 'yes', 'on'].includes(String(await getSetting('skip_telegram_photos_in_batch', 'false')).toLowerCase());
+}
+
+async function filterConfiguredTelegramBatchMessages(messages: Api.Message[]): Promise<Api.Message[]> {
+    return filterTelegramBatchMessages(messages, await shouldSkipTelegramPhotosInBatch());
+}
+
 function toChannelDownloadRef(source: string, message: Api.Message): TelegramDownloadMessageRef | null {
     const fileInfo = extractFileInfo(message);
     if (!fileInfo) return null;
@@ -501,10 +513,16 @@ async function buildDownloadScanResult(
     messages: Api.Message[],
     options: TelegramCommentScanOptions & { tag?: string; startDate?: Date; endDate?: Date } = {},
 ): Promise<TelegramDownloadScanResult> {
-    const refs = messages
+    const skipTelegramPhotos = await shouldSkipTelegramPhotosInBatch();
+    const filteredMessages = filterTelegramBatchMessages(messages, skipTelegramPhotos);
+    const refs = filteredMessages
         .map(message => toChannelDownloadRef(source, message))
         .filter((ref): ref is TelegramDownloadMessageRef => Boolean(ref));
     const commentScan = await getDiscussionMediaRefs(userClient, source, messages, options);
+    if (skipTelegramPhotos) {
+        commentScan.refs = commentScan.refs.filter(ref => !ref.message || filterTelegramBatchMessages([ref.message], true).length > 0);
+        commentScan.mediaFound = commentScan.refs.length;
+    }
     refs.push(...commentScan.refs);
     propagateTelegramDownloadGroupContext(refs);
     for (const ref of refs) {
@@ -674,6 +692,69 @@ async function createJob(input: ChannelJobAdmissionInput) {
             }
         },
     });
+}
+
+export async function createSubscriptionDownloadJob(input: {
+    subscriptionId: string;
+    decisionId: string;
+    userId: number;
+    chatId: number | null;
+    source: string;
+    folderOverride?: string | null;
+    messageIds: number[];
+}): Promise<string> {
+    const subscriptionResult = await query(
+        `SELECT id, enabled, target_mode, target_provider, target_account_id
+         FROM telegram_channel_subscriptions
+         WHERE id = $1 AND user_id = $2`,
+        [input.subscriptionId, input.userId],
+    );
+    const subscription = subscriptionResult.rows[0];
+    if (!subscription) throw new Error('订阅不存在');
+    if (!subscription.enabled) throw new Error('订阅已停用');
+    const ids = Array.from(new Set(input.messageIds.filter(id => Number.isSafeInteger(id) && id > 0))).sort((left, right) => left - right);
+    if (ids.length === 0) throw new Error('没有可下载的消息');
+    const target = resolveSubscriptionTarget(
+        subscription,
+        () => storageManager.getActiveTarget(),
+        (provider, accountId) => storageManager.getTarget(provider, accountId),
+    );
+    const userClient = requireUserClient();
+    const messages = (await userClient.getMessages(input.source as any, { ids })).filter(Boolean) as Api.Message[];
+    const downloadable = await filterConfiguredTelegramBatchMessages(await expandMessagesWithMediaGroups(userClient, input.source, messages));
+    const refs = downloadable.map(message => toChannelDownloadRef(input.source, message)).filter((ref): ref is TelegramDownloadMessageRef => Boolean(ref));
+    if (refs.length === 0) throw new Error('原消息不存在或没有可下载媒体');
+
+    const existingJob = await query('SELECT id FROM telegram_background_jobs WHERE ad_decision_id = $1', [input.decisionId]);
+    let jobId = existingJob.rows[0]?.id ? String(existingJob.rows[0].id) : '';
+    if (!jobId) {
+        try {
+            jobId = await createJob({
+                userId: input.userId,
+                chatId: input.chatId === null ? undefined : String(input.chatId),
+                kind: 'subscription_sync',
+                source: input.source,
+                target,
+                adDecisionId: input.decisionId,
+                params: { subscriptionId: input.subscriptionId, manualRecovery: true },
+            });
+        } catch (error) {
+            if ((error as { code?: string })?.code !== '23505') throw error;
+            const racedJob = await query('SELECT id FROM telegram_background_jobs WHERE ad_decision_id = $1', [input.decisionId]);
+            if (!racedJob.rows[0]?.id) throw error;
+            jobId = String(racedJob.rows[0].id);
+        }
+    }
+    await persistDownloadMessages(jobId, input.source, downloadable, input.folderOverride || null);
+    await updateJob(jobId, {
+        status: 'pending',
+        scan_status: 'done',
+        download_status: 'pending',
+        total_count: refs.length,
+        error: null,
+        finished_at: null,
+    });
+    return jobId;
 }
 
 async function getJob(jobId: string) {
@@ -1938,7 +2019,7 @@ async function runSubscriptionScan(botClient: TelegramClient) {
 
         const result = await query(
         `SELECT id, user_id, chat_id, source, source_original, source_type, last_message_id, folder_override,
-                target_mode, target_provider, target_account_id, next_scan_at
+                target_mode, target_provider, target_account_id, next_scan_at, ad_filter_mode
          FROM telegram_channel_subscriptions
          WHERE enabled = true
            AND (next_scan_at IS NULL OR next_scan_at <= NOW())
@@ -1972,7 +2053,16 @@ async function runSubscriptionScan(botClient: TelegramClient) {
                 target: subscriptionTarget,
                 params: { subscriptionId: String(row.id), fromId: lastMessageId + 1, toId: latestMessageId, targetMode: row.target_mode || 'follow_global' },
             });
-            const candidateMessages = await expandMessagesWithMediaGroups(userClient, row.source, (await userClient.getMessages(row.source as any, { ids })).filter(Boolean) as Api.Message[]);
+            const batchMessages = await filterConfiguredTelegramBatchMessages(
+                await expandMessagesWithMediaGroups(userClient, row.source, (await userClient.getMessages(row.source as any, { ids })).filter(Boolean) as Api.Message[]),
+            );
+            const adFilter = await filterTelegramSubscriptionAdvertisements({
+                subscriptionId: String(row.id),
+                sourcePeer: String(row.source),
+                mode: (row.ad_filter_mode || 'off') as TelegramAdFilterMode,
+                messages: batchMessages,
+            });
+            const candidateMessages = adFilter.allowedMessages;
             await persistDownloadMessages(jobId, row.source, candidateMessages, row.folder_override || null);
             await updateJob(jobId, { status: 'running', started_at: new Date(), total_count: ids.length });
 
@@ -1983,7 +2073,7 @@ async function runSubscriptionScan(botClient: TelegramClient) {
                 .filter((ref): ref is TelegramDownloadMessageRef => Boolean(ref));
             propagateTelegramDownloadGroupContext(subscriptionRefs);
             const downloadableMessageIds = new Set(subscriptionRefs.map(ref => ref.id));
-            const nonDownloadableMessageIds = ids.filter(id => !downloadableMessageIds.has(id));
+            const nonDownloadableMessageIds = ids.filter(id => !downloadableMessageIds.has(id) && !adFilter.blockedMessageIds.includes(id));
             const downloadResult = await downloadPendingForJob(
                 botClient,
                 requestMessage,
@@ -2005,7 +2095,7 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) continue;
             const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
             const safeAdvanceId = downloadResult.failed > 0
-                ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds], downloadResult.failedMessageIds)
+                ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds, ...adFilter.blockedMessageIds], downloadResult.failedMessageIds)
                 : scannedMaxId;
             const finalized = await finalizeSubscriptionJobInTransaction(pool as unknown as TelegramTransactionPool, {
                 jobId,

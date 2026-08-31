@@ -55,6 +55,13 @@ var init_dbLogging = __esm({
 });
 
 // src/db/index.ts
+var db_exports = {};
+__export(db_exports, {
+  default: () => db_default,
+  ensureDatabaseInitialized: () => ensureDatabaseInitialized,
+  pool: () => pool,
+  query: () => query
+});
 import pg from "pg";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -152,7 +159,7 @@ function ensureDatabaseInitialized() {
   if (!initializationPromise) initializationPromise = initializeDatabase();
   return initializationPromise;
 }
-var __filename, __dirname, MIGRATIONS_DIR, MIGRATION_LOCK_KEY, Pool, pool, initializationPromise, sqlLoggingConfig, query;
+var __filename, __dirname, MIGRATIONS_DIR, MIGRATION_LOCK_KEY, Pool, pool, initializationPromise, sqlLoggingConfig, query, db_default;
 var init_db = __esm({
   "src/db/index.ts"() {
     "use strict";
@@ -187,6 +194,7 @@ var init_db = __esm({
       }
       return res;
     };
+    db_default = { pool, query };
   }
 });
 
@@ -11291,6 +11299,14 @@ function resolveChannelJobTargetSnapshot(explicitTarget, getActiveTarget) {
 // src/services/telegramChannelJobs.ts
 init_storageCooldown();
 init_settings();
+
+// src/utils/telegramBatchMediaFilter.ts
+function filterTelegramBatchMessages(messages, skipTelegramPhotos) {
+  if (!skipTelegramPhotos) return messages;
+  return messages.filter((message) => !isTelegramPhotoMedia(message.media));
+}
+
+// src/services/telegramChannelJobs.ts
 init_storageAccountLifecycle();
 
 // src/services/telegramDateRange.ts
@@ -11565,6 +11581,356 @@ async function compactTelegramDownloadHistory(jobId) {
   return result.rowCount || 0;
 }
 
+// src/services/telegramSubscriptionAdFilter.ts
+init_db();
+
+// src/services/telegramAdClassifier.ts
+var TRACKING_QUERY_KEYS = /^(utm_.+|fbclid|gclid|yclid|ref|referrer|source|campaign|code)$/i;
+var TRANSACTION_PATTERN = /(优惠|特价|折扣|返利|佣金|套餐|购买|下单|价格|售价|充值|提现|担保|代理|免费领取|限时|名额|商务推广|广告投放|sale|discount|buy|price|order|commission|promo)/i;
+var CTA_PATTERN = /(立即|点击|加入|联系|客服|咨询|私聊|扫码|注册|领取|下载\s*app|进群|下单|购买|马上|戳我|click|join|contact|register|buy now)/i;
+var CONTACT_PATTERN = /(联系|客服|咨询|私聊|微信|telegram|tg|whatsapp|商务|代理|邮箱|email)/i;
+var SCARCITY_PATTERN = /(仅限今天|最后名额|马上截止|手慢无|稳赚不赔|高收益|官方授权|限时|last chance|limited time)/i;
+var URL_PATTERN = /https?:\/\/[^\s<>"'）)\]]+/gi;
+var USERNAME_PATTERN = /@[a-zA-Z][a-zA-Z0-9_]{3,31}/g;
+function unique(values) {
+  return [...new Set(values.filter(Boolean))];
+}
+function normalizeDomain(value) {
+  const lowered = value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
+  return lowered.split("/")[0].split("?")[0].replace(/\.$/, "");
+}
+function stableUrl(raw) {
+  try {
+    const url = new URL(raw);
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (TRACKING_QUERY_KEYS.test(key)) url.searchParams.delete(key);
+    }
+    const query2 = url.searchParams.toString();
+    return `${url.hostname.toLowerCase().replace(/^www\./, "")}${url.pathname.replace(/\/$/, "")}${query2 ? `?${query2}` : ""}`;
+  } catch {
+    return raw.toLowerCase();
+  }
+}
+function normalizeTelegramAdText(text) {
+  return text.normalize("NFKC").toLowerCase().replace(URL_PATTERN, (value) => stableUrl(value)).replace(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?/g, "<date>").replace(/\d{1,2}月\d{1,2}日/g, "<date>").replace(/\d{1,2}[-/.]\d{1,2}/g, "<date>").replace(/(?:¥|￥|\$|usd\s*)?\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|usd|刀)/gi, "<num>").replace(/\b\d+(?:\.\d+)?\b/g, "<num>").replace(/[🔥🎉💰💵✅🚀📣📢👉🎁💥⭐🌟❗❕]+/gu, " ").replace(/[^\p{L}\p{N}@._:/?=&<>\s-]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+function trigrams(value) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 3) return new Set(compact ? [compact] : []);
+  const result = /* @__PURE__ */ new Set();
+  for (let index = 0; index <= compact.length - 3; index += 1) result.add(compact.slice(index, index + 3));
+  return result;
+}
+function telegramAdTextFingerprint(normalizedText) {
+  return normalizeTelegramAdText(normalizedText);
+}
+function telegramAdTextSimilarity(firstFingerprint, secondFingerprint) {
+  const first = trigrams(firstFingerprint);
+  const second = trigrams(secondFingerprint);
+  if (first.size === 0 && second.size === 0) return 1;
+  if (first.size === 0 || second.size === 0) return 0;
+  let intersection = 0;
+  for (const item of first) if (second.has(item)) intersection += 1;
+  return intersection / (first.size + second.size - intersection);
+}
+function stringValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function collectButtons(value, texts, urls) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectButtons(item, texts, urls);
+    return;
+  }
+  if (typeof value !== "object") return;
+  const button = value;
+  const text = stringValue(button.text);
+  const url = stringValue(button.url);
+  if (text) texts.push(text);
+  if (url) urls.push(url);
+  for (const nested of ["button", "buttons", "rows"]) collectButtons(button[nested], texts, urls);
+}
+function mediaKeysForMessage(message) {
+  const values = [];
+  const photo = message?.photo || message?.media?.photo;
+  const document = message?.document || message?.media?.document;
+  if (photo?.id != null) values.push(`photo:${String(photo.id)}`);
+  if (document?.id != null) values.push(`document:${String(document.id)}`);
+  const mime = stringValue(document?.mimeType);
+  const size = document?.size == null ? "" : String(document.size);
+  const dimensions = Array.isArray(photo?.sizes) ? photo.sizes.map((item) => `${item?.w || 0}x${item?.h || 0}`).join(",") : "";
+  if (mime || size || dimensions) values.push(`meta:${mime}:${size}:${dimensions}`);
+  return values;
+}
+function messageToTelegramAdCandidate(messages) {
+  const sorted = [...messages].sort((a, b) => Number(a.id) - Number(b.id));
+  const textParts = [];
+  const urls = [];
+  const buttonTexts = [];
+  const mediaKeys = [];
+  for (const message of sorted) {
+    const text2 = stringValue(message.message || message.text || message.caption);
+    if (text2) {
+      textParts.push(text2);
+      urls.push(...text2.match(URL_PATTERN) || []);
+    }
+    collectButtons(message.buttons || message.replyMarkup, buttonTexts, urls);
+    mediaKeys.push(...mediaKeysForMessage(message));
+  }
+  const text = [...textParts, ...buttonTexts].join("\n").trim();
+  const normalizedText = normalizeTelegramAdText(text);
+  const normalizedUrls = unique(urls.map(stableUrl));
+  const domains = unique(normalizedUrls.map(normalizeDomain));
+  const usernames = unique((`${text}
+${normalizedUrls.join("\n")}`.match(USERNAME_PATTERN) || []).map((value) => value.toLowerCase()));
+  const groupedValue = sorted[0]?.groupedId;
+  return {
+    messageIds: sorted.map((message) => Number(message.id)),
+    groupedId: groupedValue == null ? null : String(groupedValue),
+    text,
+    normalizedText,
+    textFingerprint: telegramAdTextFingerprint(normalizedText),
+    domains,
+    usernames,
+    urls: normalizedUrls,
+    buttonTexts: unique(buttonTexts),
+    mediaKeys: unique(mediaKeys)
+  };
+}
+function matchesRule(candidate, rule) {
+  const pattern = rule.pattern.trim().toLowerCase();
+  if (!pattern) return false;
+  if (rule.kind === "domain") {
+    const expected = normalizeDomain(pattern);
+    return candidate.domains.some((domain) => domain === expected || domain.endsWith(`.${expected}`));
+  }
+  if (rule.kind === "username") {
+    const expected = pattern.startsWith("@") ? pattern : `@${pattern}`;
+    return candidate.usernames.includes(expected);
+  }
+  if (rule.kind === "keyword") return candidate.normalizedText.includes(normalizeTelegramAdText(pattern));
+  if (rule.kind === "media") return candidate.mediaKeys.includes(pattern) || candidate.mediaKeys.some((key) => key.toLowerCase() === pattern);
+  if (rule.kind === "template") return telegramAdTextSimilarity(candidate.textFingerprint, pattern) >= 0.82;
+  return false;
+}
+function classifyTelegramAdCandidate(candidate, options) {
+  if (options.mode === "off") return { decision: "allow", score: 0, reasons: [], matchedRuleIds: [] };
+  const enabledRules = options.rules.filter((rule) => rule.enabled);
+  const allowRules = enabledRules.filter((rule) => rule.action === "allow" && matchesRule(candidate, rule));
+  if (allowRules.length > 0) {
+    return {
+      decision: "allow",
+      score: 0,
+      reasons: allowRules.map((rule) => ({ code: "allow_rule", label: "\u547D\u4E2D\u5141\u8BB8\u89C4\u5219", score: -100, ruleId: rule.id })),
+      matchedRuleIds: allowRules.map((rule) => rule.id)
+    };
+  }
+  let score = 0;
+  const reasons = [];
+  const matchedRuleIds = [];
+  const add = (code, label, points, ruleId) => {
+    score += points;
+    reasons.push({ code, label, score: points, ruleId });
+    if (ruleId) matchedRuleIds.push(ruleId);
+  };
+  for (const rule of enabledRules.filter((rule2) => rule2.action === "block" && matchesRule(candidate, rule2))) {
+    const points = rule.kind === "template" ? 90 : rule.kind === "domain" || rule.kind === "username" || rule.kind === "media" ? 100 : 70;
+    add(rule.kind === "template" ? "blocked_template" : "block_rule", rule.kind === "template" ? "\u547D\u4E2D\u5DF2\u786E\u8BA4\u5E7F\u544A\u6A21\u677F" : "\u547D\u4E2D\u5C4F\u853D\u89C4\u5219", points, rule.id);
+  }
+  const normalHistory = options.history.filter((item) => item.decision === "normal" && item.confirmations > 0);
+  const adHistory = options.history.filter((item) => item.decision === "ad" && item.confirmations > 0);
+  const normalSimilarity = Math.max(0, ...normalHistory.map((item) => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
+  const adSimilarity = Math.max(0, ...adHistory.map((item) => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
+  if (normalSimilarity >= 0.82) add("normal_template", "\u4E0E\u5DF2\u786E\u8BA4\u6B63\u5E38\u5185\u5BB9\u76F8\u4F3C", -50);
+  else if (adSimilarity >= 0.82) add("ad_history_template", "\u4E0E\u5386\u53F2\u5E7F\u544A\u6A21\u677F\u9AD8\u5EA6\u76F8\u4F3C", 60);
+  const hasTransaction = TRANSACTION_PATTERN.test(candidate.text);
+  const hasCta = CTA_PATTERN.test(`${candidate.text}
+${candidate.buttonTexts.join("\n")}`);
+  const hasContact = CONTACT_PATTERN.test(candidate.text) && (candidate.usernames.length > 0 || candidate.urls.length > 0);
+  const hasExternalTarget = candidate.urls.length > 0 || candidate.usernames.length > 0;
+  if (hasTransaction && hasContact) add("transaction_contact", "\u5305\u542B\u4EA4\u6613\u610F\u56FE\u548C\u5916\u90E8\u8054\u7CFB\u65B9\u5F0F", 35);
+  else if (hasTransaction) add("transaction_intent", "\u5305\u542B\u4EA4\u6613\u6216\u4FC3\u9500\u610F\u56FE", 15);
+  if (hasCta && hasExternalTarget) add("cta_link", "\u5305\u542B\u884C\u52A8\u53F7\u53EC\u548C\u5916\u90E8\u8DF3\u8F6C", 40);
+  else if (hasCta) add("call_to_action", "\u5305\u542B\u660E\u663E\u884C\u52A8\u53F7\u53EC", 10);
+  if (candidate.urls.length + candidate.usernames.length >= 3) add("link_density", "\u5916\u90E8\u94FE\u63A5\u6216\u8054\u7CFB\u65B9\u5F0F\u5BC6\u96C6", 15);
+  if (SCARCITY_PATTERN.test(candidate.text)) add("scarcity", "\u5305\u542B\u9650\u65F6\u6216\u7A00\u7F3A\u6027\u8BDD\u672F", 10);
+  const emojiCount = (candidate.text.match(/\p{Extended_Pictographic}/gu) || []).length;
+  if (emojiCount >= 6) add("decorative_marketing", "\u8425\u9500\u5F0F\u7B26\u53F7\u8F83\u591A", 5);
+  score = Math.max(0, Math.min(100, score));
+  const decision = score >= 70 ? "block" : score >= 40 ? options.mode === "aggressive" ? "block" : "review" : "allow";
+  return { decision, score, reasons, matchedRuleIds: unique(matchedRuleIds) };
+}
+
+// src/services/telegramSubscriptionAdFilter.ts
+function groupKey(message) {
+  return message.groupedId == null ? `message:${Number(message.id)}` : `group:${String(message.groupedId)}`;
+}
+function normalizeMode(value) {
+  return value === "conservative" || value === "aggressive" ? value : "off";
+}
+async function getTelegramSubscriptionAdRules(subscriptionId) {
+  const result = await query(
+    `SELECT id, kind, action, pattern, enabled
+         FROM telegram_subscription_ad_rules
+         WHERE subscription_id = $1 AND enabled = true
+         ORDER BY created_at ASC`,
+    [subscriptionId]
+  );
+  return result.rows.map((row) => ({
+    id: String(row.id),
+    kind: row.kind,
+    action: row.action,
+    pattern: String(row.pattern),
+    enabled: Boolean(row.enabled)
+  }));
+}
+async function getHistory(subscriptionId) {
+  const result = await query(
+    `SELECT text_fingerprint AS fingerprint, manual_label AS decision, COUNT(*)::int AS confirmations
+         FROM telegram_subscription_ad_decisions
+         WHERE subscription_id = $1
+           AND manual_label IS NOT NULL
+           AND text_fingerprint IS NOT NULL
+           AND text_fingerprint <> ''
+         GROUP BY text_fingerprint, manual_label
+         ORDER BY MAX(manually_reviewed_at) DESC
+         LIMIT 200`,
+    [subscriptionId]
+  );
+  return result.rows.map((row) => ({
+    fingerprint: String(row.fingerprint),
+    decision: row.decision,
+    confirmations: Number(row.confirmations || 0)
+  }));
+}
+async function persistDecision(input, decision) {
+  const candidate = messageToTelegramAdCandidate(input.messages);
+  const primaryMessageId = Math.min(...candidate.messageIds);
+  await query(
+    `INSERT INTO telegram_subscription_ad_decisions
+            (subscription_id, source_peer, message_id, grouped_id, message_ids, decision, score, reasons,
+             text_excerpt, text_fingerprint, domains, usernames, media_keys, matched_rule_ids)
+         VALUES ($1, $2, $3, $4, $5::int[], $6, $7, $8::jsonb, $9, $10, $11::text[], $12::text[], $13::text[], $14::uuid[])
+         ON CONFLICT (subscription_id, source_peer, message_id)
+         DO UPDATE SET grouped_id = EXCLUDED.grouped_id, message_ids = EXCLUDED.message_ids,
+                       decision = EXCLUDED.decision, score = EXCLUDED.score, reasons = EXCLUDED.reasons,
+                       text_excerpt = EXCLUDED.text_excerpt, text_fingerprint = EXCLUDED.text_fingerprint,
+                       domains = EXCLUDED.domains, usernames = EXCLUDED.usernames, media_keys = EXCLUDED.media_keys,
+                       matched_rule_ids = EXCLUDED.matched_rule_ids, updated_at = NOW()
+         WHERE telegram_subscription_ad_decisions.manual_label IS NULL`,
+    [
+      input.subscriptionId,
+      input.sourcePeer,
+      primaryMessageId,
+      candidate.groupedId,
+      candidate.messageIds,
+      decision.decision === "block" ? "blocked" : decision.decision,
+      decision.score,
+      JSON.stringify(decision.reasons),
+      candidate.text.slice(0, 1e3) || null,
+      candidate.textFingerprint || null,
+      candidate.domains,
+      candidate.usernames,
+      candidate.mediaKeys,
+      decision.matchedRuleIds
+    ]
+  );
+}
+async function filterTelegramSubscriptionAdvertisements(input) {
+  const mode = normalizeMode(input.mode);
+  if (mode === "off" || input.messages.length === 0) {
+    return { allowedMessages: input.messages, blockedMessageIds: [], reviewedMessageIds: [], blockedGroups: 0 };
+  }
+  const [rules, history] = await Promise.all([
+    getTelegramSubscriptionAdRules(input.subscriptionId),
+    getHistory(input.subscriptionId)
+  ]);
+  const groups = /* @__PURE__ */ new Map();
+  for (const message of input.messages) {
+    const key = groupKey(message);
+    groups.set(key, [...groups.get(key) || [], message]);
+  }
+  const allowedMessages = [];
+  const blockedMessageIds = [];
+  const reviewedMessageIds = [];
+  let blockedGroups = 0;
+  for (const messages of groups.values()) {
+    const candidate = messageToTelegramAdCandidate(messages);
+    const decision = classifyTelegramAdCandidate(candidate, { mode, rules, history });
+    await persistDecision({ ...input, messages }, decision);
+    if (decision.decision === "block") {
+      blockedGroups += 1;
+      blockedMessageIds.push(...candidate.messageIds);
+      continue;
+    }
+    allowedMessages.push(...messages);
+    if (decision.decision === "review") reviewedMessageIds.push(...candidate.messageIds);
+  }
+  return { allowedMessages, blockedMessageIds, reviewedMessageIds, blockedGroups };
+}
+async function listTelegramSubscriptionAdDecisions(input) {
+  const limit = Math.max(1, Math.min(200, Number(input.limit || 50)));
+  const offset = Math.max(0, Number(input.offset || 0));
+  const result = await query(
+    `SELECT d.*, s.title AS subscription_title, s.source AS subscription_source
+         FROM telegram_subscription_ad_decisions d
+         JOIN telegram_channel_subscriptions s ON s.id = d.subscription_id
+         WHERE s.enabled = TRUE
+           AND ($1::uuid IS NULL OR d.subscription_id = $1::uuid)
+           AND ($2::text IS NULL OR d.decision = $2::text)
+         ORDER BY d.created_at DESC
+         LIMIT $3 OFFSET $4`,
+    [input.subscriptionId || null, input.decision || null, limit, offset]
+  );
+  const total = await query(
+    `SELECT COUNT(*)::int AS total
+         FROM telegram_subscription_ad_decisions d
+         JOIN telegram_channel_subscriptions s ON s.id = d.subscription_id
+         WHERE s.enabled = TRUE
+           AND ($1::uuid IS NULL OR d.subscription_id = $1::uuid)
+           AND ($2::text IS NULL OR d.decision = $2::text)`,
+    [input.subscriptionId || null, input.decision || null]
+  );
+  return { decisions: result.rows, total: Number(total.rows[0]?.total || 0), limit, offset };
+}
+async function markTelegramSubscriptionAdDecision(input) {
+  const client2 = await pool.connect();
+  try {
+    await client2.query("BEGIN");
+    const updated = await client2.query(
+      `UPDATE telegram_subscription_ad_decisions
+             SET manual_label = $2, manually_reviewed_at = NOW(),
+                 decision = CASE WHEN $2 = 'ad' THEN 'blocked' ELSE 'allow' END,
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+      [input.decisionId, input.label]
+    );
+    const row = updated.rows[0];
+    if (!row) {
+      await client2.query("ROLLBACK");
+      return null;
+    }
+    if (input.learnTemplate && row.text_fingerprint) {
+      await client2.query(
+        `INSERT INTO telegram_subscription_ad_rules (subscription_id, kind, action, pattern, label)
+                 VALUES ($1, 'template', $2, $3, $4)
+                 ON CONFLICT (subscription_id, kind, action, pattern)
+                 DO UPDATE SET enabled = true, label = EXCLUDED.label, updated_at = NOW()`,
+        [row.subscription_id, input.label === "ad" ? "block" : "allow", row.text_fingerprint, input.label === "ad" ? "\u4EBA\u5DE5\u786E\u8BA4\u7684\u5E7F\u544A\u6A21\u677F" : "\u4EBA\u5DE5\u786E\u8BA4\u7684\u6B63\u5E38\u6A21\u677F"]
+      );
+    }
+    await client2.query("COMMIT");
+    return row;
+  } catch (error) {
+    await client2.query("ROLLBACK").catch(() => void 0);
+    throw error;
+  } finally {
+    client2.release();
+  }
+}
+
 // src/services/telegramChannelJobs.ts
 var SUBSCRIPTION_INTERVAL_MS = Math.max(6e4, parseInt(process.env.TELEGRAM_SUBSCRIPTION_INTERVAL_MS || "300000", 10) || 3e5);
 var SUBSCRIPTION_SCAN_LIMIT = Math.max(1, parseInt(process.env.TELEGRAM_SUBSCRIPTION_SCAN_LIMIT || "100", 10) || 100);
@@ -11777,10 +12143,10 @@ async function persistChannelJobAdmission(input, dependencies) {
   return dependencies.withTransaction(async (client2) => {
     if (target.accountId) await dependencies.lockStorageAccount(client2, target.accountId);
     const result = await client2.query(
-      `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor)
-             VALUES ($1, $2, $3, $4, $5, 'queued', 'pending', 'pending', '{}'::jsonb)
+      `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor, ad_decision_id)
+             VALUES ($1, $2, $3, $4, $5, 'queued', 'pending', 'pending', '{}'::jsonb, $6)
              RETURNING id`,
-      [input.userId, input.chatId || null, input.kind, input.source, JSON.stringify(persistedParams)]
+      [input.userId, input.chatId || null, input.kind, input.source, JSON.stringify(persistedParams), input.adDecisionId || null]
     );
     return String(result.rows[0].id);
   });
@@ -11841,6 +12207,12 @@ async function getDiscussionMediaRefs(userClient2, source, postMessages, options
   }
   return { refs, scanned, mediaFound };
 }
+async function shouldSkipTelegramPhotosInBatch() {
+  return ["1", "true", "yes", "on"].includes(String(await getSetting("skip_telegram_photos_in_batch", "false")).toLowerCase());
+}
+async function filterConfiguredTelegramBatchMessages(messages) {
+  return filterTelegramBatchMessages(messages, await shouldSkipTelegramPhotosInBatch());
+}
 function toChannelDownloadRef(source, message) {
   const fileInfo = extractFileInfo(message);
   if (!fileInfo) return null;
@@ -11879,8 +12251,14 @@ function propagateTelegramDownloadGroupContext(refs) {
   return refs;
 }
 async function buildDownloadScanResult(userClient2, source, messages, options = {}) {
-  const refs = messages.map((message) => toChannelDownloadRef(source, message)).filter((ref) => Boolean(ref));
+  const skipTelegramPhotos = await shouldSkipTelegramPhotosInBatch();
+  const filteredMessages = filterTelegramBatchMessages(messages, skipTelegramPhotos);
+  const refs = filteredMessages.map((message) => toChannelDownloadRef(source, message)).filter((ref) => Boolean(ref));
   const commentScan = await getDiscussionMediaRefs(userClient2, source, messages, options);
+  if (skipTelegramPhotos) {
+    commentScan.refs = commentScan.refs.filter((ref) => !ref.message || filterTelegramBatchMessages([ref.message], true).length > 0);
+    commentScan.mediaFound = commentScan.refs.length;
+  }
   refs.push(...commentScan.refs);
   propagateTelegramDownloadGroupContext(refs);
   for (const ref of refs) {
@@ -11989,6 +12367,59 @@ async function createJob(input) {
       }
     }
   });
+}
+async function createSubscriptionDownloadJob(input) {
+  const subscriptionResult = await query(
+    `SELECT id, enabled, target_mode, target_provider, target_account_id
+         FROM telegram_channel_subscriptions
+         WHERE id = $1 AND user_id = $2`,
+    [input.subscriptionId, input.userId]
+  );
+  const subscription = subscriptionResult.rows[0];
+  if (!subscription) throw new Error("\u8BA2\u9605\u4E0D\u5B58\u5728");
+  if (!subscription.enabled) throw new Error("\u8BA2\u9605\u5DF2\u505C\u7528");
+  const ids = Array.from(new Set(input.messageIds.filter((id) => Number.isSafeInteger(id) && id > 0))).sort((left, right) => left - right);
+  if (ids.length === 0) throw new Error("\u6CA1\u6709\u53EF\u4E0B\u8F7D\u7684\u6D88\u606F");
+  const target = resolveSubscriptionTarget(
+    subscription,
+    () => storageManager.getActiveTarget(),
+    (provider, accountId) => storageManager.getTarget(provider, accountId)
+  );
+  const userClient2 = requireUserClient();
+  const messages = (await userClient2.getMessages(input.source, { ids })).filter(Boolean);
+  const downloadable = await filterConfiguredTelegramBatchMessages(await expandMessagesWithMediaGroups(userClient2, input.source, messages));
+  const refs = downloadable.map((message) => toChannelDownloadRef(input.source, message)).filter((ref) => Boolean(ref));
+  if (refs.length === 0) throw new Error("\u539F\u6D88\u606F\u4E0D\u5B58\u5728\u6216\u6CA1\u6709\u53EF\u4E0B\u8F7D\u5A92\u4F53");
+  const existingJob = await query("SELECT id FROM telegram_background_jobs WHERE ad_decision_id = $1", [input.decisionId]);
+  let jobId = existingJob.rows[0]?.id ? String(existingJob.rows[0].id) : "";
+  if (!jobId) {
+    try {
+      jobId = await createJob({
+        userId: input.userId,
+        chatId: input.chatId === null ? void 0 : String(input.chatId),
+        kind: "subscription_sync",
+        source: input.source,
+        target,
+        adDecisionId: input.decisionId,
+        params: { subscriptionId: input.subscriptionId, manualRecovery: true }
+      });
+    } catch (error) {
+      if (error?.code !== "23505") throw error;
+      const racedJob = await query("SELECT id FROM telegram_background_jobs WHERE ad_decision_id = $1", [input.decisionId]);
+      if (!racedJob.rows[0]?.id) throw error;
+      jobId = String(racedJob.rows[0].id);
+    }
+  }
+  await persistDownloadMessages(jobId, input.source, downloadable, input.folderOverride || null);
+  await updateJob(jobId, {
+    status: "pending",
+    scan_status: "done",
+    download_status: "pending",
+    total_count: refs.length,
+    error: null,
+    finished_at: null
+  });
+  return jobId;
 }
 async function getJob(jobId) {
   const result = await query(`SELECT * FROM telegram_background_jobs WHERE id = $1`, [jobId]);
@@ -13118,7 +13549,7 @@ async function runSubscriptionScan(botClient) {
     if (!userClient2 || !isTelegramUserClientReady()) return;
     const result = await query(
       `SELECT id, user_id, chat_id, source, source_original, source_type, last_message_id, folder_override,
-                target_mode, target_provider, target_account_id, next_scan_at
+                target_mode, target_provider, target_account_id, next_scan_at, ad_filter_mode
          FROM telegram_channel_subscriptions
          WHERE enabled = true
            AND (next_scan_at IS NULL OR next_scan_at <= NOW())
@@ -13150,7 +13581,16 @@ async function runSubscriptionScan(botClient) {
           target: subscriptionTarget,
           params: { subscriptionId: String(row.id), fromId: lastMessageId + 1, toId: latestMessageId, targetMode: row.target_mode || "follow_global" }
         });
-        const candidateMessages = await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean));
+        const batchMessages = await filterConfiguredTelegramBatchMessages(
+          await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean))
+        );
+        const adFilter = await filterTelegramSubscriptionAdvertisements({
+          subscriptionId: String(row.id),
+          sourcePeer: String(row.source),
+          mode: row.ad_filter_mode || "off",
+          messages: batchMessages
+        });
+        const candidateMessages = adFilter.allowedMessages;
         await persistDownloadMessages(jobId, row.source, candidateMessages, row.folder_override || null);
         await updateJob(jobId, { status: "running", started_at: /* @__PURE__ */ new Date(), total_count: ids.length });
         const targetChat = row.chat_id || row.user_id;
@@ -13158,7 +13598,7 @@ async function runSubscriptionScan(botClient) {
         const subscriptionRefs = candidateMessages.map((message) => toChannelDownloadRef(row.source, message)).filter((ref) => Boolean(ref));
         propagateTelegramDownloadGroupContext(subscriptionRefs);
         const downloadableMessageIds = new Set(subscriptionRefs.map((ref) => ref.id));
-        const nonDownloadableMessageIds = ids.filter((id) => !downloadableMessageIds.has(id));
+        const nonDownloadableMessageIds = ids.filter((id) => !downloadableMessageIds.has(id) && !adFilter.blockedMessageIds.includes(id));
         const downloadResult = await downloadPendingForJob(
           botClient,
           requestMessage,
@@ -13179,7 +13619,7 @@ async function runSubscriptionScan(botClient) {
         const remainingStats = await getJobItemStats(jobId);
         if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) continue;
         const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
-        const safeAdvanceId = downloadResult.failed > 0 ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds], downloadResult.failedMessageIds) : scannedMaxId;
+        const safeAdvanceId = downloadResult.failed > 0 ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds, ...adFilter.blockedMessageIds], downloadResult.failedMessageIds) : scannedMaxId;
         const finalized = await finalizeSubscriptionJobInTransaction(pool, {
           jobId,
           subscriptionId: String(row.id),
@@ -22125,6 +22565,7 @@ function buildAdvancedSettings(input) {
     telegramFileConcurrency: FILE_CONCURRENCY.has(fileConcurrency) ? fileConcurrency : 2,
     duplicateMode,
     autoCleanupOrphans: booleanValue(input.autoCleanupOrphans, true),
+    skipTelegramPhotosInBatch: booleanValue(input.skipTelegramPhotosInBatch, false),
     telegramDownloadHistoryPolicy,
     highRisk: { telegramDownloadWorkers: workers >= 12, telegramFileConcurrency: fileConcurrency >= 4 }
   };
@@ -22150,6 +22591,10 @@ function normalizeAdvancedSettingsPatch(input) {
   if (key === "autoCleanupOrphans") {
     if (typeof value !== "boolean") throw new Error("autoCleanupOrphans \u5FC5\u987B\u662F\u5E03\u5C14\u503C");
     return { autoCleanupOrphans: value, highRisk: false };
+  }
+  if (key === "skipTelegramPhotosInBatch") {
+    if (typeof value !== "boolean") throw new Error("skipTelegramPhotosInBatch \u5FC5\u987B\u662F\u5E03\u5C14\u503C");
+    return { skipTelegramPhotosInBatch: value, highRisk: value };
   }
   if (key === "telegramDownloadHistoryPolicy") {
     if (value !== "errors_only" && value !== "all") throw new Error("telegramDownloadHistoryPolicy \u5FC5\u987B\u662F errors_only \u6216 all");
@@ -22377,6 +22822,7 @@ router5.get("/config/advanced-tasks", requireAuth, async (_req, res) => {
       telegramFileConcurrency: await getSetting("telegram_file_download_concurrency", String(getFileDownloadConcurrency())),
       duplicateMode: await getSetting("duplicate_file_mode", process.env.DUPLICATE_FILE_MODE || "copy"),
       autoCleanupOrphans: await getSetting("auto_cleanup_orphans", process.env.AUTO_CLEANUP_ORPHANS || "true"),
+      skipTelegramPhotosInBatch: await getSetting("skip_telegram_photos_in_batch", "false"),
       telegramDownloadHistoryPolicy: await getSetting(
         TELEGRAM_DOWNLOAD_HISTORY_POLICY_SETTING,
         DEFAULT_TELEGRAM_DOWNLOAD_HISTORY_POLICY
@@ -22392,7 +22838,11 @@ router5.patch("/config/advanced-tasks", requireAuth, async (req, res) => {
     const { confirmed, ...requestedPatch } = req.body || {};
     const patch = normalizeAdvancedSettingsPatch(requestedPatch);
     if (patch.highRisk && confirmed !== true) {
-      return res.status(409).json({ error: "\u9AD8\u5E76\u53D1\u8BBE\u7F6E\u9700\u8981\u4E8C\u6B21\u786E\u8BA4", code: "CONFIRMATION_REQUIRED" });
+      const photoFilter = patch.skipTelegramPhotosInBatch === true;
+      return res.status(409).json({
+        error: photoFilter ? "\u5F00\u542F\u8DF3\u8FC7\u9891\u9053\u666E\u901A\u56FE\u7247\u9700\u8981\u4E8C\u6B21\u786E\u8BA4" : "\u9AD8\u5E76\u53D1\u8BBE\u7F6E\u9700\u8981\u4E8C\u6B21\u786E\u8BA4",
+        code: "CONFIRMATION_REQUIRED"
+      });
     }
     if ("telegramDownloadWorkers" in patch) {
       await setSetting("telegram_download_workers", String(patch.telegramDownloadWorkers));
@@ -22409,6 +22859,9 @@ router5.patch("/config/advanced-tasks", requireAuth, async (req, res) => {
       process.env.AUTO_CLEANUP_ORPHANS = String(enabled);
       if (enabled) startPeriodicCleanup();
       else stopPeriodicCleanup();
+    } else if ("skipTelegramPhotosInBatch" in patch) {
+      const enabled = Boolean(patch.skipTelegramPhotosInBatch);
+      await setSetting("skip_telegram_photos_in_batch", String(enabled));
     } else if ("telegramDownloadHistoryPolicy" in patch) {
       await setSetting(TELEGRAM_DOWNLOAD_HISTORY_POLICY_SETTING, String(patch.telegramDownloadHistoryPolicy));
       const deletedCount = await compactTelegramDownloadHistory();
@@ -24967,11 +25420,282 @@ router7.post("/:sourceType/:id/:action", requireAuth, async (req, res) => {
 });
 var tasks_default = router7;
 
-// src/routes/system.ts
+// src/routes/subscriptions.ts
+init_db();
 import { Router as Router8 } from "express";
+
+// src/services/telegramAdRestore.ts
+async function claimTelegramAdRestore(client2, decisionId, requestRestore) {
+  const result = await client2.query(
+    `SELECT d.id, d.subscription_id, d.source_peer, d.message_ids, d.decision, d.restored_job_id,
+                d.restore_status, d.restore_attempted_at, s.user_id, s.chat_id, s.folder_override
+         FROM telegram_subscription_ad_decisions d
+         JOIN telegram_channel_subscriptions s ON s.id = d.subscription_id
+         WHERE d.id = $1
+         FOR UPDATE OF d`,
+    [decisionId]
+  );
+  const row = result.rows[0];
+  if (!row) return { kind: "missing" };
+  if (!requestRestore) return { kind: "claimed", row };
+  if (row.restored_job_id) return { kind: "existing", row, restoredJobId: String(row.restored_job_id) };
+  if (row.restore_status === "restoring" && row.restore_attempted_at) {
+    const attemptedAt = new Date(row.restore_attempted_at).getTime();
+    if (Number.isFinite(attemptedAt) && Date.now() - attemptedAt < 5 * 6e4) {
+      return { kind: "in_progress", row };
+    }
+  }
+  await client2.query(
+    `UPDATE telegram_subscription_ad_decisions
+         SET restore_status = 'restoring', restore_error = NULL, restore_attempted_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+    [decisionId]
+  );
+  return { kind: "claimed", row };
+}
+async function markTelegramAdRestoreSuccess(decisionId, jobId) {
+  const { query: query2 } = await Promise.resolve().then(() => (init_db(), db_exports));
+  await query2(
+    `UPDATE telegram_subscription_ad_decisions
+         SET restored_job_id = $2, restored_at = COALESCE(restored_at, NOW()), restore_status = 'restored',
+             restore_error = NULL, updated_at = NOW()
+         WHERE id = $1`,
+    [decisionId, jobId]
+  );
+}
+async function markTelegramAdRestoreFailure(decisionId, error) {
+  const { query: query2 } = await Promise.resolve().then(() => (init_db(), db_exports));
+  const message = (error instanceof Error ? error.message : String(error || "\u6062\u590D\u4E0B\u8F7D\u5931\u8D25")).slice(0, 1e3);
+  await query2(
+    `UPDATE telegram_subscription_ad_decisions
+         SET restore_status = 'failed', restore_error = $2, restore_attempted_at = NOW(), updated_at = NOW()
+         WHERE id = $1`,
+    [decisionId, message]
+  );
+}
+
+// src/routes/subscriptions.ts
+var router8 = Router8();
+var UUID_PATTERN2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+var MODES = /* @__PURE__ */ new Set(["off", "conservative", "aggressive"]);
+var RULE_KINDS = /* @__PURE__ */ new Set(["keyword", "domain", "username", "template", "media"]);
+var RULE_ACTIONS = /* @__PURE__ */ new Set(["allow", "block"]);
+router8.use((_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
+function validateUuid(value) {
+  const normalized = String(value || "").trim();
+  return UUID_PATTERN2.test(normalized) ? normalized : null;
+}
+router8.get("/", requireAuth, async (req, res) => {
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+  const offset = Math.max(0, Number(req.query.offset || 0));
+  try {
+    const [subscriptions, totalResult, summaryResult] = await Promise.all([
+      query(
+        `SELECT s.id, s.user_id, s.chat_id, s.source, s.source_original, s.source_type, s.title, s.last_message_id,
+                        s.folder_override, s.enabled, s.disabled_reason, s.disabled_at, s.last_scan_at, s.last_success_at,
+                        s.last_error, s.last_result, s.next_scan_at, s.target_mode, s.target_provider, s.target_account_id,
+                        s.ad_filter_mode, s.created_at, s.updated_at,
+                        jsonb_build_object(
+                            'blocked_count', COUNT(d.id) FILTER (WHERE d.decision = 'blocked'),
+                            'review_count', COUNT(d.id) FILTER (WHERE d.decision = 'review'),
+                            'reviewed_count', COUNT(d.id) FILTER (WHERE d.manual_label IS NOT NULL)
+                        ) AS ad_stats
+                 FROM telegram_channel_subscriptions s
+                 LEFT JOIN telegram_subscription_ad_decisions d ON d.subscription_id = s.id
+                 WHERE s.enabled = TRUE
+                 GROUP BY s.id
+                 ORDER BY s.updated_at DESC
+                 LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      ),
+      query(`SELECT COUNT(*)::int AS total FROM telegram_channel_subscriptions s WHERE s.enabled = TRUE`),
+      query(
+        `SELECT COUNT(DISTINCT s.id)::int AS enabled,
+                        COUNT(DISTINCT s.id) FILTER (WHERE s.ad_filter_mode <> 'off')::int AS protected,
+                        COUNT(d.id) FILTER (WHERE d.decision = 'blocked')::int AS blocked,
+                        COUNT(d.id) FILTER (WHERE d.decision = 'review')::int AS review
+                 FROM telegram_channel_subscriptions s
+                 LEFT JOIN telegram_subscription_ad_decisions d ON d.subscription_id = s.id
+                 WHERE s.enabled = TRUE`
+      )
+    ]);
+    res.json({
+      subscriptions: subscriptions.rows,
+      total: Number(totalResult.rows[0]?.total || 0),
+      limit,
+      offset,
+      summary: summaryResult.rows[0] || { enabled: 0, protected: 0, blocked: 0, review: 0 }
+    });
+  } catch (error) {
+    console.error("\u83B7\u53D6\u8BA2\u9605\u4E2D\u5FC3\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u83B7\u53D6\u8BA2\u9605\u4E2D\u5FC3\u5931\u8D25" });
+  }
+});
+router8.patch("/:subscriptionId", requireAuth, async (req, res) => {
+  const subscriptionId = validateUuid(req.params.subscriptionId);
+  if (!subscriptionId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605 ID" });
+  const mode = String(req.body?.adFilterMode || "");
+  if (!MODES.has(mode)) return res.status(400).json({ error: "\u65E0\u6548\u7684\u5E7F\u544A\u8FC7\u6EE4\u6A21\u5F0F" });
+  try {
+    const result = await query(
+      `UPDATE telegram_channel_subscriptions
+             SET ad_filter_mode = $2, updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+      [subscriptionId, mode]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "\u8BA2\u9605\u4E0D\u5B58\u5728" });
+    res.json({ subscription: result.rows[0] });
+  } catch (error) {
+    console.error("\u66F4\u65B0\u8BA2\u9605\u8FC7\u6EE4\u6A21\u5F0F\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u66F4\u65B0\u8BA2\u9605\u8FC7\u6EE4\u6A21\u5F0F\u5931\u8D25" });
+  }
+});
+router8.get("/:subscriptionId/rules", requireAuth, async (req, res) => {
+  const subscriptionId = validateUuid(req.params.subscriptionId);
+  if (!subscriptionId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605 ID" });
+  try {
+    const result = await query(
+      `SELECT id, subscription_id, kind, action, pattern, label, enabled, created_at, updated_at
+             FROM telegram_subscription_ad_rules
+             WHERE subscription_id = $1
+             ORDER BY action ASC, kind ASC, created_at DESC`,
+      [subscriptionId]
+    );
+    res.json({ rules: result.rows });
+  } catch (error) {
+    console.error("\u83B7\u53D6\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u83B7\u53D6\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25" });
+  }
+});
+router8.post("/:subscriptionId/rules", requireAuth, async (req, res) => {
+  const subscriptionId = validateUuid(req.params.subscriptionId);
+  if (!subscriptionId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605 ID" });
+  const kind = String(req.body?.kind || "");
+  const action = String(req.body?.action || "");
+  const pattern = String(req.body?.pattern || "").trim();
+  const label = String(req.body?.label || "").trim().slice(0, 200);
+  if (!RULE_KINDS.has(kind) || !RULE_ACTIONS.has(action)) return res.status(400).json({ error: "\u65E0\u6548\u7684\u89C4\u5219\u7C7B\u578B\u6216\u52A8\u4F5C" });
+  if (!pattern || pattern.length > 2e3) return res.status(400).json({ error: "\u89C4\u5219\u5185\u5BB9\u4E0D\u80FD\u4E3A\u7A7A\u4E14\u4E0D\u80FD\u8D85\u8FC7 2000 \u4E2A\u5B57\u7B26" });
+  try {
+    const result = await query(
+      `INSERT INTO telegram_subscription_ad_rules (subscription_id, kind, action, pattern, label)
+             SELECT $1, $2, $3, $4, $5
+             WHERE EXISTS (SELECT 1 FROM telegram_channel_subscriptions WHERE id = $1)
+             ON CONFLICT (subscription_id, kind, action, pattern)
+             DO UPDATE SET enabled = true, label = EXCLUDED.label, updated_at = NOW()
+             RETURNING *`,
+      [subscriptionId, kind, action, pattern, label || null]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "\u8BA2\u9605\u4E0D\u5B58\u5728" });
+    res.status(201).json({ rule: result.rows[0] });
+  } catch (error) {
+    console.error("\u521B\u5EFA\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u521B\u5EFA\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25" });
+  }
+});
+router8.patch("/:subscriptionId/rules/:ruleId", requireAuth, async (req, res) => {
+  const subscriptionId = validateUuid(req.params.subscriptionId);
+  const ruleId = validateUuid(req.params.ruleId);
+  if (!subscriptionId || !ruleId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605\u6216\u89C4\u5219 ID" });
+  if (typeof req.body?.enabled !== "boolean") return res.status(400).json({ error: "enabled \u5FC5\u987B\u662F\u5E03\u5C14\u503C" });
+  try {
+    const result = await query(
+      `UPDATE telegram_subscription_ad_rules SET enabled = $3, updated_at = NOW()
+             WHERE id = $2 AND subscription_id = $1 RETURNING *`,
+      [subscriptionId, ruleId, req.body.enabled]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: "\u89C4\u5219\u4E0D\u5B58\u5728" });
+    res.json({ rule: result.rows[0] });
+  } catch (error) {
+    console.error("\u66F4\u65B0\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u66F4\u65B0\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25" });
+  }
+});
+router8.delete("/:subscriptionId/rules/:ruleId", requireAuth, async (req, res) => {
+  const subscriptionId = validateUuid(req.params.subscriptionId);
+  const ruleId = validateUuid(req.params.ruleId);
+  if (!subscriptionId || !ruleId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605\u6216\u89C4\u5219 ID" });
+  try {
+    const result = await query("DELETE FROM telegram_subscription_ad_rules WHERE id = $2 AND subscription_id = $1 RETURNING id", [subscriptionId, ruleId]);
+    if (!result.rowCount) return res.status(404).json({ error: "\u89C4\u5219\u4E0D\u5B58\u5728" });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("\u5220\u9664\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u5220\u9664\u5E7F\u544A\u8FC7\u6EE4\u89C4\u5219\u5931\u8D25" });
+  }
+});
+router8.get("/decisions/list", requireAuth, async (req, res) => {
+  const subscriptionId = req.query.subscriptionId ? validateUuid(req.query.subscriptionId) || void 0 : void 0;
+  if (req.query.subscriptionId && !subscriptionId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u8BA2\u9605 ID" });
+  const decision = String(req.query.decision || "");
+  if (decision && !["blocked", "review", "allow"].includes(decision)) return res.status(400).json({ error: "\u65E0\u6548\u7684\u5224\u5B9A\u72B6\u6001" });
+  try {
+    res.json(await listTelegramSubscriptionAdDecisions({
+      subscriptionId,
+      decision: decision ? decision : void 0,
+      limit: Number(req.query.limit || 50),
+      offset: Number(req.query.offset || 0)
+    }));
+  } catch (error) {
+    console.error("\u83B7\u53D6\u5E7F\u544A\u5224\u5B9A\u8BB0\u5F55\u5931\u8D25:", error);
+    res.status(500).json({ error: "\u83B7\u53D6\u5E7F\u544A\u5224\u5B9A\u8BB0\u5F55\u5931\u8D25" });
+  }
+});
+router8.post("/decisions/:decisionId/review", requireAuth, async (req, res) => {
+  const decisionId = validateUuid(req.params.decisionId);
+  if (!decisionId) return res.status(400).json({ error: "\u65E0\u6548\u7684\u5224\u5B9A\u8BB0\u5F55 ID" });
+  const label = String(req.body?.label || "");
+  if (!["ad", "normal"].includes(label)) return res.status(400).json({ error: "label \u5FC5\u987B\u662F ad \u6216 normal" });
+  let before;
+  const client2 = await pool.connect();
+  try {
+    await client2.query("BEGIN");
+    before = await claimTelegramAdRestore(client2, decisionId, label === "normal");
+    await client2.query("COMMIT");
+  } catch (error) {
+    await client2.query("ROLLBACK").catch(() => void 0);
+    console.error("\u9501\u5B9A\u5E7F\u544A\u6062\u590D\u8BB0\u5F55\u5931\u8D25:", error);
+    return res.status(500).json({ error: "\u9501\u5B9A\u5E7F\u544A\u6062\u590D\u8BB0\u5F55\u5931\u8D25" });
+  } finally {
+    client2.release();
+  }
+  if (before.kind === "missing" || !before.row) return res.status(404).json({ error: "\u5224\u5B9A\u8BB0\u5F55\u4E0D\u5B58\u5728" });
+  if (before.kind === "in_progress") return res.status(409).json({ error: "\u8BE5\u5185\u5BB9\u6B63\u5728\u6062\u590D\u4E0B\u8F7D\uFF0C\u8BF7\u7A0D\u540E\u5237\u65B0\u67E5\u770B" });
+  try {
+    let restoredJobId = before.restoredJobId || null;
+    if (label === "normal" && before.row.decision === "blocked" && !restoredJobId) {
+      restoredJobId = await createSubscriptionDownloadJob({
+        subscriptionId: String(before.row.subscription_id),
+        decisionId,
+        userId: Number(before.row.user_id),
+        chatId: before.row.chat_id === null ? null : Number(before.row.chat_id),
+        source: String(before.row.source_peer),
+        folderOverride: before.row.folder_override || null,
+        messageIds: Array.isArray(before.row.message_ids) ? before.row.message_ids.map(Number) : []
+      });
+      await markTelegramAdRestoreSuccess(decisionId, restoredJobId);
+    }
+    const decision = await markTelegramSubscriptionAdDecision({ decisionId, label, learnTemplate: req.body?.learnTemplate !== false });
+    return res.json({ decision, restoredJobId });
+  } catch (error) {
+    if (label === "normal" && before.row.decision === "blocked" && !before.restoredJobId) {
+      await markTelegramAdRestoreFailure(decisionId, error).catch(() => void 0);
+    }
+    console.error("\u4EBA\u5DE5\u4FEE\u6B63\u5E7F\u544A\u5224\u5B9A\u5931\u8D25:", error);
+    return res.status(400).json({ error: error instanceof Error ? error.message : "\u4EBA\u5DE5\u4FEE\u6B63\u5E7F\u544A\u5224\u5B9A\u5931\u8D25" });
+  }
+});
+var subscriptions_default = router8;
+
+// src/routes/system.ts
+import { Router as Router9 } from "express";
 import { rateLimit as rateLimit5 } from "express-rate-limit";
 function createSystemRouter(checker) {
-  const router8 = Router8();
+  const router9 = Router9();
   const manualCheckLimiter = rateLimit5({
     windowMs: 6e4,
     max: 3,
@@ -24980,7 +25704,7 @@ function createSystemRouter(checker) {
     legacyHeaders: false
   });
   const noStore2 = (res) => res.setHeader("Cache-Control", "no-store");
-  router8.get("/update-status", requireAuth, async (_req, res) => {
+  router9.get("/update-status", requireAuth, async (_req, res) => {
     noStore2(res);
     try {
       res.json(await checker.getStatus());
@@ -24989,7 +25713,7 @@ function createSystemRouter(checker) {
       res.status(500).json({ error: "\u8BFB\u53D6\u7248\u672C\u72B6\u6001\u5931\u8D25" });
     }
   });
-  router8.post("/update-check", requireAuth, manualCheckLimiter, async (_req, res) => {
+  router9.post("/update-check", requireAuth, manualCheckLimiter, async (_req, res) => {
     noStore2(res);
     try {
       res.json(await checker.checkNow());
@@ -24998,7 +25722,7 @@ function createSystemRouter(checker) {
       res.status(500).json({ error: "\u68C0\u67E5\u7248\u672C\u5931\u8D25" });
     }
   });
-  return router8;
+  return router9;
 }
 
 // src/index.ts
@@ -25167,7 +25891,7 @@ function logRuntimeConfigSummary(summary) {
 // package.json
 var package_default = {
   name: "tg-vault-backend",
-  version: "2.3.0",
+  version: "2.3.1",
   type: "module",
   scripts: {
     dev: "tsx watch src/index.ts",
@@ -25561,6 +26285,7 @@ app.use("/api/upload", requireAuth, upload_default);
 app.use("/api/v1/upload", apiRouter);
 app.use("/api/chunked", requireAuth, chunkedUpload_default);
 app.use("/api/tasks", tasks_default);
+app.use("/api/subscriptions", subscriptions_default);
 app.use("/api/storage", storage_default);
 app.use("/api/system", createSystemRouter(updateChecker));
 var applicationReady = false;

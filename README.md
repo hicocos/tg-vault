@@ -27,7 +27,7 @@
     <a href="https://github.com/hicocos/tg-vault/network/members"><img src="https://img.shields.io/github/forks/hicocos/tg-vault?style=for-the-badge&logo=github&color=8e44ad" alt="Forks" /></a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/Release-v2.3.0-2ea44f?style=flat-square" alt="Release v2.3.0" />
+    <img src="https://img.shields.io/badge/Release-v2.3.1-2ea44f?style=flat-square" alt="Release v2.3.1" />
     <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose" />
     <img src="https://img.shields.io/badge/React-TypeScript-3178C6?style=flat-square&logo=react&logoColor=white" alt="React TypeScript" />

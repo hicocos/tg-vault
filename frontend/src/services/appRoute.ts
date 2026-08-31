@@ -6,6 +6,7 @@ export type AppRoute =
     | { kind: 'upload'; needsReplace: boolean }
     | { kind: 'files'; category: FileCategory; folder: string | null; query: string; needsReplace: boolean }
     | { kind: 'tasks'; accountId: string | null; needsReplace: boolean }
+    | { kind: 'subscriptions'; needsReplace: boolean }
     | { kind: 'settings'; section: SettingsSectionId; needsReplace: boolean };
 
 const CATEGORY_PATHS: Record<FileCategory, string> = {
@@ -39,6 +40,7 @@ export function parseAppRoute(location: Pick<Location, 'pathname' | 'search'>): 
         const params = new URLSearchParams(location.search);
         return { kind: 'tasks', accountId: params.get('accountId'), needsReplace: false };
     }
+    if (pathname === '/subscriptions') return { kind: 'subscriptions', needsReplace: false };
     if (pathname.startsWith('/settings/')) {
         const section = pathname.slice('/settings/'.length) as SettingsSectionId;
         if (SETTINGS_SECTIONS.has(section)) return { kind: 'settings', section, needsReplace: false };
@@ -55,6 +57,7 @@ export function appRouteHref(route: AppRoute): string {
         return `/tasks${search ? `?${search}` : ''}`;
     }
     if (route.kind === 'settings') return `/settings/${route.section}`;
+    if (route.kind === 'subscriptions') return '/subscriptions';
     const params = new URLSearchParams();
     if (route.folder) params.set('folder', route.folder);
     if (route.query) params.set('q', route.query);
@@ -65,6 +68,7 @@ export function appRouteHref(route: AppRoute): string {
 export function routeForCategory(category: string, options: { folder?: string | null; query?: string } = {}): AppRoute {
     if (category === 'upload') return { kind: 'upload', needsReplace: false };
     if (category === 'tasks') return { kind: 'tasks', accountId: null, needsReplace: false };
+    if (category === 'subscriptions') return { kind: 'subscriptions', needsReplace: false };
     if (category === 'settings') return routeForSettings('general');
     const safeCategory = Object.hasOwn(CATEGORY_PATHS, category) ? category as FileCategory : 'all';
     return filesRoute(safeCategory, options.folder ?? null, options.query ?? '');

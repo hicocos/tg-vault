@@ -13,5 +13,10 @@ test('Web advanced task settings use the shared server contract and retain risk 
     assert.match(settings, /telegramFileConcurrency/);
     assert.match(settings, /duplicateMode/);
     assert.match(settings, /autoCleanupOrphans/);
+    assert.match(api, /skipTelegramPhotosInBatch/);
+    assert.match(settings, /skipTelegramPhotosInBatch/);
+    assert.match(settings, /跳过频道普通图片/);
+    assert.match(settings, /订阅和按日期批量下载/);
+    assert.match(settings, /一般不需要开启/);
     assert.match(settings, /CONFIRMATION_REQUIRED/);
 });
