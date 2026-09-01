@@ -14,7 +14,7 @@ import subscriptionsRouter from './routes/subscriptions.js';
 import authRouter, { requireAuth } from './routes/auth.js';
 import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
-import { initTelegramBot, sendUpdateNotificationToUser } from './services/telegramBot.js';
+import { initTelegramBot, scheduleTelegramBotPostStartup, sendUpdateNotificationToUser } from './services/telegramBot.js';
 import { applyEffectiveTelegramBotConfig } from './services/telegramBotConfig.js';
 import { classifyTelegramBotStartupError, getTelegramBotStatus, markTelegramBotError, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
 import { isTelegramUserClientReady, restoreEnabledTelegramUserAccountsAfterRestart } from './services/telegramUserClient.js';
@@ -28,6 +28,7 @@ import { normalizeRequestId } from './services/operationalEvents.js';
 import { markTransferTasksAfterRestart } from './services/transferTasks.js';
 import { initializeYtDlpQueue } from './services/ytDlpDownload.js';
 import { recoverMediaDerivativeJobs } from './services/mediaDerivatives.js';
+import { applyPersistedOrphanCleanupSetting, startPeriodicCleanup } from './services/orphanCleanup.js';
 import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
 import { APP_VERSION } from './services/appVersion.js';
 import { createUpdateChecker } from './services/updateChecker.js';
@@ -240,10 +241,11 @@ async function initializeApplication(): Promise<void> {
     const telegramConfig = await applyEffectiveTelegramBotConfig();
     const telegramEnabled = telegramConfig.configured && telegramConfig.enabled;
     await installTelegramMultiAccountRuntimeAdapters();
-    await restoreEnabledTelegramUserAccountsAfterRestart();
     await markTransferTasksAfterRestart();
     const { storageManager } = await import('./services/storage.js');
     await storageManager.init();
+    await applyPersistedOrphanCleanupSetting();
+    startPeriodicCleanup();
     const twoFactor = await get2FAReadiness();
     if (!twoFactor.ready) throw new Error('2FA 已启用但密钥不可读取');
     if (telegramEnabled) {
@@ -260,6 +262,14 @@ async function initializeApplication(): Promise<void> {
             );
             console.warn('Telegram Bot 可选组件启动失败，应用以 degraded 状态继续:', message);
         }
+    }
+    if (telegramEnabled && getTelegramBotStatus().status === 'ready') {
+        scheduleTelegramBotPostStartup(restoreEnabledTelegramUserAccountsAfterRestart);
+    } else {
+        // With no Bot activation there is no correlated startup event to
+        // isolate. If optional Bot startup failed, the Bot is not emitting
+        // traffic either, so enabled downloader accounts may resume normally.
+        await restoreEnabledTelegramUserAccountsAfterRestart();
     }
     await initializeYtDlpQueue();
     await recoverMediaDerivativeJobs();

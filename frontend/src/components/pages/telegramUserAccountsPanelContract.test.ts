@@ -12,15 +12,18 @@ test('Telegram accounts panel presents method-choice multi-account management an
         '二维码登录',
         '改用手机号',
         '两步验证密码',
-        '停用（保留登录）',
+        '停用',
         '重新启用',
-        '解除绑定',
-        '检测权限',
+        '删除账号',
         '权限汇总',
         '智能调度',
     ]) {
         assert.match(panel, new RegExp(copy));
     }
+    assert.doesNotMatch(panel, /停用（保留登录）/);
+    assert.doesNotMatch(panel, /解除绑定/);
+    assert.doesNotMatch(panel, /检测权限/);
+    assert.doesNotMatch(panel, /checkTelegramUserAccountPermissions/);
     assert.match(panel, /QRCodeSVG/);
     assert.match(panel, /<Dialog/);
     assert.match(panel, /getTelegramUserLoginStatus/);

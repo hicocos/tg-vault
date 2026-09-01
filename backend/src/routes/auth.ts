@@ -295,7 +295,7 @@ router.post('/change-password', requireAuth, async (req: Request, res: Response)
         res.json({ success: true, sessionsRevoked: true, message: '密码已修改，所有设备需要重新登录' });
     } catch (error) {
         const message = error instanceof Error ? error.message : '修改密码失败';
-        if (message === '当前密码不正确') return res.status(401).json({ error: message });
+        if (message === '当前密码不正确') return res.status(403).json({ error: message });
         if (/不能与|至少需要|过长/.test(message)) return res.status(400).json({ error: message });
         console.error('修改管理员密码失败:', error);
         res.status(500).json({ error: '修改密码失败' });

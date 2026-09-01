@@ -62,9 +62,10 @@ test('explicit account enable resolves API credentials before activating only th
 
 test('Web settings provide QR-first multi-account controls and permission summaries', () => {
     const ui = settings + fs.readFileSync(new URL('../../../frontend/src/components/pages/TelegramUserAccountsPanel.tsx', import.meta.url), 'utf8');
-    for (const copy of ['添加账号', '二维码登录', '手机号登录', '权限检测']) assert.match(ui, new RegExp(copy));
+    for (const copy of ['添加账号', '二维码登录', '手机号登录', '权限汇总']) assert.match(ui, new RegExp(copy));
+    assert.doesNotMatch(ui, /检测权限|权限检测/);
     assert.match(ui, /智能调度|智能均衡|智能负载均衡/);
     assert.match(ui, /可访问/);
     assert.match(ui, /不可访问|无权限/);
-    for (const method of ['getTelegramUserAccounts', 'startTelegramUserQrLogin', 'getTelegramUserLoginStatus', 'setTelegramUserAccountEnabled', 'checkTelegramUserAccountPermissions']) assert.match(frontendApi, new RegExp(method));
+    for (const method of ['getTelegramUserAccounts', 'startTelegramUserQrLogin', 'getTelegramUserLoginStatus', 'setTelegramUserAccountEnabled']) assert.match(frontendApi, new RegExp(method));
 });

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { query } from '../db/index.js';
 import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 import { formatBytes } from '../utils/fileMetadata.js';
+import { getSetting } from '../utils/settings.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const YTDLP_WORK_DIR = path.resolve(process.env.YTDLP_WORK_DIR || path.join(UPLOAD_DIR, 'ytdlp'));
@@ -32,6 +33,13 @@ export function isReservedTransientUploadPath(filePath: string, reservedDirs: st
 
 export function isAutoCleanupEnabled(): boolean {
     return ['1', 'true', 'yes', 'on'].includes((process.env.AUTO_CLEANUP_ORPHANS || 'true').toLowerCase());
+}
+
+export async function applyPersistedOrphanCleanupSetting(): Promise<boolean> {
+    const configured = await getSetting('auto_cleanup_orphans', process.env.AUTO_CLEANUP_ORPHANS || 'true');
+    const enabled = ['1', 'true', 'yes', 'on'].includes(String(configured ?? 'true').toLowerCase());
+    process.env.AUTO_CLEANUP_ORPHANS = String(enabled);
+    return enabled;
 }
 
 export interface CleanupStats {

@@ -392,7 +392,6 @@ router.put('/config/telegram-bot', requireAuth, async (req: Request, res: Respon
     noStore(res);
     try {
         const credentials = normalizeTelegramBotCredentials(req.body);
-        const bot = await testTelegramBotCredentials(credentials);
         const enabled = req.body?.enabled !== false;
         const required = req.body?.required === true;
         await withTelegramBotLifecycle(async controls => {
@@ -400,7 +399,6 @@ router.put('/config/telegram-bot', requireAuth, async (req: Request, res: Respon
             const previous = await snapshotTelegramBotConfig();
             const previousEffective = await getEffectiveTelegramBotConfig();
             await saveTelegramBotConfig(credentials, { enabled, required });
-            setTelegramBotIdentity(bot);
             await applyEffectiveTelegramBotConfig();
             try {
                 if (enabled) await controls.restart(credentials); else await controls.stop();

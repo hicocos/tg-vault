@@ -26,8 +26,8 @@ function assertBeginnerFriendlyInstall(source: string): void {
 }
 
 test('release images use locked dependencies, pinned bases, verified yt-dlp and source labels', () => {
-    assert.equal(backendPackage.version, '2.4.0');
-    assert.equal(frontendPackage.version, '2.4.0');
+    assert.equal(backendPackage.version, '2.4.1');
+    assert.equal(frontendPackage.version, '2.4.1');
     assert.equal((backend.match(/npm ci/g) || []).length, 2);
     assert.doesNotMatch(backend, /npm install/);
     assert.match(backend, /node@sha256:/);

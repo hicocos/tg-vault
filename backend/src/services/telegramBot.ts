@@ -20,6 +20,8 @@ import {
     findTelegramSubscription,
     listTelegramSubscriptions,
     type TelegramJobProgressSummary,
+    startTelegramJobRecoveryWorker,
+    startTelegramSubscriptionWorker,
     stopTelegramBackgroundWorkers,
     subscribeTelegramChannel,
     unsubscribeTelegramChannel,
@@ -54,6 +56,48 @@ import {
     resetTelegramBotStatus,
 } from './telegramBotStatus.js';
 import { getEffectiveTelegramBotConfig, setTelegramBotIdentity, type TelegramBotCredentials } from './telegramBotConfig.js';
+import { getSetting, setSetting } from '../utils/settings.js';
+
+const TELEGRAM_BOT_COMMAND_MENU_FINGERPRINT_SETTING = 'telegram_bot_command_menu_fingerprint';
+const TELEGRAM_BOT_USER_ISOLATION_MIN_MS = 60_000;
+const TELEGRAM_BOT_USER_ISOLATION_MAX_MS = 120_000;
+
+let postStartupTimer: NodeJS.Timeout | null = null;
+let postStartupGeneration = 0;
+
+function cancelTelegramBotPostStartup(): void {
+    postStartupGeneration += 1;
+    if (postStartupTimer) clearTimeout(postStartupTimer);
+    postStartupTimer = null;
+}
+
+function telegramBotPostStartupDelayMs(): number {
+    const configured = Number.parseInt(process.env.TELEGRAM_BOT_USER_ISOLATION_MS || '', 10);
+    if (Number.isFinite(configured) && configured >= TELEGRAM_BOT_USER_ISOLATION_MIN_MS) {
+        return Math.min(10 * 60_000, configured);
+    }
+    return crypto.randomInt(TELEGRAM_BOT_USER_ISOLATION_MIN_MS, TELEGRAM_BOT_USER_ISOLATION_MAX_MS + 1);
+}
+
+export function scheduleTelegramBotPostStartup(restoreUserAccounts: () => Promise<void>): void {
+    cancelTelegramBotPostStartup();
+    const generation = postStartupGeneration;
+    const activeClient = client;
+    const delayMs = telegramBotPostStartupDelayMs();
+    console.log(`🤖 Telegram 用户账号与后台任务将在 ${Math.ceil(delayMs / 1000)} 秒隔离窗口后恢复`);
+    postStartupTimer = setTimeout(() => {
+        postStartupTimer = null;
+        void (async () => {
+            if (generation !== postStartupGeneration) return;
+            await restoreUserAccounts();
+            if (generation !== postStartupGeneration || !activeClient || client !== activeClient || !activeClient.connected || getTelegramBotStatus().status !== 'ready') return;
+            startTelegramSubscriptionWorker(activeClient);
+            startTelegramJobRecoveryWorker(activeClient);
+            console.log('🤖 Telegram 用户账号及订阅后台任务已在隔离窗口后恢复');
+        })().catch(error => console.error('🤖 Telegram 启动后运行时恢复失败:', error));
+    }, delayMs);
+    postStartupTimer.unref?.();
+}
 
 function buildBotStartKeyboard(): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
@@ -1568,13 +1612,30 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
             console.error('🤖 初始化 Telegram 认证表失败:', e);
         }
 
-        // Set Bot Commands
-        await withTelegramClientDeadline(client.invoke(new Api.bots.SetBotCommands({
-            scope: new Api.BotCommandScopeDefault(),
-            langCode: 'zh',
-            commands: buildBotCommandMenu().map(command => new Api.BotCommand(command))
-        })), 10_000, 'Telegram Bot 命令菜单注册超时，请稍后重试');
-        console.log('🤖 Bot 命令菜单已更新');
+        // Keep command registration out of the critical readiness path and do
+        // it only when this Bot identity or the menu content changes.
+        try {
+            const commands = buildBotCommandMenu().map(command => new Api.BotCommand(command));
+            const commandMenuFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+                tokenOwner: botToken.split(':', 1)[0],
+                langCode: 'zh',
+                commands: commands.map(command => ({ command: command.command, description: command.description })),
+            })).digest('hex');
+            const savedFingerprint = await getSetting<string>(TELEGRAM_BOT_COMMAND_MENU_FINGERPRINT_SETTING, '');
+            if (savedFingerprint !== commandMenuFingerprint) {
+                await withTelegramClientDeadline(client.invoke(new Api.bots.SetBotCommands({
+                    scope: new Api.BotCommandScopeDefault(),
+                    langCode: 'zh',
+                    commands,
+                })), 10_000, 'Telegram Bot 命令菜单注册超时，请稍后重试');
+                await setSetting(TELEGRAM_BOT_COMMAND_MENU_FINGERPRINT_SETTING, commandMenuFingerprint);
+                console.log('🤖 Bot 命令菜单已更新');
+            } else {
+                console.log('🤖 Bot 命令菜单未变化，跳过重复注册');
+            }
+        } catch (error) {
+            console.warn('🤖 Bot 命令菜单同步失败，Bot 继续运行:', error);
+        }
 
         try {
             const fileConcurrency = await loadFileDownloadConcurrencySetting();
@@ -2392,6 +2453,7 @@ async function withTelegramClientDeadline<T>(operation: Promise<T>, timeoutMs: n
 }
 
 async function stopTelegramBotInternal(): Promise<void> {
+    cancelTelegramBotPostStartup();
     const activeClient = client;
     if (digestTimer) clearInterval(digestTimer);
     digestTimer = null;
@@ -2414,8 +2476,12 @@ export function withTelegramBotLifecycle<T>(operation: (controls: TelegramBotLif
     const controls: TelegramBotLifecycleControls = {
         stop: () => stopTelegramBotInternal(),
         restart: async (credentialsOverride?: TelegramBotCredentials) => {
+            // Explicit Web/API replacement restarts only the Bot. Existing user
+            // downloader sessions are left untouched. Background workers resume
+            // only after the same isolation window, without reconnecting users.
             await stopTelegramBotInternal();
             await initTelegramBot(credentialsOverride);
+            scheduleTelegramBotPostStartup(async () => undefined);
         },
     };
     const result = botLifecycle.catch(() => undefined).then(() => operation(controls));

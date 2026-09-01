@@ -343,13 +343,13 @@ export function TelegramUserAccountsPanel({
 
     useEffect(() => { void reload(); }, [reload]);
 
-    const mutateAccount = async (account: TelegramUserAccount, operation: 'enable' | 'disable' | 'permissions' | 'unlink') => {
+    const mutateAccount = async (account: TelegramUserAccount, operation: 'enable' | 'disable' | 'unlink') => {
         if (busyAccountId) return;
         if (operation === 'unlink') {
             const confirmed = await requestConfirmation(
-                `解除绑定“${accountName(account)}”后，将永久删除该账号已加密保存的登录信息，并立即停止它参与下载调度。\n\n其他 Telegram 账号和已下载文件不会受影响。`,
-                '解除绑定 Telegram 账号',
-                { tone: 'danger', dangerDescription: '将永久删除此账号的登录信息，无法撤销', cancelLabel: '保留账号', confirmLabel: '确认解除绑定' },
+                `删除“${accountName(account)}”后，将永久删除该账号已加密保存的登录信息，并立即停止它参与下载调度。\n\n其他 Telegram 账号和已下载文件不会受影响。`,
+                '删除 Telegram 账号',
+                { tone: 'danger', dangerDescription: '将永久删除此账号的登录信息，无法撤销', cancelLabel: '保留账号', confirmLabel: '确认删除' },
             );
             if (!confirmed) return;
         }
@@ -357,13 +357,11 @@ export function TelegramUserAccountsPanel({
         try {
             if (operation === 'enable') await fileApi.setTelegramUserAccountEnabled(account.id, true);
             if (operation === 'disable') await fileApi.setTelegramUserAccountEnabled(account.id, false);
-            if (operation === 'permissions') await fileApi.checkTelegramUserAccountPermissions(account.id);
             if (operation === 'unlink') await fileApi.unlinkTelegramUserAccountById(account.id);
             await reload();
-            if (operation === 'permissions') await onNotice('权限检测已完成，账号和总览状态已刷新。');
             if (operation === 'enable') await onNotice('账号已重新启用，将在状态就绪后参与调度。');
             if (operation === 'disable') await onNotice('账号已停用；已加密保存的登录信息会保留。');
-            if (operation === 'unlink') await onNotice('账号已解除绑定，登录信息已删除。');
+            if (operation === 'unlink') await onNotice('账号已删除，登录信息已删除。');
         } catch (error) {
             await onNotice(errorMessage(error) || '账号操作失败', '操作失败');
         } finally { setBusyAccountId(null); }
@@ -419,9 +417,8 @@ export function TelegramUserAccountsPanel({
                                 {!account.enabled && <p className="mt-2 text-xs text-muted-foreground">已停用，不会执行账号级下载；登录信息仍安全保留。</p>}
                             </div>
                             <div className="grid shrink-0 grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:max-w-sm lg:justify-end">
-                                <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'permissions')}><RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', busy && 'animate-spin')} />检测权限</Button>
-                                {account.enabled ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'disable')}><PowerOff className="mr-1.5 h-3.5 w-3.5" />停用（保留登录）</Button> : <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'enable')}><Power className="mr-1.5 h-3.5 w-3.5" />重新启用</Button>}
-                                <Button size="sm" variant="destructive" className="col-span-2 sm:col-auto" disabled={busy} onClick={() => void mutateAccount(account, 'unlink')}><Trash2 className="mr-1.5 h-3.5 w-3.5" />解除绑定</Button>
+                                {account.enabled ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'disable')}><PowerOff className="mr-1.5 h-3.5 w-3.5" />停用</Button> : <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'enable')}><Power className="mr-1.5 h-3.5 w-3.5" />重新启用</Button>}
+                                <Button size="sm" variant="destructive" disabled={busy} onClick={() => void mutateAccount(account, 'unlink')}><Trash2 className="mr-1.5 h-3.5 w-3.5" />删除账号</Button>
                             </div>
                         </div>
                     </article>;

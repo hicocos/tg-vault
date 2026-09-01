@@ -1,5 +1,3 @@
-import { TelegramClient } from 'telegram';
-import { StringSession } from 'telegram/sessions/index.js';
 import { deleteSettings, getSettingStrict, setSetting, setSettings } from '../utils/settings.js';
 import { getTelegramBotStatus, setTelegramBotRequired } from './telegramBotStatus.js';
 import { isTelegramPinConfigured } from '../utils/authSettings.js';
@@ -129,26 +127,32 @@ export async function getTelegramBotPublicConfig(): Promise<TelegramBotPublicCon
 }
 
 export async function testTelegramBotCredentials(credentials: TelegramBotCredentials): Promise<{ username: string | null; displayName: string | null }> {
-    const client = new TelegramClient(new StringSession(''), credentials.apiId, credentials.apiHash, {
-        connectionRetries: 3,
-        retryDelay: 1000,
-        useWSS: false,
-        deviceModel: 'TG Vault Bot Config Test',
-        systemVersion: '1.0.0',
-        appVersion: '1.0.0',
-    });
+    // A credential probe must not create a second MTProto authorization. The
+    // formal Bot startup immediately after save is the only MTProto login.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    timeout.unref?.();
     try {
-        await client.start({ botAuthToken: credentials.botToken });
-        const me: any = await client.getMe();
+        const response = await fetch(`https://api.telegram.org/bot${credentials.botToken}/getMe`, {
+            method: 'GET',
+            cache: 'no-store',
+            redirect: 'error',
+            signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => null) as {
+            ok?: boolean;
+            result?: { is_bot?: boolean; username?: string; first_name?: string; last_name?: string };
+        } | null;
+        const me = payload?.result;
+        if (!response.ok || !payload?.ok || !me?.is_bot) throw new Error('Bot API credential verification failed');
         return {
             username: me?.username ? String(me.username) : null,
-            displayName: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || null,
+            displayName: [me?.first_name, me?.last_name].filter(Boolean).join(' ') || null,
         };
     } catch {
-        throw new Error('无法连接 Telegram Bot，请检查 Token、API ID、API Hash 和网络');
+        throw new Error('无法验证 Telegram Bot，请检查 Token 和网络');
     } finally {
-        await client.disconnect().catch(() => undefined);
-        await client.destroy().catch(() => undefined);
+        clearTimeout(timeout);
     }
 }
 

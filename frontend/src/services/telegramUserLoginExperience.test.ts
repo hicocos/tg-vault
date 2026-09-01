@@ -26,12 +26,13 @@ test('multi-account rows keep mobile actions readable and disabled state is not 
     assert.match(panel, /已停用，不会执行账号级下载/);
 });
 
-test('frontend exposes account status, retaining disable and destructive unlink without account secret fields', () => {
+test('frontend exposes account status, retaining disable and destructive account deletion without account secret fields', () => {
     for (const method of ['getTelegramUserAccounts', 'startTelegramUserQrLogin', 'startTelegramUserPhoneLogin', 'submitTelegramUserLoginCode', 'submitTelegramUserLoginPassword', 'setTelegramUserAccountEnabled', 'unlinkTelegramUserAccountById']) {
         assert.match(api, new RegExp(method));
     }
-    assert.match(panel, /停用（保留登录）/);
-    assert.match(panel, /解除绑定/);
+    assert.match(panel, />停用<\/Button>/);
+    assert.match(panel, /删除账号/);
+    assert.doesNotMatch(panel, /停用（保留登录）|解除绑定|检测权限/);
     assert.match(panel, /已加密保存的登录信息/);
     const accountMethods = api.slice(api.indexOf('async getTelegramUserAccounts'), api.indexOf('async getTelegramUserAccount'));
     assert.doesNotMatch(accountMethods, /phoneCodeHash|StringSession|apiHash/);
