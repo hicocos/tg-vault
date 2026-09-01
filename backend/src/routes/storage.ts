@@ -10,9 +10,9 @@ import crypto from 'crypto';
 import { rateLimit } from 'express-rate-limit';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { changeTelegramPin, ensureTelegramPinConfigured, getConfiguredTelegramAllowedUsers, parseTelegramAllowedUserIds, setTelegramAllowedUsersAndReconcile, TelegramPinChangeError } from '../utils/authSettings.js';
-import { disableTelegramUserAccount, enableTelegramUserAccount, getTelegramUserAccountStatus, getTelegramUserSessionFilePath, isTelegramUserClientReady, telegramUserWebLogin, unlinkTelegramUserAccount } from '../services/telegramUserClient.js';
+import { activateTelegramUserAccount, disableTelegramUserAccount, enableTelegramUserAccount, getTelegramUserAccountStatus, getTelegramUserSessionFilePath, isTelegramUserClientReady, telegramUserWebLogin, unlinkTelegramUserAccount } from '../services/telegramUserClient.js';
 import { telegramAccountRepository } from '../services/telegramAccountRepository.js';
-import { initializeTelegramMultiAccountRuntime, telegramUserClientPool } from '../services/telegramMultiAccountRuntime.js';
+import { telegramUserClientPool } from '../services/telegramMultiAccountRuntime.js';
 import { triggerTelegramAccountAccessSweep, getTelegramAccountAccessSweepSummary } from '../services/telegramAccountAccessSweep.js';
 import { telegramMultiAccountLoginFlows } from '../services/telegramMultiAccountLogin.js';
 import { assertPublicStorageEndpoint, assertStorageEndpoint } from '../utils/networkSecurity.js';
@@ -404,7 +404,6 @@ router.put('/config/telegram-bot', requireAuth, async (req: Request, res: Respon
             await applyEffectiveTelegramBotConfig();
             try {
                 if (enabled) await controls.restart(credentials); else await controls.stop();
-                await initializeTelegramMultiAccountRuntime({ apiId: credentials.apiId, apiHash: credentials.apiHash });
             } catch (activationError) {
                 await restoreTelegramBotConfig(previous);
                 const restored = await applyEffectiveTelegramBotConfig();
@@ -432,7 +431,6 @@ router.post('/config/telegram-bot/migrate', requireAuth, async (req: Request, re
                 setTelegramBotIdentity(bot);
                 await applyEffectiveTelegramBotConfig();
                 await controls.restart(credentials);
-                await initializeTelegramMultiAccountRuntime({ apiId: credentials.apiId, apiHash: credentials.apiHash });
             } catch (activationError) {
                 await restoreTelegramBotConfig(previous);
                 await applyEffectiveTelegramBotConfig();
@@ -559,8 +557,8 @@ router.get('/config/telegram-user/accounts', requireAuth, async (_req: Request, 
         accessSweep: getTelegramAccountAccessSweepSummary(),
     });
 });
-router.post('/config/telegram-user/accounts/:accountId/enable', requireAuth, async (req: Request, res: Response) => { noStore(res); const ok = await telegramAccountRepository.setEnabled(req.params.accountId, true); if (!ok) return res.status(404).json({ error: '账号不存在' }); await telegramUserClientPool.refresh(); return res.json({ success: true, enabled: true }); });
-router.post('/config/telegram-user/accounts/:accountId/disable', requireAuth, async (req: Request, res: Response) => { noStore(res); const ok = await telegramAccountRepository.setEnabled(req.params.accountId, false); if (!ok) return res.status(404).json({ error: '账号不存在' }); await telegramUserClientPool.refresh(); return res.json({ success: true, enabled: false }); });
+router.post('/config/telegram-user/accounts/:accountId/enable', requireAuth, async (req: Request, res: Response) => { noStore(res); const ok = await telegramAccountRepository.setEnabled(req.params.accountId, true); if (!ok) return res.status(404).json({ error: '账号不存在' }); await activateTelegramUserAccount(req.params.accountId); return res.json({ success: true, enabled: true }); });
+router.post('/config/telegram-user/accounts/:accountId/disable', requireAuth, async (req: Request, res: Response) => { noStore(res); const ok = await telegramAccountRepository.setEnabled(req.params.accountId, false); if (!ok) return res.status(404).json({ error: '账号不存在' }); await telegramUserClientPool.deactivateAccount(req.params.accountId); return res.json({ success: true, enabled: false }); });
 router.delete('/config/telegram-user/accounts/:accountId', requireAuth, async (req: Request, res: Response) => { noStore(res); await telegramUserClientPool.expireAccount(req.params.accountId); const ok = await telegramAccountRepository.deleteAccount(req.params.accountId); return ok ? res.json({ success: true }) : res.status(404).json({ error: '账号不存在' }); });
 router.post('/config/telegram-user/accounts/:accountId/check', requireAuth, async (req: Request, res: Response) => { noStore(res); const summary = await triggerTelegramAccountAccessSweep({ accountIds: [req.params.accountId], reason: 'manual' }); return res.json({ success: true, summary }); });
 router.post('/config/telegram-user/accounts/:accountId/permissions/check', requireAuth, async (req: Request, res: Response) => { noStore(res); const summary = await triggerTelegramAccountAccessSweep({ accountIds: [req.params.accountId], reason: 'manual' }); return res.json({ success: true, summary }); });

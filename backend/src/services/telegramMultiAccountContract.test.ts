@@ -5,6 +5,7 @@ import test from 'node:test';
 const route = fs.readFileSync(new URL('../routes/storage.ts', import.meta.url), 'utf8');
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
 const index = fs.readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+const runtime = fs.readFileSync(new URL('./telegramMultiAccountRuntime.ts', import.meta.url), 'utf8');
 const frontendApi = fs.readFileSync(new URL('../../../frontend/src/services/api.ts', import.meta.url), 'utf8');
 const settings = fs.readFileSync(new URL('../../../frontend/src/components/pages/SettingsPage.tsx', import.meta.url), 'utf8');
 
@@ -28,10 +29,35 @@ test('account sessions and QR tokens never appear in public API payload contract
     assert.match(schema, /session_ciphertext TEXT NOT NULL/);
 });
 
-test('application initializes the account pool independently of Telegram Bot enabled state', () => {
-    assert.match(index, /initializeTelegramMultiAccountRuntime|initTelegramUserClientPool|initTelegramUserAccounts/);
-    const botGuard = index.slice(index.indexOf('if (telegramEnabled)'), index.indexOf('await initializeYtDlpQueue'));
-    assert.doesNotMatch(botGuard, /initTelegramUserClientPool|initTelegramUserAccounts/);
+test('application restores only explicitly enabled user sessions instead of initializing merely because Bot credentials exist', () => {
+    assert.match(index, /installTelegramMultiAccountRuntimeAdapters\(\)/);
+    assert.match(index, /restoreEnabledTelegramUserAccountsAfterRestart\(\)/);
+    assert.doesNotMatch(index, /initializeTelegramMultiAccountRuntime|initTelegramUserClientPool|initTelegramUserAccounts|initTelegramUserClient/);
+    const userClient = fs.readFileSync(new URL('./telegramUserClient.ts', import.meta.url), 'utf8');
+    const restore = userClient.slice(
+        userClient.indexOf('export async function restoreEnabledTelegramUserAccountsAfterRestart'),
+        userClient.indexOf('export async function activateTelegramUserAccount'),
+    );
+    assert.match(restore, /listEnabledAccounts\(\)/);
+    assert.match(restore, /if \(enabledAccounts\.length === 0\) return/);
+    assert.match(restore, /initializeTelegramMultiAccountRuntime\(credentials\)/);
+});
+
+test('adapter installation is side-effect free for saved sessions', () => {
+    assert.match(runtime, /installTelegramMultiAccountRuntimeAdapters/);
+    const installer = runtime.slice(runtime.indexOf('export async function installTelegramMultiAccountRuntimeAdapters'), runtime.indexOf('export async function initializeTelegramMultiAccountRuntime'));
+    assert.doesNotMatch(installer, /initializeTelegramUserClientPool|listEnabledAccounts|\.connect\(|checkAuthorization|getMe/);
+});
+
+test('explicit account enable resolves API credentials before activating only that account', () => {
+    const userClient = fs.readFileSync(new URL('./telegramUserClient.ts', import.meta.url), 'utf8');
+    const activate = userClient.slice(
+        userClient.indexOf('export async function activateTelegramUserAccount'),
+        userClient.indexOf('async function persistAndActivate'),
+    );
+    assert.match(activate, /getTelegramUserCredentials\(\)/);
+    assert.match(activate, /activateAccount\(accountId, 'explicit_enable', credentials\)/);
+    assert.match(route, /activateTelegramUserAccount\(req\.params\.accountId\)/);
 });
 
 test('Web settings provide QR-first multi-account controls and permission summaries', () => {

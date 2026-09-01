@@ -49,6 +49,7 @@ export class TelegramUserLoginFlowError extends Error {
 interface BaseFlow<C> {
     id: string;
     owner: string;
+    credentials: TelegramLoginCredentials;
     expiresAt: number;
     errors: number;
     client: C | null;
@@ -91,6 +92,7 @@ type LoginFlow<C> = PhoneFlow<C> | QrFlow<C>;
 
 type AuthorizedCallback = (input: {
     session: string;
+    credentials: TelegramLoginCredentials;
     account: TelegramUserLoginAccount;
 }) => Promise<void>;
 
@@ -155,6 +157,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
             const flow: PhoneFlow<C> = {
                 id,
                 owner,
+                credentials,
                 expiresAt,
                 errors: 0,
                 client,
@@ -185,6 +188,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         const flow: QrFlow<C> = {
             id,
             owner,
+            credentials,
             expiresAt,
             errors: 0,
             client,
@@ -354,7 +358,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         const client = this.requireClient(flow);
         const account = normalizeAccount(await client.getMe());
         if (!account.userId) throw new TelegramUserLoginFlowError('TELEGRAM_ERROR', 'Telegram 登录未返回用户身份');
-        await this.deps.onAuthorized({ session: client.saveSession(), account });
+        await this.deps.onAuthorized({ session: client.saveSession(), credentials: flow.credentials, account });
         return account;
     }
 

@@ -16,9 +16,9 @@ import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
 import { initTelegramBot, sendUpdateNotificationToUser } from './services/telegramBot.js';
 import { applyEffectiveTelegramBotConfig } from './services/telegramBotConfig.js';
-import { getTelegramBotStatus, markTelegramBotError, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
-import { initTelegramUserClient, isTelegramUserClientReady } from './services/telegramUserClient.js';
-import { initializeTelegramMultiAccountRuntime } from './services/telegramMultiAccountRuntime.js';
+import { classifyTelegramBotStartupError, getTelegramBotStatus, markTelegramBotError, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
+import { isTelegramUserClientReady, restoreEnabledTelegramUserAccountsAfterRestart } from './services/telegramUserClient.js';
+import { installTelegramMultiAccountRuntimeAdapters } from './services/telegramMultiAccountRuntime.js';
 import { isInitialSetupRequired } from './utils/authSettings.js';
 import { get2FAReadiness } from './utils/security.js';
 import { ensureDatabaseInitialized, pool } from './db/index.js';
@@ -239,23 +239,27 @@ async function initializeApplication(): Promise<void> {
     await ensureDatabaseInitialized();
     const telegramConfig = await applyEffectiveTelegramBotConfig();
     const telegramEnabled = telegramConfig.configured && telegramConfig.enabled;
+    await installTelegramMultiAccountRuntimeAdapters();
+    await restoreEnabledTelegramUserAccountsAfterRestart();
     await markTransferTasksAfterRestart();
     const { storageManager } = await import('./services/storage.js');
     await storageManager.init();
     const twoFactor = await get2FAReadiness();
     if (!twoFactor.ready) throw new Error('2FA 已启用但密钥不可读取');
     if (telegramEnabled) {
-        await initTelegramUserClient(telegramConfig.credentials || undefined);
         try {
             await initTelegramBot();
         } catch (error) {
             if (telegramConfig.required) throw error;
             const message = error instanceof Error ? error.message : String(error);
-            markTelegramBotError('error', message, '检查 Telegram 凭证/网络并重启后端');
+            const status = classifyTelegramBotStartupError(error);
+            markTelegramBotError(
+                status,
+                message,
+                status === 'auth_failed' ? 'Telegram Bot Token 已失效，请在网页端更换凭证' : '检查网络与后端日志后重试',
+            );
             console.warn('Telegram Bot 可选组件启动失败，应用以 degraded 状态继续:', message);
         }
-    } else if (telegramConfig.credentials) {
-        await initializeTelegramMultiAccountRuntime({ apiId: telegramConfig.credentials.apiId, apiHash: telegramConfig.credentials.apiHash });
     }
     await initializeYtDlpQueue();
     await recoverMediaDerivativeJobs();

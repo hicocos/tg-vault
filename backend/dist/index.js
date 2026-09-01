@@ -691,11 +691,6 @@ async function getStorageAccountCooldown(storageAccountId, provider, reason = ST
     lastError: row.last_error
   };
 }
-async function clearExpiredStorageCooldowns() {
-  await ensureStorageCooldownSchema();
-  const result = await query(`DELETE FROM storage_account_cooldowns WHERE cooldown_until <= NOW()`);
-  return result.rowCount || 0;
-}
 function describeStorageCooldownRecovery(cooldownUntil) {
   return `\u7CFB\u7EDF\u4F1A\u5728 ${cooldownUntil.toISOString()} \u540E\u91CD\u65B0\u68C0\u67E5\uFF1B\u5982\u679C\u9650\u5236\u5DF2\u89E3\u9664\uFF0C\u5C06\u81EA\u52A8\u7EE7\u7EED\uFF0C\u5426\u5219\u4F1A\u66F4\u65B0\u51B7\u5374\u65F6\u95F4\u5E76\u7EE7\u7EED\u7B49\u5F85\u3002`;
 }
@@ -3587,7 +3582,7 @@ import fs14 from "fs";
 import path17 from "path";
 
 // src/middleware/signedUrl.ts
-import crypto22 from "crypto";
+import crypto21 from "crypto";
 
 // src/utils/config.ts
 init_secretStore();
@@ -3755,7 +3750,7 @@ import { NewMessage } from "telegram/events/index.js";
 import { Raw as Raw2 } from "telegram/events/index.js";
 import fs13 from "fs";
 import path16 from "path";
-import crypto21 from "crypto";
+import crypto20 from "crypto";
 
 // src/services/telegramCommands.ts
 init_db();
@@ -4735,7 +4730,7 @@ var TelegramUserClientPool = class {
   initializationTail = Promise.resolve();
   async initialize(credentials) {
     const run = this.initializationTail.then(async () => {
-      await this.shutdown();
+      await this.shutdownEntries();
       this.credentials = credentials;
       await this.deps.repository.migrateLegacySystemSettings();
       const accounts = await this.deps.repository.listEnabledAccounts();
@@ -4747,6 +4742,20 @@ var TelegramUserClientPool = class {
   async refresh() {
     if (!this.credentials) return;
     await this.initialize(this.credentials);
+  }
+  async deactivateAccount(accountId) {
+    await this.runLifecycleOperation(() => this.expireEntry(accountId));
+  }
+  async activateAccount(accountId, reason, credentials) {
+    if (reason !== "login_complete" && reason !== "explicit_enable") throw new Error("TELEGRAM_USER_ACTIVATION_NOT_ALLOWED");
+    await this.runLifecycleOperation(async () => {
+      await this.expireEntry(accountId);
+      if (credentials) this.credentials = credentials;
+      if (!this.credentials) return;
+      const account = await this.deps.repository.getAccount(accountId);
+      if (!account) return;
+      await this.connectAccount(account);
+    });
   }
   async connectAccount(account) {
     if (!this.credentials || !account.enabled || account.healthState === "session_expired") return;
@@ -4828,14 +4837,25 @@ var TelegramUserClientPool = class {
   updateSourceAccess(_accountId, _sourceKey, _scope, _state) {
   }
   async expireAccount(accountId) {
+    await this.runLifecycleOperation(() => this.expireEntry(accountId));
+  }
+  async expireEntry(accountId) {
     const entry = this.entries.get(accountId);
     this.entries.delete(accountId);
     if (entry) await this.closeClient(entry.client);
   }
   async shutdown() {
+    await this.runLifecycleOperation(() => this.shutdownEntries());
+  }
+  async shutdownEntries() {
     const entries = [...this.entries.values()];
     this.entries.clear();
     await Promise.all(entries.map((entry) => this.closeClient(entry.client)));
+  }
+  async runLifecycleOperation(operation) {
+    const run = this.initializationTail.then(operation);
+    this.initializationTail = run.then(() => void 0, () => void 0);
+    return await run;
   }
   async closeClient(client2) {
     try {
@@ -4889,11 +4909,6 @@ async function upsertTelegramUserAccount(input) {
   await reloadTelegramUserClientPool();
   const { session: _session, ...publicAccount } = account;
   return { ...publicAccount, connected: telegramUserClientPool.getReadyAccountIds().includes(account.id), activeConnections: 0 };
-}
-async function setTelegramUserAccountEnabled(accountId, enabled) {
-  const changed = await telegramAccountRepository.setEnabled(accountId, enabled);
-  if (changed) await reloadTelegramUserClientPool();
-  return changed;
 }
 async function deleteTelegramUserAccount(accountId) {
   await telegramUserClientPool.expireAccount(accountId);
@@ -4996,7 +5011,7 @@ function markTelegramBotError(status, message, action, checkedAt = (/* @__PURE__
 }
 function classifyTelegramBotStartupError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return /token|auth|unauthorized|forbidden|401|403/i.test(message) ? "auth_failed" : "error";
+  return /token|auth|unauthorized|forbidden|401|403|access_token_(?:expired|invalid)/i.test(message) ? "auth_failed" : "error";
 }
 function telegramBotBlocksReadiness(status, required = requiredFromEnv()) {
   if (!required) return false;
@@ -5211,6 +5226,7 @@ var TelegramMultiAccountLoginFlows = class {
       const flow = {
         id,
         owner,
+        credentials,
         expiresAt,
         errors: 0,
         client: client2,
@@ -5240,6 +5256,7 @@ var TelegramMultiAccountLoginFlows = class {
     const flow = {
       id,
       owner,
+      credentials,
       expiresAt,
       errors: 0,
       client: client2,
@@ -5397,7 +5414,7 @@ var TelegramMultiAccountLoginFlows = class {
     const client2 = this.requireClient(flow);
     const account = normalizeAccount(await client2.getMe());
     if (!account.userId) throw new TelegramUserLoginFlowError("TELEGRAM_ERROR", "Telegram \u767B\u5F55\u672A\u8FD4\u56DE\u7528\u6237\u8EAB\u4EFD");
-    await this.deps.onAuthorized({ session: client2.saveSession(), account });
+    await this.deps.onAuthorized({ session: client2.saveSession(), credentials: flow.credentials, account });
     return account;
   }
   qrResponse(flow) {
@@ -5648,7 +5665,7 @@ var telegramMultiAccountLoginFlows = new TelegramMultiAccountLoginFlows({
 // src/services/telegramMultiAccountLoginAdapter.ts
 function createTelegramMultiAccountAuthorizedAdapter(deps) {
   return {
-    async upsertByTelegramUserId({ session, account }) {
+    async upsertByTelegramUserId({ session, credentials, account }) {
       const persisted = await deps.repository.upsertAccount({
         telegramUserId: account.userId,
         username: account.username,
@@ -5656,8 +5673,8 @@ function createTelegramMultiAccountAuthorizedAdapter(deps) {
         session,
         enabled: true
       });
-      await deps.pool.refresh();
       const accountId = String(persisted?.id || "");
+      if (accountId) await deps.pool.activateAccount(accountId, "login_complete", credentials);
       if (accountId && deps.accessSweep) {
         await deps.accessSweep.trigger({ accountIds: [accountId], reason: "account_created" });
       }
@@ -5934,18 +5951,22 @@ function installTelegramAccountAccessSweep(options) {
 // src/services/telegramMultiAccountRuntime.ts
 var installed = false;
 var initializationPromise2 = null;
+async function installTelegramMultiAccountRuntimeAdapters() {
+  if (installed) return;
+  installTelegramAccountAccessSweep({ clientPool: telegramUserClientPool });
+  registerTelegramMultiAccountAuthorizedAdapter(createTelegramMultiAccountAuthorizedAdapter({
+    repository: telegramAccountRepository,
+    pool: {
+      activateAccount: (accountId, reason, credentials) => telegramUserClientPool.activateAccount(accountId, reason, credentials)
+    },
+    accessSweep: { trigger: (options) => triggerTelegramAccountAccessSweep(options) }
+  }));
+  installed = true;
+}
 async function initializeTelegramMultiAccountRuntime(credentials) {
   if (initializationPromise2) return initializationPromise2;
   const run = (async () => {
-    if (!installed) {
-      installTelegramAccountAccessSweep({ clientPool: telegramUserClientPool });
-      registerTelegramMultiAccountAuthorizedAdapter(createTelegramMultiAccountAuthorizedAdapter({
-        repository: telegramAccountRepository,
-        pool: telegramUserClientPool,
-        accessSweep: { trigger: (options) => triggerTelegramAccountAccessSweep(options) }
-      }));
-      installed = true;
-    }
+    await installTelegramMultiAccountRuntimeAdapters();
     await initializeTelegramUserClientPool(credentials);
   })();
   initializationPromise2 = run;
@@ -6434,7 +6455,7 @@ var TELEGRAM_USER_ID_SETTING = "telegram_user_id";
 var TELEGRAM_USER_USERNAME_SETTING = "telegram_user_username";
 var userClient = null;
 var userSessionFilePath = "";
-async function getUserCredentials() {
+async function getTelegramUserCredentials() {
   const effective = await getEffectiveTelegramBotConfig();
   if (effective.credentials) return { apiId: effective.credentials.apiId, apiHash: effective.credentials.apiHash };
   const apiId = Number.parseInt(process.env.TELEGRAM_API_ID || "0", 10);
@@ -6481,12 +6502,16 @@ function makeClient2(session, credentials) {
 }
 async function initTelegramUserClient(credentials) {
   await stopLegacyClient();
-  const resolved = credentials || await getUserCredentials();
+  const resolved = credentials || await getTelegramUserCredentials();
   if (!resolved) {
     recordTelegramUserClientFailure("not_configured", "\u672A\u914D\u7F6E Telegram API");
     return;
   }
   const sessionString = await migrateLegacyTelegramUserSession();
+  if (!sessionString) {
+    recordTelegramUserClientFailure("not_configured", "\u672A\u914D\u7F6E Telegram \u7528\u6237\u8D26\u53F7 session");
+    return;
+  }
   await initializeTelegramMultiAccountRuntime(resolved);
   const pooledClient = telegramUserClientPool.getDefaultClient();
   if (pooledClient) {
@@ -6526,6 +6551,30 @@ async function initTelegramUserClient(credentials) {
     }
     recordTelegramUserClientFailure(String(error.message).includes("EXPIRED") ? "expired" : "error", "Telegram \u7528\u6237\u8D26\u53F7\u8FDE\u63A5\u5931\u8D25");
   }
+}
+async function restoreEnabledTelegramUserAccountsAfterRestart() {
+  await telegramAccountRepository.migrateLegacySystemSettings();
+  const enabledAccounts = await telegramAccountRepository.listEnabledAccounts();
+  if (enabledAccounts.length === 0) return;
+  const credentials = await getTelegramUserCredentials();
+  if (!credentials) {
+    recordTelegramUserClientFailure("not_configured", "\u672A\u914D\u7F6E Telegram API");
+    return;
+  }
+  await initializeTelegramMultiAccountRuntime(credentials);
+  const pooledClient = telegramUserClientPool.getDefaultClient();
+  if (!pooledClient) {
+    recordTelegramUserClientFailure("error", "\u5DF2\u542F\u7528\u7684 Telegram \u7528\u6237\u8D26\u53F7\u8FDE\u63A5\u5931\u8D25");
+    return;
+  }
+  const me = await pooledClient.getMe();
+  recordTelegramUserClientReady({ userId: String(me?.id || ""), username: me?.username || null });
+}
+async function activateTelegramUserAccount(accountId) {
+  const credentials = await getTelegramUserCredentials();
+  if (!credentials) throw new Error("\u672A\u914D\u7F6E Telegram API");
+  await telegramUserClientPool.activateAccount(accountId, "explicit_enable", credentials);
+  if (!telegramUserClientPool.getAccountClient(accountId)) throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u8FDE\u63A5\u5931\u8D25");
 }
 async function persistAndActivate(session, account) {
   await setSettings([
@@ -6593,7 +6642,7 @@ var GramJsWebLoginClient = class {
   }
 };
 var telegramUserWebLogin = new TelegramUserWebLoginFlows({
-  credentials: getUserCredentials,
+  credentials: getTelegramUserCredentials,
   createClient: (credentials) => new GramJsWebLoginClient(makeClient2("", credentials), credentials),
   persistAndActivate
 });
@@ -6612,16 +6661,18 @@ async function getTelegramUserAccountStatus() {
 async function disableTelegramUserAccount() {
   await setSetting(TELEGRAM_USER_ENABLED_SETTING, "false");
   for (const account of await listTelegramUserAccounts()) {
-    if (account.isLegacy) await setTelegramUserAccountEnabled(account.id, false);
+    if (account.isLegacy) {
+      await telegramAccountRepository.setEnabled(account.id, false);
+      await telegramUserClientPool.deactivateAccount(account.id);
+    }
   }
   await stopLegacyClient();
-  await reloadTelegramUserClientPool();
   recordTelegramUserClientFailure("disabled", "");
 }
 async function enableTelegramUserAccount() {
   await setSetting(TELEGRAM_USER_ENABLED_SETTING, "true");
   for (const account of await listTelegramUserAccounts()) {
-    if (account.isLegacy) await setTelegramUserAccountEnabled(account.id, true);
+    if (account.isLegacy) await telegramAccountRepository.setEnabled(account.id, true);
   }
   await initTelegramUserClient();
 }
@@ -6631,7 +6682,6 @@ async function unlinkTelegramUserAccount() {
     if (account.isLegacy) await deleteTelegramUserAccount(account.id);
   }
   await deleteSettings([TELEGRAM_USER_SESSION_SETTING, TELEGRAM_USER_ENABLED_SETTING, TELEGRAM_USER_ID_SETTING, TELEGRAM_USER_USERNAME_SETTING]);
-  await reloadTelegramUserClientPool();
   const legacyPath = getSessionFilePath();
   if (fs8.existsSync(legacyPath)) fs8.rmSync(legacyPath, { force: true });
   recordTelegramUserClientFailure("missing_session", "\u5C1A\u672A\u767B\u5F55 Telegram \u7528\u6237\u8D26\u53F7");
@@ -8680,16 +8730,6 @@ init_storageAccountLifecycle();
 
 // src/services/telegramWriteReconciliation.ts
 import crypto14 from "node:crypto";
-async function ownsTelegramReconciliationLease(db, operationId, leaseToken) {
-  const result = await db.query(
-    `UPDATE telegram_write_reconciliations
-         SET lease_expires_at = NOW() + INTERVAL '5 minutes', updated_at = NOW()
-         WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'
-         RETURNING operation_id`,
-    [operationId, leaseToken]
-  );
-  return result.rowCount === 1;
-}
 async function beginTelegramWriteReconciliation(db, input) {
   const operationId = crypto14.randomUUID();
   const result = await db.query(
@@ -8751,100 +8791,6 @@ async function resolveTelegramWriteCommittedWithQuery(db, operationId, childLeas
     [operationId, childLeaseToken]
   );
   if (result.rowCount !== 1) throw new Error("Telegram child terminal+journal resolve \u5F71\u54CD 0 \u884C");
-}
-async function claimTelegramWriteReconciliations(db, leaseToken, limit = 100) {
-  const result = await db.query(
-    `WITH candidates AS (
-             SELECT r.operation_id
-             FROM telegram_write_reconciliations r
-             WHERE r.status = 'pending'
-               AND r.resolution IS DISTINCT FROM 'operator_required'
-               AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= NOW())
-             ORDER BY r.created_at
-             FOR UPDATE SKIP LOCKED
-             LIMIT $2
-         )
-         UPDATE telegram_write_reconciliations r
-         SET lease_token = $1::uuid, lease_expires_at = NOW() + INTERVAL '5 minutes',
-             attempts = r.attempts + 1, updated_at = NOW()
-         FROM candidates c, telegram_download_items i
-         WHERE r.operation_id = c.operation_id AND i.id = r.item_id
-         RETURNING r.*, i.status AS item_status`,
-    [leaseToken, Math.max(1, Math.min(limit, 1e3))]
-  );
-  return result.rows.map((row) => ({
-    operationId: String(row.operation_id),
-    jobId: String(row.job_id),
-    itemId: String(row.item_id),
-    childLeaseToken: String(row.child_lease_token),
-    provider: String(row.provider),
-    accountId: row.account_id ? String(row.account_id) : null,
-    storedPath: row.stored_path ? String(row.stored_path) : null,
-    fileId: row.file_id ? String(row.file_id) : null,
-    objectState: row.object_state,
-    indexState: row.index_state,
-    itemStatus: String(row.item_status)
-  }));
-}
-async function resolveClaimedTelegramWrite(input) {
-  const { db, row, leaseToken } = input;
-  if (row.itemStatus === "success" && row.fileId && row.objectState === "present" && row.indexState === "present") {
-    const result2 = await db.query(
-      `UPDATE telegram_write_reconciliations SET status = 'resolved', resolution = 'committed', reason = '\u91CD\u542F\u626B\u63CF\u786E\u8BA4 child \u5DF2\u6210\u529F',
-             resolved_at = NOW(), lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
-      [row.operationId, leaseToken]
-    );
-    return result2.rowCount === 1 ? "resolved" : "pending";
-  }
-  if (row.objectState === "unknown" && !row.storedPath) {
-    await db.query(
-      `UPDATE telegram_write_reconciliations SET resolution = 'operator_required', reason = '\u5BF9\u8C61\u7ED3\u679C\u672A\u77E5\u4E14\u7F3A\u5C11\u7CBE\u786E stored_path\uFF0C\u7981\u6B62\u76F2\u76EE\u91CD\u8BD5',
-             lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-             WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'`,
-      [row.operationId, leaseToken]
-    );
-    return "operator-required";
-  }
-  let objectState = row.objectState;
-  let indexState = row.indexState;
-  const errors = [];
-  if (!await ownsTelegramReconciliationLease(db, row.operationId, leaseToken)) return "pending";
-  if (row.storedPath && objectState !== "deleted") {
-    try {
-      await input.deleteObject(row.storedPath);
-      objectState = "deleted";
-    } catch (error) {
-      objectState = "unknown";
-      errors.push(`object: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  if (!await ownsTelegramReconciliationLease(db, row.operationId, leaseToken)) return "pending";
-  if (row.fileId && indexState !== "deleted") {
-    try {
-      const deleted = await db.query("DELETE FROM files WHERE id = $1", [row.fileId]);
-      if (deleted.rowCount !== 0 && deleted.rowCount !== 1) throw new Error("\u7D22\u5F15\u8865\u507F\u5F71\u54CD\u884C\u6570\u5F02\u5E38");
-      indexState = "deleted";
-    } catch (error) {
-      indexState = "unknown";
-      errors.push(`index: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else if (!row.fileId && indexState === "unknown") {
-    errors.push("index: \u7F3A\u5C11\u7CBE\u786E file_id");
-  }
-  const resolved = objectState === "deleted" && indexState === "deleted";
-  const result = await db.query(
-    `UPDATE telegram_write_reconciliations SET object_state = $3, index_state = $4,
-         status = CASE WHEN $5::boolean THEN 'resolved' ELSE 'pending' END,
-         resolution = CASE WHEN $5::boolean THEN 'compensated' ELSE resolution END,
-         reason = $6, resolved_at = CASE WHEN $5::boolean THEN NOW() ELSE NULL END,
-         lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-         WHERE operation_id = $1 AND lease_token = $2::uuid AND status = 'pending'
-         RETURNING operation_id`,
-    [row.operationId, leaseToken, objectState, indexState, resolved, errors.join("; ") || "\u91CD\u542F\u626B\u63CF\u8865\u507F\u5DF2\u786E\u8BA4"]
-  );
-  if (result.rowCount !== 1) return "pending";
-  return resolved ? "resolved" : "pending";
 }
 
 // src/services/telegramUpload.ts
@@ -11285,10 +11231,9 @@ async function handleFileUpload(client2, event) {
 init_storage();
 
 // src/services/telegramChannelJobs.ts
+import { Api as Api7 } from "telegram";
 init_db();
 init_storage();
-import { Api as Api7 } from "telegram";
-import crypto16 from "node:crypto";
 import { getPeerId } from "telegram/Utils.js";
 
 // src/services/telegramChannelJobAdmission.ts
@@ -11583,292 +11528,6 @@ async function compactTelegramDownloadHistory(jobId) {
 
 // src/services/telegramSubscriptionAdFilter.ts
 init_db();
-
-// src/services/telegramAdClassifier.ts
-var TRACKING_QUERY_KEYS = /^(utm_.+|fbclid|gclid|yclid|ref|referrer|source|campaign|code)$/i;
-var TRANSACTION_PATTERN = /(优惠|特价|折扣|返利|佣金|套餐|购买|下单|价格|售价|充值|提现|担保|代理|免费领取|限时|名额|商务推广|广告投放|sale|discount|buy|price|order|commission|promo)/i;
-var CTA_PATTERN = /(立即|点击|加入|联系|客服|咨询|私聊|扫码|注册|领取|下载\s*app|进群|下单|购买|马上|戳我|click|join|contact|register|buy now)/i;
-var CONTACT_PATTERN = /(联系|客服|咨询|私聊|微信|telegram|tg|whatsapp|商务|代理|邮箱|email)/i;
-var SCARCITY_PATTERN = /(仅限今天|最后名额|马上截止|手慢无|稳赚不赔|高收益|官方授权|限时|last chance|limited time)/i;
-var URL_PATTERN = /https?:\/\/[^\s<>"'）)\]]+/gi;
-var USERNAME_PATTERN = /@[a-zA-Z][a-zA-Z0-9_]{3,31}/g;
-function unique(values) {
-  return [...new Set(values.filter(Boolean))];
-}
-function normalizeDomain(value) {
-  const lowered = value.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/^www\./, "");
-  return lowered.split("/")[0].split("?")[0].replace(/\.$/, "");
-}
-function stableUrl(raw) {
-  try {
-    const url = new URL(raw);
-    url.hash = "";
-    for (const key of [...url.searchParams.keys()]) {
-      if (TRACKING_QUERY_KEYS.test(key)) url.searchParams.delete(key);
-    }
-    const query2 = url.searchParams.toString();
-    return `${url.hostname.toLowerCase().replace(/^www\./, "")}${url.pathname.replace(/\/$/, "")}${query2 ? `?${query2}` : ""}`;
-  } catch {
-    return raw.toLowerCase();
-  }
-}
-function normalizeTelegramAdText(text) {
-  return text.normalize("NFKC").toLowerCase().replace(URL_PATTERN, (value) => stableUrl(value)).replace(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?/g, "<date>").replace(/\d{1,2}月\d{1,2}日/g, "<date>").replace(/\d{1,2}[-/.]\d{1,2}/g, "<date>").replace(/(?:¥|￥|\$|usd\s*)?\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|usd|刀)/gi, "<num>").replace(/\b\d+(?:\.\d+)?\b/g, "<num>").replace(/[🔥🎉💰💵✅🚀📣📢👉🎁💥⭐🌟❗❕]+/gu, " ").replace(/[^\p{L}\p{N}@._:/?=&<>\s-]+/gu, " ").replace(/\s+/g, " ").trim();
-}
-function trigrams(value) {
-  const compact = value.replace(/\s+/g, " ").trim();
-  if (compact.length <= 3) return new Set(compact ? [compact] : []);
-  const result = /* @__PURE__ */ new Set();
-  for (let index = 0; index <= compact.length - 3; index += 1) result.add(compact.slice(index, index + 3));
-  return result;
-}
-function telegramAdTextFingerprint(normalizedText) {
-  return normalizeTelegramAdText(normalizedText);
-}
-function telegramAdTextSimilarity(firstFingerprint, secondFingerprint) {
-  const first = trigrams(firstFingerprint);
-  const second = trigrams(secondFingerprint);
-  if (first.size === 0 && second.size === 0) return 1;
-  if (first.size === 0 || second.size === 0) return 0;
-  let intersection = 0;
-  for (const item of first) if (second.has(item)) intersection += 1;
-  return intersection / (first.size + second.size - intersection);
-}
-function stringValue(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-function collectButtons(value, texts, urls) {
-  if (!value) return;
-  if (Array.isArray(value)) {
-    for (const item of value) collectButtons(item, texts, urls);
-    return;
-  }
-  if (typeof value !== "object") return;
-  const button = value;
-  const text = stringValue(button.text);
-  const url = stringValue(button.url);
-  if (text) texts.push(text);
-  if (url) urls.push(url);
-  for (const nested of ["button", "buttons", "rows"]) collectButtons(button[nested], texts, urls);
-}
-function mediaKeysForMessage(message) {
-  const values = [];
-  const photo = message?.photo || message?.media?.photo;
-  const document = message?.document || message?.media?.document;
-  if (photo?.id != null) values.push(`photo:${String(photo.id)}`);
-  if (document?.id != null) values.push(`document:${String(document.id)}`);
-  const mime = stringValue(document?.mimeType);
-  const size = document?.size == null ? "" : String(document.size);
-  const dimensions = Array.isArray(photo?.sizes) ? photo.sizes.map((item) => `${item?.w || 0}x${item?.h || 0}`).join(",") : "";
-  if (mime || size || dimensions) values.push(`meta:${mime}:${size}:${dimensions}`);
-  return values;
-}
-function messageToTelegramAdCandidate(messages) {
-  const sorted = [...messages].sort((a, b) => Number(a.id) - Number(b.id));
-  const textParts = [];
-  const urls = [];
-  const buttonTexts = [];
-  const mediaKeys = [];
-  for (const message of sorted) {
-    const text2 = stringValue(message.message || message.text || message.caption);
-    if (text2) {
-      textParts.push(text2);
-      urls.push(...text2.match(URL_PATTERN) || []);
-    }
-    collectButtons(message.buttons || message.replyMarkup, buttonTexts, urls);
-    mediaKeys.push(...mediaKeysForMessage(message));
-  }
-  const text = [...textParts, ...buttonTexts].join("\n").trim();
-  const normalizedText = normalizeTelegramAdText(text);
-  const normalizedUrls = unique(urls.map(stableUrl));
-  const domains = unique(normalizedUrls.map(normalizeDomain));
-  const usernames = unique((`${text}
-${normalizedUrls.join("\n")}`.match(USERNAME_PATTERN) || []).map((value) => value.toLowerCase()));
-  const groupedValue = sorted[0]?.groupedId;
-  return {
-    messageIds: sorted.map((message) => Number(message.id)),
-    groupedId: groupedValue == null ? null : String(groupedValue),
-    text,
-    normalizedText,
-    textFingerprint: telegramAdTextFingerprint(normalizedText),
-    domains,
-    usernames,
-    urls: normalizedUrls,
-    buttonTexts: unique(buttonTexts),
-    mediaKeys: unique(mediaKeys)
-  };
-}
-function matchesRule(candidate, rule) {
-  const pattern = rule.pattern.trim().toLowerCase();
-  if (!pattern) return false;
-  if (rule.kind === "domain") {
-    const expected = normalizeDomain(pattern);
-    return candidate.domains.some((domain) => domain === expected || domain.endsWith(`.${expected}`));
-  }
-  if (rule.kind === "username") {
-    const expected = pattern.startsWith("@") ? pattern : `@${pattern}`;
-    return candidate.usernames.includes(expected);
-  }
-  if (rule.kind === "keyword") return candidate.normalizedText.includes(normalizeTelegramAdText(pattern));
-  if (rule.kind === "media") return candidate.mediaKeys.includes(pattern) || candidate.mediaKeys.some((key) => key.toLowerCase() === pattern);
-  if (rule.kind === "template") return telegramAdTextSimilarity(candidate.textFingerprint, pattern) >= 0.82;
-  return false;
-}
-function classifyTelegramAdCandidate(candidate, options) {
-  if (options.mode === "off") return { decision: "allow", score: 0, reasons: [], matchedRuleIds: [] };
-  const enabledRules = options.rules.filter((rule) => rule.enabled);
-  const allowRules = enabledRules.filter((rule) => rule.action === "allow" && matchesRule(candidate, rule));
-  if (allowRules.length > 0) {
-    return {
-      decision: "allow",
-      score: 0,
-      reasons: allowRules.map((rule) => ({ code: "allow_rule", label: "\u547D\u4E2D\u5141\u8BB8\u89C4\u5219", score: -100, ruleId: rule.id })),
-      matchedRuleIds: allowRules.map((rule) => rule.id)
-    };
-  }
-  let score = 0;
-  const reasons = [];
-  const matchedRuleIds = [];
-  const add = (code, label, points, ruleId) => {
-    score += points;
-    reasons.push({ code, label, score: points, ruleId });
-    if (ruleId) matchedRuleIds.push(ruleId);
-  };
-  for (const rule of enabledRules.filter((rule2) => rule2.action === "block" && matchesRule(candidate, rule2))) {
-    const points = rule.kind === "template" ? 90 : rule.kind === "domain" || rule.kind === "username" || rule.kind === "media" ? 100 : 70;
-    add(rule.kind === "template" ? "blocked_template" : "block_rule", rule.kind === "template" ? "\u547D\u4E2D\u5DF2\u786E\u8BA4\u5E7F\u544A\u6A21\u677F" : "\u547D\u4E2D\u5C4F\u853D\u89C4\u5219", points, rule.id);
-  }
-  const normalHistory = options.history.filter((item) => item.decision === "normal" && item.confirmations > 0);
-  const adHistory = options.history.filter((item) => item.decision === "ad" && item.confirmations > 0);
-  const normalSimilarity = Math.max(0, ...normalHistory.map((item) => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
-  const adSimilarity = Math.max(0, ...adHistory.map((item) => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
-  if (normalSimilarity >= 0.82) add("normal_template", "\u4E0E\u5DF2\u786E\u8BA4\u6B63\u5E38\u5185\u5BB9\u76F8\u4F3C", -50);
-  else if (adSimilarity >= 0.82) add("ad_history_template", "\u4E0E\u5386\u53F2\u5E7F\u544A\u6A21\u677F\u9AD8\u5EA6\u76F8\u4F3C", 60);
-  const hasTransaction = TRANSACTION_PATTERN.test(candidate.text);
-  const hasCta = CTA_PATTERN.test(`${candidate.text}
-${candidate.buttonTexts.join("\n")}`);
-  const hasContact = CONTACT_PATTERN.test(candidate.text) && (candidate.usernames.length > 0 || candidate.urls.length > 0);
-  const hasExternalTarget = candidate.urls.length > 0 || candidate.usernames.length > 0;
-  if (hasTransaction && hasContact) add("transaction_contact", "\u5305\u542B\u4EA4\u6613\u610F\u56FE\u548C\u5916\u90E8\u8054\u7CFB\u65B9\u5F0F", 35);
-  else if (hasTransaction) add("transaction_intent", "\u5305\u542B\u4EA4\u6613\u6216\u4FC3\u9500\u610F\u56FE", 15);
-  if (hasCta && hasExternalTarget) add("cta_link", "\u5305\u542B\u884C\u52A8\u53F7\u53EC\u548C\u5916\u90E8\u8DF3\u8F6C", 40);
-  else if (hasCta) add("call_to_action", "\u5305\u542B\u660E\u663E\u884C\u52A8\u53F7\u53EC", 10);
-  if (candidate.urls.length + candidate.usernames.length >= 3) add("link_density", "\u5916\u90E8\u94FE\u63A5\u6216\u8054\u7CFB\u65B9\u5F0F\u5BC6\u96C6", 15);
-  if (SCARCITY_PATTERN.test(candidate.text)) add("scarcity", "\u5305\u542B\u9650\u65F6\u6216\u7A00\u7F3A\u6027\u8BDD\u672F", 10);
-  const emojiCount = (candidate.text.match(/\p{Extended_Pictographic}/gu) || []).length;
-  if (emojiCount >= 6) add("decorative_marketing", "\u8425\u9500\u5F0F\u7B26\u53F7\u8F83\u591A", 5);
-  score = Math.max(0, Math.min(100, score));
-  const decision = score >= 70 ? "block" : score >= 40 ? options.mode === "aggressive" ? "block" : "review" : "allow";
-  return { decision, score, reasons, matchedRuleIds: unique(matchedRuleIds) };
-}
-
-// src/services/telegramSubscriptionAdFilter.ts
-function groupKey(message) {
-  return message.groupedId == null ? `message:${Number(message.id)}` : `group:${String(message.groupedId)}`;
-}
-function normalizeMode(value) {
-  return value === "conservative" || value === "aggressive" ? value : "off";
-}
-async function getTelegramSubscriptionAdRules(subscriptionId) {
-  const result = await query(
-    `SELECT id, kind, action, pattern, enabled
-         FROM telegram_subscription_ad_rules
-         WHERE subscription_id = $1 AND enabled = true
-         ORDER BY created_at ASC`,
-    [subscriptionId]
-  );
-  return result.rows.map((row) => ({
-    id: String(row.id),
-    kind: row.kind,
-    action: row.action,
-    pattern: String(row.pattern),
-    enabled: Boolean(row.enabled)
-  }));
-}
-async function getHistory(subscriptionId) {
-  const result = await query(
-    `SELECT text_fingerprint AS fingerprint, manual_label AS decision, COUNT(*)::int AS confirmations
-         FROM telegram_subscription_ad_decisions
-         WHERE subscription_id = $1
-           AND manual_label IS NOT NULL
-           AND text_fingerprint IS NOT NULL
-           AND text_fingerprint <> ''
-         GROUP BY text_fingerprint, manual_label
-         ORDER BY MAX(manually_reviewed_at) DESC
-         LIMIT 200`,
-    [subscriptionId]
-  );
-  return result.rows.map((row) => ({
-    fingerprint: String(row.fingerprint),
-    decision: row.decision,
-    confirmations: Number(row.confirmations || 0)
-  }));
-}
-async function persistDecision(input, decision) {
-  const candidate = messageToTelegramAdCandidate(input.messages);
-  const primaryMessageId = Math.min(...candidate.messageIds);
-  await query(
-    `INSERT INTO telegram_subscription_ad_decisions
-            (subscription_id, source_peer, message_id, grouped_id, message_ids, decision, score, reasons,
-             text_excerpt, text_fingerprint, domains, usernames, media_keys, matched_rule_ids)
-         VALUES ($1, $2, $3, $4, $5::int[], $6, $7, $8::jsonb, $9, $10, $11::text[], $12::text[], $13::text[], $14::uuid[])
-         ON CONFLICT (subscription_id, source_peer, message_id)
-         DO UPDATE SET grouped_id = EXCLUDED.grouped_id, message_ids = EXCLUDED.message_ids,
-                       decision = EXCLUDED.decision, score = EXCLUDED.score, reasons = EXCLUDED.reasons,
-                       text_excerpt = EXCLUDED.text_excerpt, text_fingerprint = EXCLUDED.text_fingerprint,
-                       domains = EXCLUDED.domains, usernames = EXCLUDED.usernames, media_keys = EXCLUDED.media_keys,
-                       matched_rule_ids = EXCLUDED.matched_rule_ids, updated_at = NOW()
-         WHERE telegram_subscription_ad_decisions.manual_label IS NULL`,
-    [
-      input.subscriptionId,
-      input.sourcePeer,
-      primaryMessageId,
-      candidate.groupedId,
-      candidate.messageIds,
-      decision.decision === "block" ? "blocked" : decision.decision,
-      decision.score,
-      JSON.stringify(decision.reasons),
-      candidate.text.slice(0, 1e3) || null,
-      candidate.textFingerprint || null,
-      candidate.domains,
-      candidate.usernames,
-      candidate.mediaKeys,
-      decision.matchedRuleIds
-    ]
-  );
-}
-async function filterTelegramSubscriptionAdvertisements(input) {
-  const mode = normalizeMode(input.mode);
-  if (mode === "off" || input.messages.length === 0) {
-    return { allowedMessages: input.messages, blockedMessageIds: [], reviewedMessageIds: [], blockedGroups: 0 };
-  }
-  const [rules, history] = await Promise.all([
-    getTelegramSubscriptionAdRules(input.subscriptionId),
-    getHistory(input.subscriptionId)
-  ]);
-  const groups = /* @__PURE__ */ new Map();
-  for (const message of input.messages) {
-    const key = groupKey(message);
-    groups.set(key, [...groups.get(key) || [], message]);
-  }
-  const allowedMessages = [];
-  const blockedMessageIds = [];
-  const reviewedMessageIds = [];
-  let blockedGroups = 0;
-  for (const messages of groups.values()) {
-    const candidate = messageToTelegramAdCandidate(messages);
-    const decision = classifyTelegramAdCandidate(candidate, { mode, rules, history });
-    await persistDecision({ ...input, messages }, decision);
-    if (decision.decision === "block") {
-      blockedGroups += 1;
-      blockedMessageIds.push(...candidate.messageIds);
-      continue;
-    }
-    allowedMessages.push(...messages);
-    if (decision.decision === "review") reviewedMessageIds.push(...candidate.messageIds);
-  }
-  return { allowedMessages, blockedMessageIds, reviewedMessageIds, blockedGroups };
-}
 async function listTelegramSubscriptionAdDecisions(input) {
   const limit = Math.max(1, Math.min(200, Number(input.limit || 50)));
   const offset = Math.max(0, Number(input.offset || 0));
@@ -11967,13 +11626,6 @@ async function assertTelegramSourceAllowed(source, extraSources = []) {
   if (!allowlist.includes(normalized) && !normalizedExtras.some((item) => allowlist.includes(item))) {
     throw new Error(`\u6765\u6E90 ${source} \u4E0D\u5728 Telegram \u4E0B\u8F7D\u767D\u540D\u5355\u4E2D`);
   }
-}
-function contiguousProcessedMessageId(startId, successfulMessageIds, skippedMessageIds, failedMessageIds) {
-  const processed = /* @__PURE__ */ new Set([...successfulMessageIds, ...skippedMessageIds]);
-  const failed = new Set(failedMessageIds);
-  let cursor = startId;
-  while (!failed.has(cursor + 1) && processed.has(cursor + 1)) cursor += 1;
-  return cursor;
 }
 function requireUserClient() {
   const userClient2 = getTelegramUserClient();
@@ -12636,28 +12288,6 @@ async function unsubscribeTelegramChannel(userId, selector) {
     [userId, target.id]
   );
   return result.rows[0] || null;
-}
-async function pauseTelegramSubscriptionForError(subscriptionId, reason) {
-  await query(
-    `UPDATE telegram_channel_subscriptions
-         SET enabled = false, disabled_reason = $2, disabled_at = NOW(), updated_at = NOW()
-         WHERE id = $1`,
-    [subscriptionId, reason]
-  );
-}
-function isTelegramSourceInaccessibleError(error) {
-  const anyErr = error;
-  const text = `${anyErr?.errorMessage || ""} ${anyErr?.message || ""}`;
-  return /INVITE_HASH_EXPIRED|INVITE_HASH_INVALID|CHANNEL_PRIVATE|USER_NOT_PARTICIPANT|CHAT_ADMIN_REQUIRED|Could not find the input entity|Cannot find any entity|not part of|forbidden|privacy/i.test(text);
-}
-function subscriptionDisabledReason(error) {
-  const anyErr = error;
-  const text = `${anyErr?.errorMessage || ""} ${anyErr?.message || ""}`;
-  if (/INVITE_HASH_EXPIRED/i.test(text)) return "\u8BA2\u9605\u5DF2\u6682\u505C\uFF1A\u79C1\u5BC6\u9891\u9053/\u7FA4\u9080\u8BF7\u94FE\u63A5\u5DF2\u8FC7\u671F\uFF0C\u65E0\u6CD5\u7EE7\u7EED\u89E3\u6790\u6216\u4E0B\u8F7D\u3002\u8BF7\u91CD\u65B0\u52A0\u5165/\u66F4\u65B0\u94FE\u63A5\u540E\u518D\u8BA2\u9605\u3002";
-  if (/INVITE_HASH_INVALID/i.test(text)) return "\u8BA2\u9605\u5DF2\u6682\u505C\uFF1A\u79C1\u5BC6\u9891\u9053/\u7FA4\u9080\u8BF7\u94FE\u63A5\u65E0\u6548\uFF0C\u65E0\u6CD5\u7EE7\u7EED\u89E3\u6790\u6216\u4E0B\u8F7D\u3002\u8BF7\u68C0\u67E5\u94FE\u63A5\u540E\u91CD\u65B0\u8BA2\u9605\u3002";
-  if (/USER_NOT_PARTICIPANT|not part of/i.test(text)) return "\u8BA2\u9605\u5DF2\u6682\u505C\uFF1A\u5F53\u524D Telegram \u7528\u6237\u8D26\u53F7\u5DF2\u4E0D\u5728\u8BE5\u79C1\u5BC6\u9891\u9053/\u7FA4\u5185\uFF0C\u65E0\u6CD5\u7EE7\u7EED\u4E0B\u8F7D\u3002\u8BF7\u5148\u91CD\u65B0\u52A0\u5165\u540E\u518D\u8BA2\u9605\u3002";
-  if (/CHANNEL_PRIVATE|forbidden|privacy/i.test(text)) return "\u8BA2\u9605\u5DF2\u6682\u505C\uFF1A\u5F53\u524D Telegram \u7528\u6237\u8D26\u53F7\u65E0\u6CD5\u8BBF\u95EE\u8BE5\u9891\u9053/\u7FA4\uFF0C\u53EF\u80FD\u5DF2\u9000\u51FA\u3001\u88AB\u79FB\u9664\u6216\u9891\u9053\u53D8\u4E3A\u79C1\u5BC6\u3002\u8BF7\u68C0\u67E5\u8D26\u53F7\u6743\u9650\u540E\u91CD\u65B0\u8BA2\u9605\u3002";
-  return `\u8BA2\u9605\u5DF2\u6682\u505C\uFF1A\u65E0\u6CD5\u8BBF\u95EE\u6216\u4E0B\u8F7D\u8BE5\u9891\u9053/\u7FA4\u5185\u5BB9\uFF08${anyErr?.message || anyErr?.errorMessage || String(error)}\uFF09\u3002\u8BF7\u68C0\u67E5\u8D26\u53F7\u662F\u5426\u4ECD\u53EF\u8BBF\u95EE\u540E\u91CD\u65B0\u8BA2\u9605\u3002`;
 }
 async function getJobItemStats(jobId) {
   const result = await query(
@@ -13493,419 +13123,6 @@ async function retryTelegramBackgroundJobWithQuery(runQuery, userId, selector, c
 async function retryTelegramBackgroundJob(userId, selector, chatId) {
   return retryTelegramBackgroundJobWithQuery(query, userId, selector, chatId);
 }
-async function finalizeSubscriptionJobWithQuery(runQuery, input) {
-  const finalized = await runQuery(
-    `UPDATE telegram_background_jobs
-         SET status = $2, enqueued_count = $3, skipped_count = $4, error = $5,
-             finished_at = NOW(), updated_at = NOW()
-         WHERE id = $1
-           AND cancelled_at IS NULL
-           AND paused_at IS NULL
-           AND finished_at IS NULL
-           AND status NOT IN ('cancelled', 'paused', 'cooling')
-         RETURNING id`,
-    [input.jobId, input.status, input.enqueuedCount, input.skippedCount, input.error]
-  );
-  if ((finalized.rowCount || 0) !== 1) return false;
-  const cursor = await runQuery(
-    `UPDATE telegram_channel_subscriptions
-         SET last_message_id = GREATEST(last_message_id, $1), updated_at = NOW()
-         WHERE id = $2 AND enabled = true
-         RETURNING id`,
-    [input.safeAdvanceId, input.subscriptionId]
-  );
-  if ((cursor.rowCount || 0) !== 1) throw new Error(`Telegram \u8BA2\u9605 cursor \u66F4\u65B0\u5F71\u54CD 0 \u884C: subscription=${input.subscriptionId}`);
-  return true;
-}
-async function finalizeSubscriptionJobInTransaction(transactionPool, input) {
-  const client2 = await transactionPool.connect();
-  try {
-    await client2.query("BEGIN");
-    const finalized = await finalizeSubscriptionJobWithQuery(client2.query.bind(client2), input);
-    if (!finalized) {
-      await client2.query("ROLLBACK");
-      return false;
-    }
-    await client2.query("COMMIT");
-    return true;
-  } catch (error) {
-    await client2.query("ROLLBACK").catch(() => void 0);
-    throw error;
-  } finally {
-    client2.release();
-  }
-}
-async function runSubscriptionScan(botClient) {
-  if (subscriptionScanRunning) return;
-  subscriptionScanRunning = true;
-  let lockClient = null;
-  let lockHeld = false;
-  try {
-    lockClient = await pool.connect();
-    const lockResult = await lockClient.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-subscription-scan')) AS locked`);
-    lockHeld = Boolean(lockResult.rows[0]?.locked);
-    if (!lockHeld) return;
-    const userClient2 = getTelegramUserClient();
-    if (!userClient2 || !isTelegramUserClientReady()) return;
-    const result = await query(
-      `SELECT id, user_id, chat_id, source, source_original, source_type, last_message_id, folder_override,
-                target_mode, target_provider, target_account_id, next_scan_at, ad_filter_mode
-         FROM telegram_channel_subscriptions
-         WHERE enabled = true
-           AND (next_scan_at IS NULL OR next_scan_at <= NOW())
-         ORDER BY updated_at ASC`
-    );
-    for (const row of result.rows) {
-      try {
-        await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : row.source_type === "private_invite" ? ["private_invite"] : []);
-        const latestMessageId = await getLatestMessageId(userClient2, row.source);
-        const lastMessageId = Number(row.last_message_id || 0);
-        await query(`UPDATE telegram_channel_subscriptions
-                         SET last_scan_at = NOW(), next_scan_at = NOW() + ($4::int * INTERVAL '1 millisecond'), last_error = NULL,
-                             last_result = jsonb_build_object('status', CASE WHEN $2::int > $3::int THEN 'updates_found' ELSE 'no_updates' END,
-                                                              'latestMessageId', $2::int, 'previousMessageId', $3::int)
-                         WHERE id = $1`, [row.id, latestMessageId || 0, lastMessageId, SUBSCRIPTION_INTERVAL_MS]);
-        if (!latestMessageId || latestMessageId <= lastMessageId) continue;
-        const count = Math.min(SUBSCRIPTION_SCAN_LIMIT, latestMessageId - lastMessageId);
-        const ids = Array.from({ length: count }, (_, index) => lastMessageId + index + 1);
-        const subscriptionTarget = resolveSubscriptionTarget(
-          row,
-          () => storageManager.getActiveTarget(),
-          (provider, accountId) => storageManager.getTarget(provider, accountId)
-        );
-        const jobId = await createJob({
-          userId: Number(row.user_id),
-          chatId: row.chat_id?.toString(),
-          kind: "subscription_sync",
-          source: row.source,
-          target: subscriptionTarget,
-          params: { subscriptionId: String(row.id), fromId: lastMessageId + 1, toId: latestMessageId, targetMode: row.target_mode || "follow_global" }
-        });
-        const batchMessages = await filterConfiguredTelegramBatchMessages(
-          await expandMessagesWithMediaGroups(userClient2, row.source, (await userClient2.getMessages(row.source, { ids })).filter(Boolean))
-        );
-        const adFilter = await filterTelegramSubscriptionAdvertisements({
-          subscriptionId: String(row.id),
-          sourcePeer: String(row.source),
-          mode: row.ad_filter_mode || "off",
-          messages: batchMessages
-        });
-        const candidateMessages = adFilter.allowedMessages;
-        await persistDownloadMessages(jobId, row.source, candidateMessages, row.folder_override || null);
-        await updateJob(jobId, { status: "running", started_at: /* @__PURE__ */ new Date(), total_count: ids.length });
-        const targetChat = row.chat_id || row.user_id;
-        const requestMessage = { chatId: targetChat, id: latestMessageId };
-        const subscriptionRefs = candidateMessages.map((message) => toChannelDownloadRef(row.source, message)).filter((ref) => Boolean(ref));
-        propagateTelegramDownloadGroupContext(subscriptionRefs);
-        const downloadableMessageIds = new Set(subscriptionRefs.map((ref) => ref.id));
-        const nonDownloadableMessageIds = ids.filter((id) => !downloadableMessageIds.has(id) && !adFilter.blockedMessageIds.includes(id));
-        const downloadResult = await downloadPendingForJob(
-          botClient,
-          requestMessage,
-          jobId,
-          row.source,
-          row.folder_override || null,
-          {},
-          true
-        );
-        const cooledJob = await getJob(jobId);
-        if (cooledJob?.status === "cooling") {
-          await notifyStorageCooldownOnce(botClient, cooledJob, new Date(cooledJob.cooldown_until));
-          continue;
-        }
-        const latestJob = await getJob(jobId);
-        if (latestJob?.cancelled_at || latestJob?.status === "cancelled") continue;
-        if (latestJob?.paused_at || latestJob?.status === "paused") continue;
-        const remainingStats = await getJobItemStats(jobId);
-        if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) continue;
-        const scannedMaxId = ids.length > 0 ? ids[ids.length - 1] : lastMessageId;
-        const safeAdvanceId = downloadResult.failed > 0 ? contiguousProcessedMessageId(lastMessageId, downloadResult.successfulMessageIds, [...downloadResult.skippedMessageIds, ...nonDownloadableMessageIds, ...adFilter.blockedMessageIds], downloadResult.failedMessageIds) : scannedMaxId;
-        const finalized = await finalizeSubscriptionJobInTransaction(pool, {
-          jobId,
-          subscriptionId: String(row.id),
-          status: downloadResult.failed > 0 ? "completed_with_errors" : "completed",
-          safeAdvanceId,
-          enqueuedCount: downloadResult.found,
-          skippedCount: downloadResult.skipped,
-          error: downloadResult.failed > 0 ? `${downloadResult.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null
-        });
-        if (!finalized) continue;
-        await compactTelegramDownloadHistorySafely(jobId);
-        await query(`UPDATE telegram_channel_subscriptions
-                         SET last_success_at = NOW(), last_error = $2,
-                             last_result = jsonb_build_object('status', $3::text, 'found', $4::int, 'skipped', $5::int, 'failed', $6::int)
-                         WHERE id = $1`, [row.id, downloadResult.failed > 0 ? `${downloadResult.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null, downloadResult.failed > 0 ? "partial_failure" : "success", downloadResult.found, downloadResult.skipped, downloadResult.failed]);
-        if (downloadResult.found > 0) {
-          const notificationMessage = `\u2705 \u8BA2\u9605 ${row.source} \u5DF2\u540C\u6B65 ${downloadResult.found} \u4E2A\u65B0\u6587\u4EF6\uFF0C\u8DF3\u8FC7 ${downloadResult.skipped} \u6761${downloadResult.failed ? `\uFF0C\u5931\u8D25 ${downloadResult.failed} \u6761` : ""}${safeAdvanceId < latestMessageId ? "\u3002\u672C\u8F6E\u8FBE\u5230\u626B\u63CF\u4E0A\u9650\u6216\u5B58\u5728\u5931\u8D25\u9879\uFF0C\u5269\u4F59\u5C06\u5728\u540E\u7EED\u7EE7\u7EED\u5904\u7406\u3002" : "\u3002"}`;
-          await enqueueTelegramNotification({ userId: Number(row.user_id), chatId: String(targetChat), kind: "subscription", message: notificationMessage }, {
-            send: async (chatId, message) => {
-              await botClient.sendMessage(chatId, { message });
-            }
-          }).catch(() => void 0);
-        }
-      } catch (error) {
-        console.error("\u{1F916} Telegram \u8BA2\u9605\u540C\u6B65\u5931\u8D25:", error);
-        const safeError = error instanceof Error ? error.message.slice(0, 500) : "\u8BA2\u9605\u540C\u6B65\u5931\u8D25";
-        await query(`UPDATE telegram_channel_subscriptions
-                         SET last_scan_at = NOW(), last_error = $2,
-                             last_result = jsonb_build_object('status', 'failed')
-                         WHERE id = $1`, [row.id, safeError]).catch(() => void 0);
-        if (isTelegramSourceInaccessibleError(error)) {
-          const reason = subscriptionDisabledReason(error);
-          await pauseTelegramSubscriptionForError(row.id, reason).catch((updateError) => console.error("\u{1F916} \u6682\u505C\u4E0D\u53EF\u8BBF\u95EE\u7684 Telegram \u8BA2\u9605\u5931\u8D25:", updateError));
-          const targetChat = row.chat_id || row.user_id;
-          const pausedMessage = `\u26A0\uFE0F \u5DF2\u6682\u505C\u8BA2\u9605 ${row.source_original || row.source}
-${reason}
-
-\u4F60\u53EF\u4EE5\u5728 /tg_subs \u6216 /tg_sub \u8BA2\u9605\u5217\u8868\u4E2D\u67E5\u770B\u63D0\u9192\uFF1B\u786E\u8BA4\u8D26\u53F7\u53EF\u8BBF\u95EE\u540E\u91CD\u65B0\u6DFB\u52A0\u8BA2\u9605\u5373\u53EF\u3002`;
-          await enqueueTelegramNotification({ userId: Number(row.user_id), chatId: String(targetChat), kind: "failure", message: pausedMessage }, {
-            send: async (chatId, message) => {
-              await botClient.sendMessage(chatId, { message });
-            }
-          }).catch(() => void 0);
-        }
-      }
-    }
-  } finally {
-    if (lockHeld && lockClient) await lockClient.query(`SELECT pg_advisory_unlock(hashtext('tg-vault:telegram-subscription-scan'))`).catch(() => void 0);
-    lockClient?.release();
-    subscriptionScanRunning = false;
-  }
-}
-async function recoverTelegramJob(botClient, job) {
-  const itemResult = await query(
-    `SELECT file_name, mime_type, folder_override
-         FROM telegram_download_items
-         WHERE job_id = $1 AND status = 'pending'
-         ORDER BY created_at ASC`,
-    [job.id]
-  );
-  if (itemResult.rows.length === 0) return;
-  const missingMetadata = itemResult.rows.filter((row) => !row.file_name || !row.mime_type).length;
-  if (missingMetadata > 0) {
-    const userClient2 = getTelegramUserClient();
-    if (userClient2) {
-      await hydratePendingDownloadRefs(userClient2, job.id);
-      return recoverTelegramJob(botClient, job);
-    }
-    await updateJob(job.id, { status: "failed", error: `${missingMetadata} \u4E2A\u5F85\u4E0B\u8F7D\u6761\u76EE\u7F3A\u5C11\u6587\u4EF6\u5143\u6570\u636E\uFF0C\u65E0\u6CD5\u6062\u590D`, finished_at: /* @__PURE__ */ new Date() });
-    return;
-  }
-  const targetChat = job.chat_id || job.user_id;
-  const requestMessage = { chatId: targetChat, id: 0 };
-  try {
-    const latest = await getJob(job.id);
-    if (!latest || latest.cancelled_at || latest.status === "cancelled") return;
-    if (latest.paused_at || latest.status === "paused") return;
-    console.log(`\u267B\uFE0F \u6062\u590D Telegram \u4E0B\u8F7D\u4EFB\u52A1 ${String(job.id).slice(0, 12)}\uFF0C\u5F85\u5904\u7406 ${itemResult.rows.length} \u4E2A\u6587\u4EF6`);
-    await updateJob(job.id, { status: "running", started_at: job.started_at || /* @__PURE__ */ new Date(), error: null });
-    const result = await downloadPendingForJob(
-      botClient,
-      requestMessage,
-      String(job.id),
-      job.source,
-      itemResult.rows[0]?.folder_override || null,
-      {},
-      true
-    );
-    const cooledJob = await getJob(job.id);
-    if (cooledJob?.status === "cooling") {
-      await notifyStorageCooldownOnce(botClient, cooledJob, new Date(cooledJob.cooldown_until));
-      return;
-    }
-    const latestJob = await getJob(job.id);
-    if (latestJob?.cancelled_at || latestJob?.status === "cancelled") return;
-    if (latestJob?.paused_at || latestJob?.status === "paused") return;
-    const remainingStats = await getJobItemStats(job.id);
-    if (Number(remainingStats.pending || 0) + Number(remainingStats.downloading || 0) > 0) return;
-    const persistedFailed = Number(remainingStats.failed || 0);
-    let finalized;
-    if (job.kind === "subscription_sync") {
-      const subscriptionId = String(job.params?.subscriptionId || "");
-      const targetMessageId = Number(job.params?.toId || 0);
-      if (!subscriptionId || targetMessageId <= 0) {
-        throw new Error("\u6062\u590D\u8BA2\u9605\u4EFB\u52A1\u7F3A\u5C11 subscriptionId/toId\uFF0C\u7981\u6B62\u975E\u539F\u5B50\u63A8\u8FDB cursor");
-      }
-      const recoveryHasFailures = persistedFailed > 0 || result.failed > 0;
-      const persistedFailureBoundary = recoveryHasFailures ? await query(
-        `SELECT MIN(message_id)::int AS first_failed_id
-                     FROM telegram_download_items
-                     WHERE job_id = $1 AND status = 'failed'`,
-        [job.id]
-      ) : null;
-      const firstFailedId = Number(persistedFailureBoundary?.rows[0]?.first_failed_id || 0);
-      finalized = await finalizeSubscriptionJobInTransaction(pool, {
-        jobId: String(job.id),
-        subscriptionId,
-        status: recoveryHasFailures ? "completed_with_errors" : "completed",
-        safeAdvanceId: recoveryHasFailures ? firstFailedId > 0 ? Math.max(Number(job.params?.fromId || 1) - 1, firstFailedId - 1) : contiguousProcessedMessageId(Number(job.params?.fromId || 1) - 1, result.successfulMessageIds, result.skippedMessageIds, result.failedMessageIds) : targetMessageId,
-        enqueuedCount: result.found,
-        skippedCount: result.skipped,
-        error: recoveryHasFailures ? `${persistedFailed || result.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null
-      });
-    } else {
-      finalized = await updateJob(job.id, {
-        status: result.failed > 0 ? "completed_with_errors" : "completed",
-        download_status: result.failed > 0 ? "completed_with_errors" : "completed",
-        cooldown_until: null,
-        enqueued_count: result.found,
-        skipped_count: result.skipped,
-        error: result.failed > 0 ? `${result.failed} \u4E2A\u6587\u4EF6\u4E0B\u8F7D\u5931\u8D25` : null,
-        finished_at: /* @__PURE__ */ new Date()
-      }) === 1;
-    }
-    if (!finalized) return;
-    await compactTelegramDownloadHistorySafely(String(job.id));
-    await botClient.sendMessage(targetChat, {
-      message: `\u267B\uFE0F \u5DF2\u6062\u590D\u5E76\u5B8C\u6210\u4EFB\u52A1 ${String(job.id).slice(0, 12)}\uFF1A\u6210\u529F ${result.successful}\uFF0C\u8DF3\u8FC7 ${result.skipped}\uFF0C\u5931\u8D25 ${result.failed}`
-    }).catch(() => void 0);
-  } catch (error) {
-    await updateJob(job.id, { status: "failed", error: error instanceof Error ? error.message : String(error), finished_at: /* @__PURE__ */ new Date() });
-    throw error;
-  }
-}
-async function repairTelegramJobInvariantsWithQuery(runQuery = query) {
-  const result = await runQuery(
-    `WITH inconsistent AS (
-             SELECT j.id,
-                    COUNT(*) FILTER (WHERE i.status IN ('pending', 'downloading'))::int AS unfinished_count
-             FROM telegram_background_jobs j
-             JOIN telegram_download_items i ON i.job_id = j.id
-             WHERE j.cancelled_at IS NULL
-               AND j.paused_at IS NULL
-               AND j.status IN ('completed', 'completed_with_errors', 'failed', 'running')
-             GROUP BY j.id, j.finished_at, j.status
-             HAVING COUNT(*) FILTER (WHERE i.status = 'pending') > 0
-                AND (j.finished_at IS NOT NULL OR j.status IN ('completed', 'completed_with_errors', 'failed'))
-         ), reset_items AS (
-             UPDATE telegram_download_items i
-             SET status = 'pending', locked_at = NULL, completed_at = NULL, updated_at = NOW()
-             FROM inconsistent x
-             WHERE i.job_id = x.id
-               AND i.status = 'downloading'
-               AND (i.locked_at IS NULL OR i.locked_at < NOW() - INTERVAL '30 minutes')
-               AND NOT EXISTS (
-                   SELECT 1 FROM telegram_write_reconciliations r
-                   WHERE r.item_id = i.id AND r.status = 'pending'
-               )
-             RETURNING i.job_id
-         ), repaired AS (
-             UPDATE telegram_background_jobs j
-             SET status = 'running',
-                 finished_at = NULL,
-                 cancelled_at = NULL,
-                 download_status = 'active',
-                 scan_status = CASE
-                     WHEN j.params ? 'mode' AND COALESCE(j.scan_status, 'pending') <> 'done' THEN j.scan_status
-                     ELSE 'done'
-                 END,
-                 error = CASE WHEN j.error IS NULL THEN '\u68C0\u6D4B\u5230\u672A\u5B8C\u6210\u4E0B\u8F7D\u6761\u76EE\uFF0C\u5DF2\u81EA\u52A8\u6062\u590D' ELSE j.error END,
-                 updated_at = NOW()
-             FROM inconsistent x
-             WHERE j.id = x.id
-             RETURNING j.id
-         )
-         SELECT COUNT(*)::int AS repaired_jobs FROM repaired`
-  );
-  return Number(result.rows[0]?.repaired_jobs || 0);
-}
-async function recoverInterruptedTelegramJobs(botClient) {
-  if (recoveryRunning) return;
-  recoveryRunning = true;
-  let lockClient = null;
-  let lockHeld = false;
-  try {
-    const client2 = await pool.connect();
-    lockClient = client2;
-    const lockResult = await client2.query(`SELECT pg_try_advisory_lock(hashtext('tg-vault:telegram-job-recovery')) AS locked`);
-    lockHeld = Boolean(lockResult.rows[0]?.locked);
-    if (!lockHeld) return;
-    const reconciliationLease = crypto16.randomUUID();
-    const pendingWrites = await claimTelegramWriteReconciliations(pool, reconciliationLease, 100);
-    for (const pendingWrite of pendingWrites) {
-      const target = storageManager.getTarget(pendingWrite.provider, pendingWrite.accountId);
-      await resolveClaimedTelegramWrite({
-        db: pool,
-        leaseToken: reconciliationLease,
-        row: pendingWrite,
-        deleteObject: (storedPath) => target.provider.deleteFile(storedPath)
-      }).catch((error) => console.error(`\u267B\uFE0F Telegram write journal resolve \u5931\u8D25: ${pendingWrite.operationId}`, error));
-    }
-    const repaired = await repairTelegramJobInvariantsWithQuery();
-    if (repaired > 0) console.warn(`\u267B\uFE0F \u5DF2\u4FEE\u590D ${repaired} \u4E2A Telegram \u7236\u5B50\u4EFB\u52A1\u72B6\u6001\u4E0D\u4E00\u81F4`);
-    await clearExpiredStorageCooldowns();
-    await query(
-      `UPDATE telegram_background_jobs
-             SET status = 'running', download_status = 'active', cooldown_until = NULL, error = NULL, updated_at = NOW()
-             WHERE status = 'cooling'
-               AND cooldown_until IS NOT NULL
-               AND cooldown_until <= NOW()
-               AND paused_at IS NULL
-               AND cancelled_at IS NULL
-               AND finished_at IS NULL`
-    );
-    await query(
-      `UPDATE telegram_download_items
-             SET status = 'pending', locked_at = NULL, updated_at = NOW()
-             WHERE status = 'downloading'
-               AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
-               AND NOT EXISTS (
-                   SELECT 1 FROM telegram_write_reconciliations r
-                   WHERE r.item_id = telegram_download_items.id AND r.status = 'pending'
-               )
-               AND EXISTS (
-                   SELECT 1 FROM telegram_background_jobs j
-                   WHERE j.id = telegram_download_items.job_id
-                     AND j.finished_at IS NULL
-                     AND j.cancelled_at IS NULL
-                     AND j.paused_at IS NULL
-                     AND j.status NOT IN ('cancelled', 'paused')
-               )`
-    );
-    const jobs = await query(
-      `SELECT DISTINCT j.*
-             FROM telegram_background_jobs j
-             JOIN telegram_download_items i ON i.job_id = j.id
-             WHERE j.kind IN ('date_range', 'tag_download', 'subscription_sync')
-               AND j.finished_at IS NULL
-               AND j.cancelled_at IS NULL
-               AND j.status IN ('pending', 'running', 'failed', 'completed_with_errors', 'cooling')
-               AND i.status = 'pending'
-             ORDER BY j.created_at ASC
-             LIMIT 5`
-    );
-    for (const job of jobs.rows) {
-      if (job.scan_status !== "done" && (job.kind === "date_range" || job.kind === "tag_download") && job.params?.mode) {
-        const targetChat = job.chat_id || job.user_id;
-        const requestMessage = { chatId: targetChat, id: 0 };
-        await runSegmentedTelegramJob(botClient, requestMessage, job.id, job.source, job.params?.folderOverride || null, {}).catch((error) => console.error("\u267B\uFE0F Telegram \u5206\u6BB5\u4EFB\u52A1\u6062\u590D\u5931\u8D25:", error));
-      } else {
-        await recoverTelegramJob(botClient, job).catch((error) => console.error("\u267B\uFE0F Telegram \u4EFB\u52A1\u6062\u590D\u5931\u8D25:", error));
-      }
-    }
-  } finally {
-    const client2 = lockClient;
-    if (lockHeld && client2) {
-      await client2.query(`SELECT pg_advisory_unlock(hashtext('tg-vault:telegram-job-recovery'))`).catch(() => void 0);
-    }
-    client2?.release();
-    recoveryRunning = false;
-  }
-}
-function startTelegramJobRecoveryWorker(botClient) {
-  if (recoveryStarted) return;
-  recoveryStarted = true;
-  recoveryTimeout = setTimeout(() => recoverInterruptedTelegramJobs(botClient).catch((error) => console.error("\u267B\uFE0F Telegram \u4EFB\u52A1\u6062\u590D\u626B\u63CF\u5931\u8D25:", error)), TG_JOB_RECOVERY_DELAY_MS);
-  recoveryTimer = setInterval(() => recoverInterruptedTelegramJobs(botClient).catch((error) => console.error("\u267B\uFE0F Telegram \u4EFB\u52A1\u6062\u590D\u626B\u63CF\u5931\u8D25:", error)), SUBSCRIPTION_INTERVAL_MS);
-}
-function startTelegramSubscriptionWorker(botClient) {
-  if (subscriptionTimer) return;
-  subscriptionTimer = setInterval(() => {
-    runSubscriptionScan(botClient).catch((error) => console.error("\u{1F916} Telegram \u8BA2\u9605\u626B\u63CF\u5F02\u5E38:", error));
-  }, SUBSCRIPTION_INTERVAL_MS);
-  runSubscriptionScan(botClient).catch((error) => console.error("\u{1F916} Telegram \u8BA2\u9605\u626B\u63CF\u5F02\u5E38:", error));
-  console.log(`\u{1F916} Telegram \u9891\u9053\u8BA2\u9605\u626B\u63CF\u5DF2\u542F\u52A8\uFF0C\u95F4\u9694 ${Math.round(SUBSCRIPTION_INTERVAL_MS / 1e3)} \u79D2`);
-}
 async function stopTelegramBackgroundWorkers(timeoutMs2 = 3e4) {
   if (subscriptionTimer) clearInterval(subscriptionTimer);
   if (recoveryTimeout) clearTimeout(recoveryTimeout);
@@ -14612,7 +13829,7 @@ function channelTaskCenterItem(row) {
 // src/services/ytDlpDownload.ts
 init_db();
 init_storage();
-import crypto17 from "node:crypto";
+import crypto16 from "node:crypto";
 import fs11 from "node:fs";
 import os2 from "node:os";
 import path14 from "node:path";
@@ -14777,7 +13994,7 @@ async function uploadDownloadedFile(task, execution, localFilePath, originalFile
       thumbnailPath = null;
     }
   }
-  const operationId = crypto17.randomUUID();
+  const operationId = crypto16.randomUUID();
   await beginYtDlpWrite(pool, {
     operationId,
     taskId: task.id,
@@ -14863,7 +14080,7 @@ async function notifyTask(task, message) {
   await taskNotifier(task, message).catch(() => void 0);
 }
 async function executeYtDlpTask(id) {
-  const leaseToken = crypto17.randomUUID();
+  const leaseToken = crypto16.randomUUID();
   const execution = await claimYtDlpExecution(pool, id, leaseToken);
   if (!execution) return;
   const task = await getTransferTask("ytdlp", id);
@@ -15070,7 +14287,7 @@ async function retryYtDlpTask(id) {
 }
 async function createYtDlpTask(input) {
   await assertPublicHttpUrl(input.url);
-  const id = `yd-${crypto17.randomBytes(8).toString("hex")}`;
+  const id = `yd-${crypto16.randomBytes(8).toString("hex")}`;
   const target = input.target || storageManager.getActiveTarget();
   await assertStorageTargetWritable(target);
   const client2 = target.accountId ? await pool.connect() : null;
@@ -15142,7 +14359,7 @@ async function handleYtDlpCommand(message, url, explicitTarget, options = {}) {
 }
 
 // src/services/destructiveConfirmation.ts
-import crypto18 from "crypto";
+import crypto17 from "crypto";
 var DestructiveConfirmationStore = class {
   confirmations = /* @__PURE__ */ new Map();
   ttlMs;
@@ -15151,7 +14368,7 @@ var DestructiveConfirmationStore = class {
   constructor(options = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.tokenFactory = options.tokenFactory ?? (() => crypto18.randomBytes(18).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto17.randomBytes(18).toString("base64url"));
   }
   issue(binding) {
     const token = this.tokenFactory();
@@ -15617,7 +14834,7 @@ function notificationCallbackArgs(data) {
 }
 
 // src/services/telegramCommands.ts
-import crypto19 from "crypto";
+import crypto18 from "crypto";
 
 // src/utils/folderPath.ts
 var INVALID_SEGMENT_CHARACTERS = /[\\:*?"<>|\x00-\x1f\x7f]/;
@@ -16111,7 +15328,7 @@ async function handleStatus(message) {
     await message.reply({ message: MSG.AUTH_REQUIRED });
     return;
   }
-  const requestId = `tg-${crypto19.randomBytes(6).toString("hex")}`;
+  const requestId = `tg-${crypto18.randomBytes(6).toString("hex")}`;
   try {
     const target = storageManager.getActiveTarget();
     const accounts = await storageManager.getAccounts();
@@ -17769,7 +16986,7 @@ async function runYtDlpProbe(url, options = {}) {
 }
 
 // src/services/ytDlpConfirmation.ts
-import crypto20 from "node:crypto";
+import crypto19 from "node:crypto";
 var YtDlpConfirmationStore = class {
   values = /* @__PURE__ */ new Map();
   ttlMs;
@@ -17780,7 +16997,7 @@ var YtDlpConfirmationStore = class {
     this.ttlMs = Math.max(1, options.ttlMs ?? 5 * 6e4);
     this.maxEntries = Math.max(1, options.maxEntries ?? 500);
     this.now = options.now ?? Date.now;
-    this.tokenFactory = options.tokenFactory ?? (() => crypto20.randomBytes(12).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto19.randomBytes(12).toString("base64url"));
   }
   cleanup() {
     const now = this.now();
@@ -18755,7 +17972,7 @@ function buildSubscriptionCancelConfirm(target, token) {
   };
 }
 async function sendSubscriptionCancelConfirmation(message, userId, target, page) {
-  const token = crypto21.randomBytes(12).toString("base64url");
+  const token = crypto20.randomBytes(12).toString("base64url");
   const confirm = buildSubscriptionCancelConfirm(target, token);
   const sent = await message.reply({ message: confirm.text, buttons: confirm.buttons });
   const messageId = Number(sent.id);
@@ -18769,7 +17986,7 @@ async function sendSubscriptionCancelConfirmation(message, userId, target, page)
   });
 }
 async function editSubscriptionCancelConfirmation(update, userId, target, page) {
-  const token = crypto21.randomBytes(12).toString("base64url");
+  const token = crypto20.randomBytes(12).toString("base64url");
   pendingSubscriptionCancels.set(token, {
     userId,
     peerKey: telegramSubscriptionPeerKey(update.peer),
@@ -19357,14 +18574,11 @@ async function initTelegramBot(credentialsOverride) {
     if (!fs13.existsSync(sessionDir)) {
       fs13.mkdirSync(sessionDir, { recursive: true, mode: 448 });
     }
-    let sessionString = "";
-    if (fs13.existsSync(SESSION_FILE)) {
-      sessionString = fs13.readFileSync(SESSION_FILE, "utf-8").trim();
-    }
-    const session = new StringSession5(sessionString);
-    client = new TelegramClient8(session, apiId, apiHash, {
-      connectionRetries: 15,
-      retryDelay: 2e3,
+    client = new TelegramClient8(new StringSession5(""), apiId, apiHash, {
+      connectionRetries: 5,
+      reconnectRetries: 5,
+      retryDelay: 1e3,
+      autoReconnect: true,
       useWSS: false,
       deviceModel: "TG Vault Bot",
       systemVersion: "1.0.0",
@@ -19372,9 +18586,8 @@ async function initTelegramBot(credentialsOverride) {
       floodSleepThreshold: 120
     });
     console.log("\u{1F916} Telegram Bot \u6B63\u5728\u542F\u52A8...");
-    await client.start({
-      botAuthToken: botToken
-    });
+    await client.start({ botAuthToken: botToken });
+    await client.getMe();
     const newSession = client.session.save();
     fs13.writeFileSync(SESSION_FILE, newSession, { mode: 384 });
     try {
@@ -19415,16 +18628,12 @@ async function initTelegramBot(credentialsOverride) {
     } catch (e) {
       console.error("\u{1F916} \u521D\u59CB\u5316 Telegram \u8BA4\u8BC1\u8868\u5931\u8D25:", e);
     }
-    try {
-      await client.invoke(new Api9.bots.SetBotCommands({
-        scope: new Api9.BotCommandScopeDefault(),
-        langCode: "zh",
-        commands: buildBotCommandMenu().map((command) => new Api9.BotCommand(command))
-      }));
-      console.log("\u{1F916} Bot \u547D\u4EE4\u83DC\u5355\u5DF2\u66F4\u65B0");
-    } catch (e) {
-      console.error("\u{1F916} \u66F4\u65B0 Bot \u547D\u4EE4\u83DC\u5355\u5931\u8D25:", e);
-    }
+    await withTelegramClientDeadline(client.invoke(new Api9.bots.SetBotCommands({
+      scope: new Api9.BotCommandScopeDefault(),
+      langCode: "zh",
+      commands: buildBotCommandMenu().map((command) => new Api9.BotCommand(command))
+    })), 1e4, "Telegram Bot \u547D\u4EE4\u83DC\u5355\u6CE8\u518C\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+    console.log("\u{1F916} Bot \u547D\u4EE4\u83DC\u5355\u5DF2\u66F4\u65B0");
     try {
       const cleanupSetting = await query("SELECT value FROM system_settings WHERE key = $1", ["auto_cleanup_orphans"]);
       if (cleanupSetting.rows[0]?.value !== void 0) {
@@ -19461,9 +18670,6 @@ async function initTelegramBot(credentialsOverride) {
     } else {
       console.log("\u{1F9F9} \u542F\u52A8\u5B64\u513F\u6E05\u7406\u5DF2\u8DF3\u8FC7\uFF1AAUTO_CLEANUP_ORPHANS=false");
     }
-    startPeriodicCleanup();
-    startTelegramSubscriptionWorker(client);
-    startTelegramJobRecoveryWorker(client);
     client.addEventHandler(async (event) => {
       if (!client) return;
       try {
@@ -19512,7 +18718,7 @@ async function initTelegramBot(credentialsOverride) {
             const qrDataUrl = await generateOTPAuthUrl();
             const base64Data = qrDataUrl.replace(/^data:image\/png;base64,/, "");
             const buffer = Buffer.from(base64Data, "base64");
-            tempPath = path16.join(process.cwd(), `temp_qr_${senderId}_${Date.now()}_${crypto21.randomBytes(8).toString("hex")}.png`);
+            tempPath = path16.join(process.cwd(), `temp_qr_${senderId}_${Date.now()}_${crypto20.randomBytes(8).toString("hex")}.png`);
             fs13.writeFileSync(tempPath, buffer, { mode: 384 });
             const qrMessage = await client.sendFile(chatId, {
               file: tempPath,
@@ -19546,7 +18752,7 @@ async function initTelegramBot(credentialsOverride) {
             telegramWizardStates.delete(senderId, messageChatKey(message, senderId));
             await message.reply({ message: "\u2705 \u5F53\u524D Telegram \u7528\u6237\u7684 Bot \u8BA4\u8BC1\u5DF2\u64A4\u9500\u3002\u53D1\u9001 /start \u53EF\u91CD\u65B0\u8BA4\u8BC1\u3002" });
           } catch (error) {
-            const operationId = crypto21.randomUUID().slice(0, 8);
+            const operationId = crypto20.randomUUID().slice(0, 8);
             console.error(`\u{1F916} \u64A4\u9500 Telegram \u8BA4\u8BC1\u5931\u8D25 operationId=${operationId}:`, error);
             await message.reply({ message: `\u274C \u9000\u51FA\u5931\u8D25\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002
 \u64CD\u4F5C ID\uFF1A${operationId}` });
@@ -20098,19 +19304,47 @@ ${buildPathPreviewLine(appliedPath.folder)}
         }
       }
     }, new Raw2({}));
-    markTelegramBotReady();
-    const me = await client.getMe();
+    const me = await withTelegramClientDeadline(
+      client.getMe(),
+      1e4,
+      "Telegram Bot \u8EAB\u4EFD\u8BFB\u53D6\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5"
+    );
     setTelegramBotIdentity({
       username: me?.username ? String(me.username) : null,
       displayName: [me?.firstName, me?.lastName].filter(Boolean).join(" ") || null
     });
+    markTelegramBotReady();
     console.log("\u{1F916} Telegram Bot \u542F\u52A8\u6210\u529F! (\u6700\u5927 2GB\uFF0C\u8D26\u53F7\u7EA7\u4E0B\u8F7D\u5668\u4E0D\u53D7\u6B64\u9650\u5236)");
   } catch (error) {
+    const failedClient = client;
+    client = null;
+    if (failedClient) {
+      await failedClient.disconnect().catch(() => void 0);
+      await failedClient.destroy().catch(() => void 0);
+    }
     const status = classifyTelegramBotStartupError(error);
     const message = error instanceof Error ? error.message : String(error);
-    markTelegramBotError(status, message, status === "auth_failed" ? "\u68C0\u67E5 Telegram Bot token/API \u51ED\u8BC1\u540E\u91CD\u542F" : "\u68C0\u67E5\u7F51\u7EDC\u4E0E\u540E\u7AEF\u65E5\u5FD7\u540E\u91CD\u542F");
+    markTelegramBotError(
+      status,
+      message,
+      status === "auth_failed" ? "Telegram Bot Token \u5DF2\u5931\u6548\uFF0C\u8BF7\u5728\u7F51\u9875\u7AEF\u66F4\u6362\u51ED\u8BC1" : "\u68C0\u67E5\u7F51\u7EDC\u4E0E\u540E\u7AEF\u65E5\u5FD7\u540E\u91CD\u8BD5"
+    );
     console.error("\u{1F916} Telegram Bot \u542F\u52A8\u5931\u8D25:", error);
     throw error;
+  }
+}
+async function withTelegramClientDeadline(operation, timeoutMs2, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs2);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 async function stopTelegramBotInternal() {
@@ -20504,7 +19738,7 @@ function generateSignature(fileId, typeOrExpires, expires) {
     throw new Error("Missing signed URL expiration timestamp");
   }
   const data = `${fileId}:${type}:${expiresTimestamp}`;
-  return crypto22.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
+  return crypto21.createHmac("sha256", SESSION_SECRET).update(data).digest("hex");
 }
 function getSignedUrl(fileId, type, expiresIn = 24 * 60 * 60) {
   const expires = Date.now() + expiresIn * 1e3;
@@ -20532,7 +19766,7 @@ function verifySignedUrl(req) {
   try {
     const received = Buffer.from(sign, "hex");
     const expected = Buffer.from(expectedSign, "hex");
-    if (received.length !== expected.length || !crypto22.timingSafeEqual(received, expected)) {
+    if (received.length !== expected.length || !crypto21.timingSafeEqual(received, expected)) {
       console.log("[SignedURL] Signature mismatch:", { id, type });
       return false;
     }
@@ -20590,9 +19824,9 @@ function createFileDeletionService(dependencies) {
 }
 
 // src/services/webDestructiveConfirmation.ts
-import crypto23 from "node:crypto";
+import crypto22 from "node:crypto";
 function hash(value) {
-  return crypto23.createHash("sha256").update(value).digest("hex");
+  return crypto22.createHash("sha256").update(value).digest("hex");
 }
 var WebDestructiveConfirmationStore = class {
   constructor(ttlMs = 5 * 60 * 1e3, now = () => Date.now()) {
@@ -20603,7 +19837,7 @@ var WebDestructiveConfirmationStore = class {
   now;
   values = /* @__PURE__ */ new Map();
   issue(input) {
-    const token = crypto23.randomBytes(24).toString("base64url");
+    const token = crypto22.randomBytes(24).toString("base64url");
     const expiresAt = this.now() + this.ttlMs;
     this.values.set(token, { action: input.action, objectId: input.objectId, context: input.context ?? null, authTokenHash: hash(input.authToken), expiresAt });
     return { confirmationToken: token, expiresAt };
@@ -21450,9 +20684,9 @@ function logOperationalEvent(event, requestId, data) {
 }
 
 // src/services/batchDeleteConfirmation.ts
-import crypto24 from "node:crypto";
+import crypto23 from "node:crypto";
 function hashAuthToken(token) {
-  return crypto24.createHash("sha256").update(token).digest("hex");
+  return crypto23.createHash("sha256").update(token).digest("hex");
 }
 function normalizeFileIds(fileIds) {
   return [...new Set(fileIds)].sort();
@@ -21465,7 +20699,7 @@ var BatchDeleteConfirmationStore = class {
   constructor(options = {}) {
     this.ttlMs = options.ttlMs ?? 5 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.tokenFactory = options.tokenFactory ?? (() => crypto24.randomBytes(24).toString("base64url"));
+    this.tokenFactory = options.tokenFactory ?? (() => crypto23.randomBytes(24).toString("base64url"));
   }
   issue(input) {
     const confirmationToken = this.tokenFactory();
@@ -22245,14 +21479,14 @@ import os5 from "os";
 import path20 from "path";
 import fs17 from "fs";
 import axios3 from "axios";
-import crypto26 from "crypto";
+import crypto25 from "crypto";
 import { rateLimit as rateLimit3 } from "express-rate-limit";
 init_networkSecurity();
 
 // src/services/oauthFlowStore.ts
 init_db();
 init_credentialCrypto();
-import crypto25 from "node:crypto";
+import crypto24 from "node:crypto";
 var OAuthFlowError = class extends Error {
   code = "OAUTH_FLOW_INVALID";
   constructor() {
@@ -22261,7 +21495,7 @@ var OAuthFlowError = class extends Error {
   }
 };
 function sha256(value) {
-  return crypto25.createHash("sha256").update(value).digest("hex");
+  return crypto24.createHash("sha256").update(value).digest("hex");
 }
 function parsePendingConfig(value) {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
@@ -22278,8 +21512,8 @@ var OAuthFlowStore = class {
     this.db = options.db ?? pool;
     this.ttlMs = options.ttlMs ?? 10 * 60 * 1e3;
     this.now = options.now ?? (() => Date.now());
-    this.stateFactory = options.stateFactory ?? (() => crypto25.randomBytes(32).toString("base64url"));
-    this.nonceFactory = options.nonceFactory ?? (() => crypto25.randomBytes(24).toString("base64url"));
+    this.stateFactory = options.stateFactory ?? (() => crypto24.randomBytes(32).toString("base64url"));
+    this.nonceFactory = options.nonceFactory ?? (() => crypto24.randomBytes(24).toString("base64url"));
   }
   async ensureSchema() {
     if (!this.schemaPromise) {
@@ -22619,7 +21853,7 @@ var telegramUserLoginStatusLimiter = rateLimit3({ windowMs: 60 * 1e3, max: 60, m
 function getTelegramUserLoginSessionKey(req) {
   const token = getAuthToken(req);
   if (!token) throw new Error("UNAUTHORIZED");
-  return crypto26.createHash("sha256").update(token).digest("base64url");
+  return crypto25.createHash("sha256").update(token).digest("base64url");
 }
 function sendTelegramUserLoginError(res, error) {
   const candidate = error;
@@ -22653,7 +21887,7 @@ function sendStorageEndpointValidationError(res, error) {
   res.status(400).json({ error: safeMessages.includes(message) ? message : "\u65E0\u6CD5\u89E3\u6790\u5B58\u50A8\u7AEF\u70B9\u5730\u5740" });
 }
 function sendOAuthSuccessPage(res, input) {
-  const nonce = crypto26.randomBytes(16).toString("base64");
+  const nonce = crypto25.randomBytes(16).toString("base64");
   res.setHeader("Content-Security-Policy", [
     "default-src 'self'",
     "style-src 'unsafe-inline'",
@@ -22666,7 +21900,7 @@ function sendOAuthSuccessPage(res, input) {
   res.type("html").send(renderOAuthSuccessPage({ ...input, scriptNonce: nonce }));
 }
 function sendOAuthFailurePage(res, input) {
-  const nonce = crypto26.randomBytes(16).toString("base64");
+  const nonce = crypto25.randomBytes(16).toString("base64");
   res.setHeader("Content-Security-Policy", [
     "default-src 'self'",
     "style-src 'unsafe-inline'",
@@ -22925,7 +22159,6 @@ router5.put("/config/telegram-bot", requireAuth, async (req, res) => {
       try {
         if (enabled) await controls.restart(credentials);
         else await controls.stop();
-        await initializeTelegramMultiAccountRuntime({ apiId: credentials.apiId, apiHash: credentials.apiHash });
       } catch (activationError) {
         await restoreTelegramBotConfig(previous);
         const restored = await applyEffectiveTelegramBotConfig();
@@ -22952,7 +22185,6 @@ router5.post("/config/telegram-bot/migrate", requireAuth, async (req, res) => {
         setTelegramBotIdentity(bot);
         await applyEffectiveTelegramBotConfig();
         await controls.restart(credentials);
-        await initializeTelegramMultiAccountRuntime({ apiId: credentials.apiId, apiHash: credentials.apiHash });
       } catch (activationError) {
         await restoreTelegramBotConfig(previous);
         await applyEffectiveTelegramBotConfig();
@@ -23077,14 +22309,14 @@ router5.post("/config/telegram-user/accounts/:accountId/enable", requireAuth, as
   noStore(res);
   const ok = await telegramAccountRepository.setEnabled(req.params.accountId, true);
   if (!ok) return res.status(404).json({ error: "\u8D26\u53F7\u4E0D\u5B58\u5728" });
-  await telegramUserClientPool.refresh();
+  await activateTelegramUserAccount(req.params.accountId);
   return res.json({ success: true, enabled: true });
 });
 router5.post("/config/telegram-user/accounts/:accountId/disable", requireAuth, async (req, res) => {
   noStore(res);
   const ok = await telegramAccountRepository.setEnabled(req.params.accountId, false);
   if (!ok) return res.status(404).json({ error: "\u8D26\u53F7\u4E0D\u5B58\u5728" });
-  await telegramUserClientPool.refresh();
+  await telegramUserClientPool.deactivateAccount(req.params.accountId);
   return res.json({ success: true, enabled: false });
 });
 router5.delete("/config/telegram-user/accounts/:accountId", requireAuth, async (req, res) => {
@@ -23777,7 +23009,7 @@ var storage_default = router5;
 // src/routes/chunkedUpload.ts
 init_db();
 import { Router as Router6 } from "express";
-import crypto29 from "node:crypto";
+import crypto28 from "node:crypto";
 import fs19 from "node:fs";
 import fsPromises2 from "node:fs/promises";
 import path22 from "node:path";
@@ -23788,7 +23020,7 @@ init_storage();
 init_storageAccountLifecycle();
 
 // src/services/chunkUploadReconciliation.ts
-import crypto27 from "node:crypto";
+import crypto26 from "node:crypto";
 async function ownsChunkReconciliationLease(db, operationId, leaseToken) {
   const result = await db.query(
     `UPDATE chunk_upload_reconciliations
@@ -23887,7 +23119,7 @@ async function resolveClaimedChunkReconciliation(input) {
   return resolved ? "resolved" : "pending";
 }
 async function beginChunkCompletionReconciliation(db, input) {
-  const operationId = crypto27.randomUUID();
+  const operationId = crypto26.randomUUID();
   const result = await db.query(
     `INSERT INTO chunk_upload_reconciliations
          (operation_id, upload_id, completion_token, provider, account_id, object_state, index_state, reason, status, created_at, updated_at)
@@ -23977,7 +23209,7 @@ async function compensateChunkCompletionFailure(input) {
 }
 
 // src/services/chunkUploadSessions.ts
-import crypto28 from "node:crypto";
+import crypto27 from "node:crypto";
 import fs18 from "node:fs";
 import fsPromises from "node:fs/promises";
 import path21 from "node:path";
@@ -23990,7 +23222,7 @@ var ChunkUploadProtocolError = class extends Error {
 };
 async function writeChunkAtomically(input) {
   await fsPromises.mkdir(path21.dirname(input.finalPath), { recursive: true });
-  const committedPath = `${input.finalPath}.${crypto28.randomUUID()}.chunk`;
+  const committedPath = `${input.finalPath}.${crypto27.randomUUID()}.chunk`;
   const temporaryPath = `${committedPath}.part`;
   const lockPath = `${input.finalPath}.lock`;
   let lockHandle;
@@ -24000,7 +23232,7 @@ async function writeChunkAtomically(input) {
     if (error?.code === "EEXIST") throw new ChunkUploadProtocolError("ChunkWriteBusyError", "\u540C\u4E00\u5206\u5757\u6B63\u5728\u5199\u5165\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
     throw error;
   }
-  const hash2 = crypto28.createHash("sha256");
+  const hash2 = crypto27.createHash("sha256");
   let size = 0;
   const counter = new (await import("node:stream")).Transform({
     transform(chunk, _encoding, callback) {
@@ -24033,7 +23265,7 @@ async function verifyChunkIntegrity(chunk, expectedDirectory, maxChunkBytes) {
   if (stat.size !== chunk.size || stat.size < 1 || stat.size > maxChunkBytes) {
     throw new ChunkUploadProtocolError("ChunkSizeMismatchError", `\u5206\u5757 ${chunk.index} \u5927\u5C0F\u65E0\u6548`);
   }
-  const hash2 = crypto28.createHash("sha256");
+  const hash2 = crypto27.createHash("sha256");
   await pipeline2(fs18.createReadStream(chunkPath), new (await import("node:stream")).Writable({
     write(buffer, _encoding, callback) {
       hash2.update(buffer);
@@ -24539,7 +23771,7 @@ var chunkStore = new ChunkUploadSessionStore(chunkRepository, {
   getDiskFreeBytes: async () => (await checkDiskSpace3(path22.resolve(CHUNK_DIR))).free
 });
 var runChunkMaintenance = async () => {
-  const reconciliationLease = crypto29.randomUUID();
+  const reconciliationLease = crypto28.randomUUID();
   const pending = await claimChunkReconciliations(pool, reconciliationLease, 100);
   for (const row of pending) {
     const target = storageManager.getTarget(row.provider, row.accountId);
@@ -24573,7 +23805,7 @@ function ownerId(req) {
   return stableWebAdminPrincipalId();
 }
 function stableWebAdminPrincipalId() {
-  return crypto29.createHash("sha256").update("tg-vault:web-admin:v1").digest("hex");
+  return crypto28.createHash("sha256").update("tg-vault:web-admin:v1").digest("hex");
 }
 function decodeFilename2(filename) {
   try {
@@ -24642,7 +23874,7 @@ router6.post("/init", async (req, res) => {
     }
     const now = /* @__PURE__ */ new Date();
     const session = {
-      uploadId: crypto29.randomUUID(),
+      uploadId: crypto28.randomUUID(),
       ownerId: ownerId(req),
       filename: decodeFilename2(filename).slice(0, 255),
       mimeType: mimeType.slice(0, 100),
@@ -24730,7 +23962,7 @@ router6.post("/chunk", async (req, res) => {
   }
 });
 async function mergeChunks(uploadId, chunks, targetPath, expectedBytes) {
-  const temporary = `${targetPath}.${crypto29.randomUUID()}.part`;
+  const temporary = `${targetPath}.${crypto28.randomUUID()}.part`;
   await fsPromises2.mkdir(path22.dirname(targetPath), { recursive: true });
   const output = fs19.createWriteStream(temporary, { flags: "wx" });
   try {
@@ -24789,7 +24021,7 @@ router6.post("/complete", async (req, res) => {
     if (current3.status === "failed") {
       return res.status(409).json({ error: "\u4E0A\u6B21\u5B8C\u6210\u5931\u8D25\uFF0C\u8BF7\u5148\u91CD\u8BD5\u4E0A\u4F20\u4F1A\u8BDD", retryable: true, lastError: current3.lastError });
     }
-    token = crypto29.randomUUID();
+    token = crypto28.randomUUID();
     const claim = await chunkStore.claimCompletion(uploadId, owner, token, new Date(Date.now() + COMPLETION_LEASE_MS));
     if (!claim) return res.status(409).json({ error: "\u4E0A\u4F20\u672A\u5B8C\u6574\u3001\u5DF2\u7531\u5176\u4ED6\u8BF7\u6C42\u5904\u7406\u6216\u72B6\u6001\u4E0D\u53EF\u5B8C\u6210" });
     completionHeartbeat = setInterval(() => {
@@ -25060,7 +24292,7 @@ async function saveTaskCenterDismissals(items) {
 }
 
 // src/routes/tasks.ts
-import crypto30 from "node:crypto";
+import crypto29 from "node:crypto";
 var router7 = Router7();
 var CHUNK_DIR2 = process.env.CHUNK_DIR || "./data/chunks";
 async function collectUnifiedTasks(limit, accountId) {
@@ -25254,7 +24486,7 @@ router7.post("/dismissals/prepare", requireAuth, async (req, res) => {
     const selected3 = all.filter((task) => isTaskDismissible(task)).filter((task) => requestedKeys.size > 0 ? requestedKeys.has(`${task.sourceType}:${task.id}`) : (!source || task.sourceType === source) && (!status || task.status === status)).map((task) => ({ sourceType: task.sourceType, id: task.id, status: task.status, title: task.title, updatedAt: task.updatedAt }));
     if (selected3.length === 0) return res.status(409).json({ error: "\u5F53\u524D\u8303\u56F4\u6CA1\u6709\u53EF\u5220\u9664\u7684\u7EC8\u6001\u8BB0\u5F55" });
     const context = JSON.stringify(selected3);
-    const snapshotId = crypto30.createHash("sha256").update(context).digest("hex");
+    const snapshotId = crypto29.createHash("sha256").update(context).digest("hex");
     const bySource = Object.fromEntries([...new Set(selected3.map((item) => item.sourceType))].map((key) => [key, selected3.filter((item) => item.sourceType === key).length]));
     const byStatus = Object.fromEntries([...new Set(selected3.map((item) => item.status))].map((key) => [key, selected3.filter((item) => item.status === key).length]));
     res.json({
@@ -25729,7 +24961,7 @@ function createSystemRouter(checker) {
 init_authSettings();
 init_db();
 import helmet from "helmet";
-import crypto31 from "node:crypto";
+import crypto30 from "node:crypto";
 
 // src/utils/runtimeConfig.ts
 var NUMBER_SPECS = [
@@ -25891,7 +25123,7 @@ function logRuntimeConfigSummary(summary) {
 // package.json
 var package_default = {
   name: "tg-vault-backend",
-  version: "2.3.1",
+  version: "2.4.0",
   type: "module",
   scripts: {
     dev: "tsx watch src/index.ts",
@@ -26241,7 +25473,7 @@ app.use(cors({
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "2mb" }));
 app.use((req, res, next) => {
   const provided = normalizeRequestId(req.headers["x-request-id"]);
-  const requestId = provided || crypto31.randomUUID();
+  const requestId = provided || crypto30.randomUUID();
   res.locals.requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
   next();
@@ -26332,23 +25564,27 @@ async function initializeApplication() {
   await ensureDatabaseInitialized();
   const telegramConfig = await applyEffectiveTelegramBotConfig();
   const telegramEnabled = telegramConfig.configured && telegramConfig.enabled;
+  await installTelegramMultiAccountRuntimeAdapters();
+  await restoreEnabledTelegramUserAccountsAfterRestart();
   await markTransferTasksAfterRestart();
   const { storageManager: storageManager2 } = await Promise.resolve().then(() => (init_storage(), storage_exports));
   await storageManager2.init();
   const twoFactor = await get2FAReadiness();
   if (!twoFactor.ready) throw new Error("2FA \u5DF2\u542F\u7528\u4F46\u5BC6\u94A5\u4E0D\u53EF\u8BFB\u53D6");
   if (telegramEnabled) {
-    await initTelegramUserClient(telegramConfig.credentials || void 0);
     try {
       await initTelegramBot();
     } catch (error) {
       if (telegramConfig.required) throw error;
       const message = error instanceof Error ? error.message : String(error);
-      markTelegramBotError("error", message, "\u68C0\u67E5 Telegram \u51ED\u8BC1/\u7F51\u7EDC\u5E76\u91CD\u542F\u540E\u7AEF");
+      const status = classifyTelegramBotStartupError(error);
+      markTelegramBotError(
+        status,
+        message,
+        status === "auth_failed" ? "Telegram Bot Token \u5DF2\u5931\u6548\uFF0C\u8BF7\u5728\u7F51\u9875\u7AEF\u66F4\u6362\u51ED\u8BC1" : "\u68C0\u67E5\u7F51\u7EDC\u4E0E\u540E\u7AEF\u65E5\u5FD7\u540E\u91CD\u8BD5"
+      );
       console.warn("Telegram Bot \u53EF\u9009\u7EC4\u4EF6\u542F\u52A8\u5931\u8D25\uFF0C\u5E94\u7528\u4EE5 degraded \u72B6\u6001\u7EE7\u7EED:", message);
     }
-  } else if (telegramConfig.credentials) {
-    await initializeTelegramMultiAccountRuntime({ apiId: telegramConfig.credentials.apiId, apiHash: telegramConfig.credentials.apiHash });
   }
   await initializeYtDlpQueue();
   await recoverMediaDerivativeJobs();

@@ -13,6 +13,7 @@ import {
 export interface TelegramAuthorizedAccountAdapter {
     upsertByTelegramUserId(input: {
         session: string;
+        credentials: TelegramLoginCredentials;
         account: TelegramUserLoginAccount;
     }): Promise<void>;
 }
@@ -137,7 +138,7 @@ class GramJsMultiAccountLoginClient implements TelegramMultiAccountLoginClient {
     }
 }
 
-async function onAuthorized(input: { session: string; account: TelegramUserLoginAccount }): Promise<void> {
+async function onAuthorized(input: { session: string; credentials: TelegramLoginCredentials; account: TelegramUserLoginAccount }): Promise<void> {
     if (!adapter) {
         throw new Error('Telegram 多账号仓库尚未注册，无法保存登录账号');
     }

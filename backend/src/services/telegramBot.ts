@@ -20,8 +20,6 @@ import {
     findTelegramSubscription,
     listTelegramSubscriptions,
     type TelegramJobProgressSummary,
-    startTelegramJobRecoveryWorker,
-    startTelegramSubscriptionWorker,
     stopTelegramBackgroundWorkers,
     subscribeTelegramChannel,
     unsubscribeTelegramChannel,
@@ -33,7 +31,7 @@ import {
     retryTelegramBackgroundJob,
     TELEGRAM_COMMENTS_MAX_PER_POST,
 } from './telegramChannelJobs.js';
-import { cleanupOrphanFiles, isAutoCleanupEnabled, startPeriodicCleanup } from './orphanCleanup.js';
+import { cleanupOrphanFiles, isAutoCleanupEnabled } from './orphanCleanup.js';
 import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildCleanupNotice } from '../utils/telegramMessages.js';
 import { query } from '../db/index.js';
 import { getConfiguredTelegramAllowedUsers, addTelegramAllowedUser, countAuthenticatedTelegramUsers, shouldAutoAllowFirstTelegramUser, verifyTelegramPin } from '../utils/authSettings.js';
@@ -1548,15 +1546,11 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
             fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
         }
 
-        let sessionString = '';
-        if (fs.existsSync(SESSION_FILE)) {
-            sessionString = fs.readFileSync(SESSION_FILE, 'utf-8').trim();
-        }
-
-        const session = new StringSession(sessionString);
-        client = new TelegramClient(session, apiId, apiHash, {
-            connectionRetries: 15,
-            retryDelay: 2000,
+        client = new TelegramClient(new StringSession(''), apiId, apiHash, {
+            connectionRetries: 5,
+            reconnectRetries: 5,
+            retryDelay: 1000,
+            autoReconnect: true,
             useWSS: false,
             deviceModel: 'TG Vault Bot',
             systemVersion: '1.0.0',
@@ -1565,10 +1559,8 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
         });
 
         console.log('🤖 Telegram Bot 正在启动...');
-
-        await client.start({
-            botAuthToken: botToken,
-        });
+        await client.start({ botAuthToken: botToken });
+        await client.getMe();
 
         const newSession = client.session.save() as unknown as string;
         fs.writeFileSync(SESSION_FILE, newSession, { mode: 0o600 });
@@ -1607,16 +1599,12 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
         }
 
         // Set Bot Commands
-        try {
-            await client.invoke(new Api.bots.SetBotCommands({
-                scope: new Api.BotCommandScopeDefault(),
-                langCode: 'zh',
-                commands: buildBotCommandMenu().map(command => new Api.BotCommand(command))
-            }));
-            console.log('🤖 Bot 命令菜单已更新');
-        } catch (e) {
-            console.error('🤖 更新 Bot 命令菜单失败:', e);
-        }
+        await withTelegramClientDeadline(client.invoke(new Api.bots.SetBotCommands({
+            scope: new Api.BotCommandScopeDefault(),
+            langCode: 'zh',
+            commands: buildBotCommandMenu().map(command => new Api.BotCommand(command))
+        })), 10_000, 'Telegram Bot 命令菜单注册超时，请稍后重试');
+        console.log('🤖 Bot 命令菜单已更新');
 
         try {
             const cleanupSetting = await query('SELECT value FROM system_settings WHERE key = $1', ['auto_cleanup_orphans']);
@@ -1663,10 +1651,8 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
             console.log('🧹 启动孤儿清理已跳过：AUTO_CLEANUP_ORPHANS=false');
         }
 
-        // 启动定期清理（每小时）
-        startPeriodicCleanup();
-        startTelegramSubscriptionWorker(client);
-        startTelegramJobRecoveryWorker(client);
+        // 后台任务由应用级编排显式启动；Bot 凭证绑定只安装交互处理器，
+        // 避免仅保存凭证就触发订阅扫描、任务恢复或主动消息。
 
         // Handle Messages
         client.addEventHandler(async (event: NewMessageEvent) => {
@@ -2407,20 +2393,49 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
             }
         }, new Raw({}));
 
-        markTelegramBotReady();
-        const me: any = await client.getMe();
+        const me: any = await withTelegramClientDeadline(
+            client.getMe(),
+            10_000,
+            'Telegram Bot 身份读取超时，请稍后重试',
+        );
         setTelegramBotIdentity({
             username: me?.username ? String(me.username) : null,
             displayName: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || null,
         });
+        markTelegramBotReady();
         console.log('🤖 Telegram Bot 启动成功! (最大 2GB，账号级下载器不受此限制)');
 
     } catch (error) {
+        const failedClient = client;
+        client = null;
+        if (failedClient) {
+            await failedClient.disconnect().catch(() => undefined);
+            await failedClient.destroy().catch(() => undefined);
+        }
         const status = classifyTelegramBotStartupError(error);
         const message = error instanceof Error ? error.message : String(error);
-        markTelegramBotError(status, message, status === 'auth_failed' ? '检查 Telegram Bot token/API 凭证后重启' : '检查网络与后端日志后重启');
+        markTelegramBotError(
+            status,
+            message,
+            status === 'auth_failed' ? 'Telegram Bot Token 已失效，请在网页端更换凭证' : '检查网络与后端日志后重试',
+        );
         console.error('🤖 Telegram Bot 启动失败:', error);
         throw error;
+    }
+}
+
+async function withTelegramClientDeadline<T>(operation: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+                timer.unref?.();
+            }),
+        ]);
+    } finally {
+        if (timer) clearTimeout(timer);
     }
 }
 

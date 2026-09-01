@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    classifyTelegramBotStartupError,
     getTelegramBotStatus,
     markTelegramBotError,
     markTelegramBotReady,
@@ -29,6 +30,11 @@ test('required Bot errors block readiness while optional Bot errors are degraded
     assert.equal(telegramBotBlocksReadiness(getTelegramBotStatus(), true), true);
     assert.equal(telegramBotBlocksReadiness(getTelegramBotStatus(), false), false);
     assert.equal(getTelegramBotStatus().degraded, true);
+});
+
+test('Telegram ACCESS_TOKEN failures are classified as credential failures', () => {
+    assert.equal(classifyTelegramBotStartupError(new Error('400: ACCESS_TOKEN_EXPIRED')), 'auth_failed');
+    assert.equal(classifyTelegramBotStartupError(new Error('ACCESS_TOKEN_INVALID')), 'auth_failed');
 });
 
 test('a reconnect recovery returns status to ready and keeps counters', () => {

@@ -114,7 +114,7 @@ export function markTelegramBotError(
 
 export function classifyTelegramBotStartupError(error: unknown): Extract<TelegramBotState, 'auth_failed' | 'error'> {
     const message = error instanceof Error ? error.message : String(error);
-    return /token|auth|unauthorized|forbidden|401|403/i.test(message) ? 'auth_failed' : 'error';
+    return /token|auth|unauthorized|forbidden|401|403|access_token_(?:expired|invalid)/i.test(message) ? 'auth_failed' : 'error';
 }
 
 export function telegramBotBlocksReadiness(status: TelegramBotStatus, required = requiredFromEnv()): boolean {

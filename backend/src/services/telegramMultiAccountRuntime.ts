@@ -15,18 +15,23 @@ import { installTelegramAccountAccessSweep } from './telegramAccountAccessSweepA
 let installed = false;
 let initializationPromise: Promise<void> | null = null;
 
+export async function installTelegramMultiAccountRuntimeAdapters(): Promise<void> {
+    if (installed) return;
+    installTelegramAccountAccessSweep({ clientPool: telegramUserClientPool });
+    registerTelegramMultiAccountAuthorizedAdapter(createTelegramMultiAccountAuthorizedAdapter({
+        repository: telegramAccountRepository,
+        pool: {
+            activateAccount: (accountId, reason, credentials) => telegramUserClientPool.activateAccount(accountId, reason, credentials),
+        },
+        accessSweep: { trigger: options => triggerTelegramAccountAccessSweep(options) },
+    }));
+    installed = true;
+}
+
 export async function initializeTelegramMultiAccountRuntime(credentials: { apiId: number; apiHash: string }): Promise<void> {
     if (initializationPromise) return initializationPromise;
     const run = (async () => {
-        if (!installed) {
-            installTelegramAccountAccessSweep({ clientPool: telegramUserClientPool });
-            registerTelegramMultiAccountAuthorizedAdapter(createTelegramMultiAccountAuthorizedAdapter({
-                repository: telegramAccountRepository,
-                pool: telegramUserClientPool,
-                accessSweep: { trigger: options => triggerTelegramAccountAccessSweep(options) },
-            }));
-            installed = true;
-        }
+        await installTelegramMultiAccountRuntimeAdapters();
         await initializeTelegramUserClientPool(credentials);
     })();
     initializationPromise = run;

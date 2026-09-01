@@ -6,6 +6,7 @@ const route = fs.readFileSync(new URL('../routes/storage.ts', import.meta.url), 
 const client = fs.readFileSync(new URL('./telegramUserClient.ts', import.meta.url), 'utf8');
 const cryptoSource = fs.readFileSync(new URL('../utils/credentialCrypto.ts', import.meta.url), 'utf8');
 const indexSource = fs.readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
+const runtimeSource = fs.readFileSync(new URL('./telegramMultiAccountRuntime.ts', import.meta.url), 'utf8');
 
 test('user-account login endpoints require Web admin auth, no-store, and an independent limiter', () => {
     assert.match(route, /telegramUserLoginLimiter\s*=\s*rateLimit/);
@@ -32,6 +33,12 @@ test('a configured account blocks starting another login until it is unlinked', 
     assert.match(phoneRoute, /ACCOUNT_ALREADY_BOUND/);
     assert.match(phoneRoute, /409/);
 });
+test('explicit legacy enable requires a saved user session before initializing the pool', () => {
+    const initializer = client.slice(client.indexOf('export async function initTelegramUserClient'), client.indexOf('async function persistAndActivate'));
+    assert.match(initializer, /if \(!sessionString\)[\s\S]*return;[\s\S]*initializeTelegramMultiAccountRuntime/);
+    assert.match(runtimeSource, /installTelegramMultiAccountRuntimeAdapters[\s\S]*initializeTelegramUserClientPool/);
+});
+
 test('disable retains the session, unlink deletes it, and both apply without a restart', () => {
     assert.match(route, /router\.post\('\/config\/telegram-user\/disable'/);
     assert.match(route, /disableTelegramUserAccount/);
@@ -42,5 +49,5 @@ test('disable retains the session, unlink deletes it, and both apply without a r
     assert.match(client, /deleteSettings\(\[TELEGRAM_USER_SESSION_SETTING/);
     const telegramRoutes = route.slice(route.indexOf("router.get('/config/telegram-user'"), route.indexOf("router.post('/config/telegram-allowed-users'"));
     assert.doesNotMatch(telegramRoutes, /重启后端|并重启/);
-    assert.match(indexSource, /initTelegramUserClient/);
+    assert.doesNotMatch(indexSource, /initTelegramUserClient\(/);
 });

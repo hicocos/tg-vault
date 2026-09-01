@@ -11,7 +11,7 @@ export interface TelegramLoginAccountRepository {
 }
 
 export interface TelegramLoginAccountPool {
-    refresh(): Promise<void>;
+    activateAccount(accountId: string, reason: 'login_complete', credentials: { apiId: number; apiHash: string }): Promise<void>;
 }
 
 export interface TelegramLoginAccountAccessSweep {
@@ -29,7 +29,7 @@ export function createTelegramMultiAccountAuthorizedAdapter(deps: {
     accessSweep?: TelegramLoginAccountAccessSweep;
 }): TelegramAuthorizedAccountAdapter {
     return {
-        async upsertByTelegramUserId({ session, account }): Promise<void> {
+        async upsertByTelegramUserId({ session, credentials, account }): Promise<void> {
             const persisted = await deps.repository.upsertAccount({
                 telegramUserId: account.userId,
                 username: account.username,
@@ -37,8 +37,8 @@ export function createTelegramMultiAccountAuthorizedAdapter(deps: {
                 session,
                 enabled: true,
             });
-            await deps.pool.refresh();
             const accountId = String((persisted as { id?: unknown } | null)?.id || '');
+            if (accountId) await deps.pool.activateAccount(accountId, 'login_complete', credentials);
             if (accountId && deps.accessSweep) {
                 await deps.accessSweep.trigger({ accountIds: [accountId], reason: 'account_created' });
             }

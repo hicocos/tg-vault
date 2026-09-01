@@ -47,7 +47,7 @@ class FakeClient implements TelegramMultiAccountLoginClient {
 function fixture() {
     let now = Date.parse('2026-08-29T00:00:00.000Z');
     const clients: FakeClient[] = [];
-    const authorized: Array<{ session: string; userId: string }> = [];
+    const authorized: Array<{ session: string; userId: string; apiId: number; apiHash: string }> = [];
     const flows = new TelegramMultiAccountLoginFlows<FakeClient>({
         now: () => now,
         ttlMs: 5 * 60_000,
@@ -63,11 +63,16 @@ function fixture() {
             clients.push(client);
             return client;
         },
-        onAuthorized: async ({ session, account }) => {
+        onAuthorized: async ({ session, credentials, account }) => {
             // A repository/pool adapter upserts by Telegram identity; repeat login is valid.
             const existing = authorized.find(item => item.userId === account.userId);
-            if (existing) existing.session = session;
-            else authorized.push({ session, userId: account.userId });
+            if (existing) {
+                existing.session = session;
+                existing.apiId = credentials.apiId;
+                existing.apiHash = credentials.apiHash;
+            } else {
+                authorized.push({ session, userId: account.userId, apiId: credentials.apiId, apiHash: credentials.apiHash });
+            }
         },
     });
     return { flows, clients, authorized, advance(ms: number) { now += ms; } };
@@ -92,7 +97,12 @@ test('phone login is session-bound and authorizes through an injected userId ups
 
     const repeated = await fx.flows.startPhone('admin-session-a', '+8613800138000');
     await fx.flows.submitCode('admin-session-a', repeated.flowId, '12345');
-    assert.deepEqual(fx.authorized, [{ userId: '42', session: 'SECRET_SESSION_42' }]);
+    assert.deepEqual(fx.authorized, [{
+        userId: '42',
+        session: 'SECRET_SESSION_42',
+        apiId: 123,
+        apiHash: 'a'.repeat(32),
+    }]);
 });
 
 test('QR start/refresh returns only a base64url tg login URI and increments version', async () => {
@@ -139,7 +149,12 @@ test('QR scan can require 2FA, then upserts the authorized account and cleans th
     const status = await fx.flows.getQrStatus('admin-session-a', started.flowId);
     assert.equal(status.status, 'complete');
     assert.deepEqual(status.account, { userId: '42', username: 'vault_owner', displayName: 'Vault Owner' });
-    assert.deepEqual(fx.authorized, [{ userId: '42', session: 'SECRET_SESSION_42' }]);
+    assert.deepEqual(fx.authorized, [{
+        userId: '42',
+        session: 'SECRET_SESSION_42',
+        apiId: 123,
+        apiHash: 'a'.repeat(32),
+    }]);
     assert.equal(client.qrHandler, null);
     assert.equal(client.disconnects, 1);
     assert.equal(client.destroys, 1);

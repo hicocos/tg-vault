@@ -11,7 +11,7 @@ const envExample = fs.readFileSync(new URL('../../../.env.example', import.meta.
 test('Bot startup errors are observable and required mode blocks readiness', () => {
     assert.match(bot, /markTelegramBotStarting\(\)/);
     assert.match(bot, /markTelegramBotReady\(\)/);
-    assert.match(bot, /markTelegramBotError\(status/);
+    assert.match(bot, /markTelegramBotError\([\s\S]*status/);
     assert.match(bot, /throw error/);
     assert.match(app, /telegramConfig\.required/);
     assert.match(app, /telegramBotBlocksReadiness\(bot\)/);
@@ -20,6 +20,8 @@ test('Bot startup errors are observable and required mode blocks readiness', () 
 
 test('optional Bot failure remains visible as degraded in Web settings and readiness', () => {
     assert.match(app, /应用以 degraded 状态继续/);
+    assert.match(app, /classifyTelegramBotStartupError\(error\)/);
+    assert.match(app, /Telegram Bot Token 已失效，请在网页端更换凭证/);
     assert.match(app, /status: bot\.degraded \? 'degraded' : 'ready'/);
     assert.match(storage, /telegramBotStatus: getTelegramBotStatus\(\)/);
 });

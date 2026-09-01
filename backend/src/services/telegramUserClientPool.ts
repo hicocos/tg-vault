@@ -31,6 +31,7 @@ export interface TelegramPooledClient {
 interface PoolRepository extends Pick<TelegramAccountRepository,
     | 'migrateLegacySystemSettings'
     | 'listEnabledAccounts'
+    | 'getAccount'
     | 'listSourceAccess'
     | 'updateSession'
     | 'recordHealthy'
@@ -67,6 +68,8 @@ export function isTelegramSessionExpiredError(error: unknown): boolean {
     return /(AUTH_KEY_UNREGISTERED|SESSION_(REVOKED|EXPIRED)|USER_DEACTIVATED|SESSION_EXPIRED)/i.test(errorName(error));
 }
 
+export type TelegramUserActivationReason = 'login_complete' | 'explicit_enable';
+
 export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPooledClient> {
     private readonly entries = new Map<string, PoolEntry<C>>();
     private credentials: TelegramPoolCredentials | null = null;
@@ -81,7 +84,7 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
 
     async initialize(credentials: TelegramPoolCredentials): Promise<void> {
         const run = this.initializationTail.then(async () => {
-            await this.shutdown();
+            await this.shutdownEntries();
             this.credentials = credentials;
             await this.deps.repository.migrateLegacySystemSettings();
             const accounts = await this.deps.repository.listEnabledAccounts();
@@ -94,6 +97,29 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
     async refresh(): Promise<void> {
         if (!this.credentials) return;
         await this.initialize(this.credentials);
+    }
+
+    async deactivateAccount(accountId: string): Promise<void> {
+        await this.runLifecycleOperation(() => this.expireEntry(accountId));
+    }
+
+    async activateAccount(
+        accountId: string,
+        reason: TelegramUserActivationReason,
+        credentials?: TelegramPoolCredentials,
+    ): Promise<void> {
+        if (reason !== 'login_complete' && reason !== 'explicit_enable') throw new Error('TELEGRAM_USER_ACTIVATION_NOT_ALLOWED');
+        await this.runLifecycleOperation(async () => {
+            // A newly persisted session must never coexist with an older runtime
+            // for the same Telegram identity. Close the old client before trying
+            // the replacement so a failed reconnect cannot leave it orphaned.
+            await this.expireEntry(accountId);
+            if (credentials) this.credentials = credentials;
+            if (!this.credentials) return;
+            const account = await this.deps.repository.getAccount(accountId);
+            if (!account) return;
+            await this.connectAccount(account);
+        });
     }
 
     private async connectAccount(account: TelegramUserAccountRecord): Promise<void> {
@@ -187,15 +213,29 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
     }
 
     async expireAccount(accountId: string): Promise<void> {
+        await this.runLifecycleOperation(() => this.expireEntry(accountId));
+    }
+
+    private async expireEntry(accountId: string): Promise<void> {
         const entry = this.entries.get(accountId);
         this.entries.delete(accountId);
         if (entry) await this.closeClient(entry.client);
     }
 
     async shutdown(): Promise<void> {
+        await this.runLifecycleOperation(() => this.shutdownEntries());
+    }
+
+    private async shutdownEntries(): Promise<void> {
         const entries = [...this.entries.values()];
         this.entries.clear();
         await Promise.all(entries.map(entry => this.closeClient(entry.client)));
+    }
+
+    private async runLifecycleOperation<T>(operation: () => Promise<T>): Promise<T> {
+        const run = this.initializationTail.then(operation);
+        this.initializationTail = run.then(() => undefined, () => undefined);
+        return await run;
     }
 
     private async closeClient(client: C): Promise<void> {

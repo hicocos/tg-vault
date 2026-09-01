@@ -18,6 +18,7 @@ test('pool lazily connects eligible accounts, schedules by source permission and
     const repo: any = {
         migrateLegacySystemSettings: async () => null,
         listEnabledAccounts: async () => rows,
+        getAccount: async (id: string) => rows.find(row => row.id === id) || null,
         listSourceAccess: async () => access,
         updateSession: async () => true,
         recordHealthy: async () => true,
@@ -56,6 +57,111 @@ test('pool lazily connects eligible accounts, schedules by source permission and
     ]);
 });
 
+test('explicit activation connects only the requested account', async () => {
+    const rows = [account('a'), account('b')];
+    const connected: string[] = [];
+    const repo: any = {
+        migrateLegacySystemSettings: async () => null,
+        listEnabledAccounts: async () => rows,
+        getAccount: async (id: string) => rows.find(row => row.id === id) || null,
+        listSourceAccess: async () => [],
+        updateSession: async () => true,
+        recordHealthy: async () => true,
+        recordFailure: async () => true,
+        markSessionExpired: async () => true,
+    };
+    const pool = new TelegramUserClientPool({
+        repository: repo,
+        decryptSession: (value: string) => value,
+        createClient: (_session: string, _credentials: { apiId: number; apiHash: string }, accountId: string): any => ({
+            connected: false,
+            async connect() { this.connected = true; connected.push(accountId); },
+            async checkAuthorization() { return true; },
+            async getMe() { return { id: accountId }; },
+            async disconnect() { this.connected = false; },
+            async destroy() {},
+        }),
+    });
+    await assert.rejects(
+        () => (pool as any).activateAccount('a', 'bot_startup', { apiId: 1, apiHash: 'hash' }),
+        /TELEGRAM_USER_ACTIVATION_NOT_ALLOWED/,
+    );
+    assert.deepEqual(connected, []);
+    await pool.activateAccount('b', 'login_complete', { apiId: 1, apiHash: 'hash' });
+    assert.deepEqual(connected, ['b']);
+    assert.deepEqual(pool.getReadyAccountIds(), ['b']);
+});
+
+test('re-login closes the previous account runtime before replacing its session', async () => {
+    const row = account('same');
+    const lifecycle: string[] = [];
+    let generation = 0;
+    const repo: any = {
+        migrateLegacySystemSettings: async () => null,
+        listEnabledAccounts: async () => [row],
+        getAccount: async () => row,
+        listSourceAccess: async () => [],
+        updateSession: async () => true,
+        recordHealthy: async () => true,
+        recordFailure: async () => true,
+        markSessionExpired: async () => true,
+    };
+    const pool = new TelegramUserClientPool({
+        repository: repo,
+        decryptSession: (value: string) => value,
+        createClient: (): any => {
+            const id = ++generation;
+            return {
+                connected: false,
+                async connect() { this.connected = true; lifecycle.push(`connect:${id}`); },
+                async checkAuthorization() { return true; },
+                async getMe() { return { id }; },
+                async disconnect() { this.connected = false; lifecycle.push(`disconnect:${id}`); },
+                async destroy() { lifecycle.push(`destroy:${id}`); },
+            };
+        },
+    });
+    await pool.activateAccount('same', 'login_complete', { apiId: 1, apiHash: 'old' });
+    await pool.activateAccount('same', 'login_complete', { apiId: 1, apiHash: 'new' });
+    assert.deepEqual(lifecycle, ['connect:1', 'disconnect:1', 'destroy:1', 'connect:2']);
+    assert.deepEqual(pool.getReadyAccountIds(), ['same']);
+});
+
+test('concurrent activate and deactivate operations leave no orphaned account client', async () => {
+    const row = account('race');
+    const lifecycle: string[] = [];
+    let releaseConnect!: () => void;
+    const connectGate = new Promise<void>(resolve => { releaseConnect = resolve; });
+    const repo: any = {
+        migrateLegacySystemSettings: async () => null,
+        listEnabledAccounts: async () => [row],
+        getAccount: async () => row,
+        listSourceAccess: async () => [],
+        updateSession: async () => true,
+        recordHealthy: async () => true,
+        recordFailure: async () => true,
+        markSessionExpired: async () => true,
+    };
+    const pool = new TelegramUserClientPool({
+        repository: repo,
+        decryptSession: (value: string) => value,
+        createClient: (): any => ({
+            connected: false,
+            async connect() { await connectGate; this.connected = true; lifecycle.push('connect'); },
+            async checkAuthorization() { return true; },
+            async getMe() { return { id: 'race' }; },
+            async disconnect() { this.connected = false; lifecycle.push('disconnect'); },
+            async destroy() { lifecycle.push('destroy'); },
+        }),
+    });
+    const activating = pool.activateAccount('race', 'login_complete', { apiId: 1, apiHash: 'hash' });
+    const deactivating = pool.deactivateAccount('race');
+    releaseConnect();
+    await Promise.all([activating, deactivating]);
+    assert.deepEqual(lifecycle, ['connect', 'disconnect', 'destroy']);
+    assert.deepEqual(pool.getReadyAccountIds(), []);
+});
+
 test('pool records authorization expiry per account and continues with healthy accounts', async () => {
     const expired = account('expired', { priority: 100 });
     const healthy = account('healthy');
@@ -63,6 +169,7 @@ test('pool records authorization expiry per account and continues with healthy a
     const repo: any = {
         migrateLegacySystemSettings: async () => null,
         listEnabledAccounts: async () => [expired, healthy],
+        getAccount: async (id: string) => [expired, healthy].find(row => row.id === id) || null,
         listSourceAccess: async () => [],
         updateSession: async () => true,
         recordHealthy: async () => true,

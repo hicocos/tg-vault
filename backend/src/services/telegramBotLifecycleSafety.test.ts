@@ -28,6 +28,33 @@ test('activation failure restores persisted and runtime configuration', () => {
     assert.match(routes, /catch \(activationError\)[\s\S]*restoreTelegramBotConfig\(previous\)[\s\S]*controls\.restart/);
 });
 
+test('Bot save never starts or refreshes Telegram user-account runtimes', () => {
+    const saveRoute = routes.slice(
+        routes.indexOf("router.put('/config/telegram-bot'"),
+        routes.indexOf("router.post('/config/telegram-bot/migrate'"),
+    );
+    assert.doesNotMatch(saveRoute, /initializeTelegramMultiAccountRuntime|installTelegramMultiAccountRuntimeAdapters|initTelegramUserClient|telegramUserClientPool|triggerTelegramAccountAccessSweep/);
+});
+
+test('Bot migrate, disable and delete routes remain isolated from Telegram user-account runtimes', () => {
+    const lifecycleRoutes = routes.slice(
+        routes.indexOf("router.post('/config/telegram-bot/migrate'"),
+        routes.indexOf("router.post('/config/telegram-user-download'"),
+    );
+    assert.doesNotMatch(lifecycleRoutes, /initializeTelegramMultiAccountRuntime|installTelegramMultiAccountRuntimeAdapters|initTelegramUserClient|telegramUserClientPool|triggerTelegramAccountAccessSweep/);
+});
+
+test('Bot replacement avoids stale saved sessions and requires full activation before ready', () => {
+    assert.doesNotMatch(bot, /fs\.readFileSync\(SESSION_FILE/);
+    const startupSection = bot.slice(bot.indexOf("console.log('🤖 Telegram Bot 正在启动...')"), bot.indexOf('const newSession = client.session.save()'));
+    assert.doesNotMatch(startupSection, /Promise\.race|withTelegramClientDeadline/);
+    assert.match(bot, /new TelegramClient\(new StringSession\(''\)/);
+    assert.match(bot, /await client\.start[\s\S]*SetBotCommands[\s\S]*addEventHandler[\s\S]*markTelegramBotReady\(\)/);
+    assert.doesNotMatch(bot, /startTelegramSubscriptionWorker|startTelegramJobRecoveryWorker|startPeriodicCleanup/);
+    assert.match(bot, /markTelegramBotReady\(\)[\s\S]*Telegram Bot 启动成功/);
+    assert.match(bot, /catch \(error\) \{[\s\S]*const failedClient = client;[\s\S]*client = null;[\s\S]*failedClient\.disconnect/);
+});
+
 test('client teardown waits for in-flight subscription and recovery work', () => {
     assert.match(jobs, /while \(subscriptionScanRunning \|\| recoveryRunning\)/);
     assert.match(jobs, /拒绝切换 Bot 客户端/);

@@ -6,11 +6,10 @@ import { getEffectiveTelegramBotConfig } from './telegramBotConfig.js';
 import { TelegramUserWebLoginFlows, type TelegramUserLoginAccount, type TelegramUserLoginClient } from './telegramUserWebLogin.js';
 import { deleteSettings, getSetting, setSetting, setSettings } from '../utils/settings.js';
 import { recordTelegramUserClientFailure, recordTelegramUserClientReady } from './telegramUserClientStatus.js';
+import { telegramAccountRepository } from './telegramAccountRepository.js';
 import {
     deleteTelegramUserAccount,
     listTelegramUserAccounts,
-    reloadTelegramUserClientPool,
-    setTelegramUserAccountEnabled,
     telegramUserClientPool,
     upsertTelegramUserAccount,
 } from './telegramUserClientPool.js';
@@ -24,7 +23,7 @@ const TELEGRAM_USER_USERNAME_SETTING = 'telegram_user_username';
 let userClient: TelegramClient | null = null;
 let userSessionFilePath = '';
 
-async function getUserCredentials(): Promise<{ apiId: number; apiHash: string } | null> {
+export async function getTelegramUserCredentials(): Promise<{ apiId: number; apiHash: string } | null> {
     const effective = await getEffectiveTelegramBotConfig();
     if (effective.credentials) return { apiId: effective.credentials.apiId, apiHash: effective.credentials.apiHash };
     const apiId = Number.parseInt(process.env.TELEGRAM_API_ID || '0', 10);
@@ -70,12 +69,16 @@ function makeClient(session: string, credentials: { apiId: number; apiHash: stri
 
 export async function initTelegramUserClient(credentials?: { apiId: number; apiHash: string }): Promise<void> {
     await stopLegacyClient();
-    const resolved = credentials || await getUserCredentials();
+    const resolved = credentials || await getTelegramUserCredentials();
     if (!resolved) {
         recordTelegramUserClientFailure('not_configured', '未配置 Telegram API');
         return;
     }
     const sessionString = await migrateLegacyTelegramUserSession();
+    if (!sessionString) {
+        recordTelegramUserClientFailure('not_configured', '未配置 Telegram 用户账号 session');
+        return;
+    }
     await initializeTelegramMultiAccountRuntime(resolved);
     const pooledClient = telegramUserClientPool.getDefaultClient();
     if (pooledClient) {
@@ -109,6 +112,34 @@ export async function initTelegramUserClient(credentials?: { apiId: number; apiH
         try { await client.destroy(); } catch { /* best effort */ }
         recordTelegramUserClientFailure(String((error as Error).message).includes('EXPIRED') ? 'expired' : 'error', 'Telegram 用户账号连接失败');
     }
+}
+
+export async function restoreEnabledTelegramUserAccountsAfterRestart(): Promise<void> {
+    // Persisted `enabled` state is the durable result of an explicit login or
+    // enable action. Bot credentials alone must never activate user sessions.
+    await telegramAccountRepository.migrateLegacySystemSettings();
+    const enabledAccounts = await telegramAccountRepository.listEnabledAccounts();
+    if (enabledAccounts.length === 0) return;
+    const credentials = await getTelegramUserCredentials();
+    if (!credentials) {
+        recordTelegramUserClientFailure('not_configured', '未配置 Telegram API');
+        return;
+    }
+    await initializeTelegramMultiAccountRuntime(credentials);
+    const pooledClient = telegramUserClientPool.getDefaultClient();
+    if (!pooledClient) {
+        recordTelegramUserClientFailure('error', '已启用的 Telegram 用户账号连接失败');
+        return;
+    }
+    const me = await pooledClient.getMe();
+    recordTelegramUserClientReady({ userId: String((me as any)?.id || ''), username: (me as any)?.username || null });
+}
+
+export async function activateTelegramUserAccount(accountId: string): Promise<void> {
+    const credentials = await getTelegramUserCredentials();
+    if (!credentials) throw new Error('未配置 Telegram API');
+    await telegramUserClientPool.activateAccount(accountId, 'explicit_enable', credentials);
+    if (!telegramUserClientPool.getAccountClient(accountId)) throw new Error('Telegram 用户账号连接失败');
 }
 
 async function persistAndActivate(session: string, account: TelegramUserLoginAccount): Promise<void> {
@@ -157,7 +188,7 @@ class GramJsWebLoginClient implements TelegramUserLoginClient {
 }
 
 export const telegramUserWebLogin = new TelegramUserWebLoginFlows<GramJsWebLoginClient>({
-    credentials: getUserCredentials,
+    credentials: getTelegramUserCredentials,
     createClient: credentials => new GramJsWebLoginClient(makeClient('', credentials), credentials),
     persistAndActivate,
 });
@@ -178,17 +209,19 @@ export async function getTelegramUserAccountStatus(): Promise<{
 export async function disableTelegramUserAccount(): Promise<void> {
     await setSetting(TELEGRAM_USER_ENABLED_SETTING, 'false');
     for (const account of await listTelegramUserAccounts()) {
-        if (account.isLegacy) await setTelegramUserAccountEnabled(account.id, false);
+        if (account.isLegacy) {
+            await telegramAccountRepository.setEnabled(account.id, false);
+            await telegramUserClientPool.deactivateAccount(account.id);
+        }
     }
     await stopLegacyClient();
-    await reloadTelegramUserClientPool();
     recordTelegramUserClientFailure('disabled', '');
 }
 
 export async function enableTelegramUserAccount(): Promise<void> {
     await setSetting(TELEGRAM_USER_ENABLED_SETTING, 'true');
     for (const account of await listTelegramUserAccounts()) {
-        if (account.isLegacy) await setTelegramUserAccountEnabled(account.id, true);
+        if (account.isLegacy) await telegramAccountRepository.setEnabled(account.id, true);
     }
     await initTelegramUserClient();
 }
@@ -199,7 +232,6 @@ export async function unlinkTelegramUserAccount(): Promise<void> {
         if (account.isLegacy) await deleteTelegramUserAccount(account.id);
     }
     await deleteSettings([TELEGRAM_USER_SESSION_SETTING, TELEGRAM_USER_ENABLED_SETTING, TELEGRAM_USER_ID_SETTING, TELEGRAM_USER_USERNAME_SETTING]);
-    await reloadTelegramUserClientPool();
     const legacyPath = getSessionFilePath();
     if (fs.existsSync(legacyPath)) fs.rmSync(legacyPath, { force: true });
     recordTelegramUserClientFailure('missing_session', '尚未登录 Telegram 用户账号');
