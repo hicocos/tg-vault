@@ -39,6 +39,16 @@ test('explicit legacy enable requires a saved user session before initializing t
     assert.match(runtimeSource, /installTelegramMultiAccountRuntimeAdapters[\s\S]*initializeTelegramUserClientPool/);
 });
 
+test('legacy login completion activates only the just-authorized account', () => {
+    const persist = client.slice(
+        client.indexOf('async function persistAndActivate'),
+        client.indexOf('class GramJsWebLoginClient'),
+    );
+    assert.match(persist, /activateAccount\(persisted\.id, 'login_complete', credentials\)/);
+    assert.match(persist, /upsertTelegramUserAccountWithoutRuntimeRefresh/);
+    assert.doesNotMatch(persist, /initTelegramUserClient\(|initializeTelegramMultiAccountRuntime\(|reloadTelegramUserClientPool/);
+});
+
 test('disable retains the session, unlink deletes it, and both apply without a restart', () => {
     assert.match(route, /router\.post\('\/config\/telegram-user\/disable'/);
     assert.match(route, /disableTelegramUserAccount/);

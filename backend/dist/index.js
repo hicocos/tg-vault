@@ -4431,17 +4431,6 @@ async function buildConsolidatedStatus(singleFiles, batches) {
   }
   return lines.join("\n");
 }
-function buildCleanupNotice(deletedCount, freedSpace) {
-  return [
-    `\u{1F9F9} **\u7CFB\u7EDF\u542F\u52A8\u6E05\u7406\u5B8C\u6210**`,
-    ``,
-    `\u{1F4CA} \u6E05\u7406\u7EDF\u8BA1\uFF1A`,
-    `  \u5220\u9664\u5B64\u513F\u6587\u4EF6: ${deletedCount} \u4E2A`,
-    `  \u91CA\u653E\u7A7A\u95F4: ${freedSpace}`,
-    ``,
-    `\u{1F4A1} \u8FD9\u4E9B\u662F\u4E4B\u524D\u4E0A\u4F20\u5931\u8D25\u6B8B\u7559\u7684\u6587\u4EF6`
-  ].join("\n");
-}
 
 // src/services/telegramCommands.ts
 init_telegramState();
@@ -4892,9 +4881,6 @@ async function initializeTelegramUserClientPool(credentials) {
   currentCredentials = credentials;
   await telegramUserClientPool.initialize(credentials);
 }
-async function reloadTelegramUserClientPool() {
-  if (currentCredentials) await telegramUserClientPool.initialize(currentCredentials);
-}
 async function listTelegramUserAccounts() {
   const accounts = await telegramAccountRepository.listAccounts();
   const ready = new Set(telegramUserClientPool.getReadyAccountIds());
@@ -4904,11 +4890,14 @@ async function listTelegramUserAccounts() {
     activeConnections: telegramUserClientPool.getActiveConnections(account.id)
   }));
 }
-async function upsertTelegramUserAccount(input) {
+async function upsertTelegramUserAccountWithoutRuntimeRefresh(input) {
   const account = await telegramAccountRepository.upsertAccount(input);
-  await reloadTelegramUserClientPool();
   const { session: _session, ...publicAccount } = account;
-  return { ...publicAccount, connected: telegramUserClientPool.getReadyAccountIds().includes(account.id), activeConnections: 0 };
+  return {
+    ...publicAccount,
+    connected: telegramUserClientPool.getReadyAccountIds().includes(account.id),
+    activeConnections: telegramUserClientPool.getActiveConnections(account.id)
+  };
 }
 async function deleteTelegramUserAccount(accountId) {
   await telegramUserClientPool.expireAccount(accountId);
@@ -6317,7 +6306,7 @@ var TelegramUserWebLoginFlows = class {
       const sent = await client2.sendCode(credentials, phone);
       const flowId = crypto10.randomBytes(24).toString("base64url");
       const expiresAt = this.now() + this.ttlMs;
-      this.flows.set(flowId, { id: flowId, owner, phone, phoneCodeHash: sent.phoneCodeHash, expiresAt, errors: 0, step: "code", client: client2 });
+      this.flows.set(flowId, { id: flowId, owner, phone, phoneCodeHash: sent.phoneCodeHash, expiresAt, errors: 0, step: "code", client: client2, credentials });
       return { flowId, delivery: sent.isCodeViaApp ? "app" : "sms", expiresAt: new Date(expiresAt).toISOString() };
     } catch (error) {
       await this.closeClient(client2);
@@ -6365,7 +6354,7 @@ var TelegramUserWebLoginFlows = class {
   async complete(flow) {
     try {
       const account = normalizeAccount2(await flow.client.getMe());
-      await this.deps.persistAndActivate(flow.client.saveSession(), account);
+      await this.deps.persistAndActivate(flow.client.saveSession(), account, flow.credentials);
       this.flows.delete(flow.id);
       return { step: "complete", account };
     } finally {
@@ -6576,14 +6565,14 @@ async function activateTelegramUserAccount(accountId) {
   await telegramUserClientPool.activateAccount(accountId, "explicit_enable", credentials);
   if (!telegramUserClientPool.getAccountClient(accountId)) throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u8FDE\u63A5\u5931\u8D25");
 }
-async function persistAndActivate(session, account) {
+async function persistAndActivate(session, account, credentials) {
   await setSettings([
     [TELEGRAM_USER_SESSION_SETTING, session],
     [TELEGRAM_USER_ENABLED_SETTING, "true"],
     [TELEGRAM_USER_ID_SETTING, account.userId],
     [TELEGRAM_USER_USERNAME_SETTING, account.username || ""]
   ]);
-  await upsertTelegramUserAccount({
+  const persisted = await upsertTelegramUserAccountWithoutRuntimeRefresh({
     telegramUserId: account.userId,
     username: account.username,
     displayName: account.displayName,
@@ -6591,7 +6580,8 @@ async function persistAndActivate(session, account) {
     enabled: true,
     isLegacy: true
   });
-  await initTelegramUserClient();
+  await telegramUserClientPool.activateAccount(persisted.id, "login_complete", credentials);
+  if (!telegramUserClientPool.getAccountClient(persisted.id)) throw new Error("Telegram \u7528\u6237\u8D26\u53F7\u8FDE\u63A5\u5931\u8D25");
 }
 var GramJsWebLoginClient = class {
   constructor(client2, credentials) {
@@ -17369,7 +17359,6 @@ async function handleBotHomeCallback(update, data) {
 \u8BF7\u6309\u63D0\u793A\u8F93\u5165\uFF0C\u6216\u8FD4\u56DE\u201C\u66F4\u591A\u529F\u80FD\u201D\u9009\u62E9\u5176\u5B83\u5165\u53E3\u3002` : "\u8FD9\u4E2A\u5165\u53E3\u6682\u65F6\u4E0D\u53EF\u7528\u3002"
   });
 }
-var SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || "./data/telegram_session.txt";
 var client = null;
 var digestTimer = null;
 var botLifecycle = Promise.resolve();
@@ -18570,10 +18559,6 @@ async function initTelegramBot(credentialsOverride) {
     console.error("\u{1F916} Telegram Bot \u540C\u6B65\u5B58\u50A8\u914D\u7F6E\u5931\u8D25:", e);
   }
   try {
-    const sessionDir = path16.dirname(SESSION_FILE);
-    if (!fs13.existsSync(sessionDir)) {
-      fs13.mkdirSync(sessionDir, { recursive: true, mode: 448 });
-    }
     client = new TelegramClient8(new StringSession5(""), apiId, apiHash, {
       connectionRetries: 5,
       reconnectRetries: 5,
@@ -18588,35 +18573,7 @@ async function initTelegramBot(credentialsOverride) {
     console.log("\u{1F916} Telegram Bot \u6B63\u5728\u542F\u52A8...");
     await client.start({ botAuthToken: botToken });
     await client.getMe();
-    const newSession = client.session.save();
-    fs13.writeFileSync(SESSION_FILE, newSession, { mode: 384 });
-    try {
-      fs13.chmodSync(SESSION_FILE, 384);
-    } catch (e) {
-      console.warn("\u{1F916} \u4FEE\u6B63 Telegram Bot session \u6587\u4EF6\u6743\u9650\u5931\u8D25:", e);
-    }
     console.log("\u{1F916} Telegram Bot \u5DF2\u8FDE\u63A5!");
-    setYtDlpNotifier(async (task, text) => {
-      if (!client || !task.chatId) return;
-      const kind = /^✅/.test(text) ? "success" : /^❌|^⚠️/.test(text) ? "failure" : "success";
-      const userId = resolveNotificationOwnerUserId(task.ownerUserId, task.chatId);
-      await enqueueTelegramNotification({ userId, chatId: task.chatId, kind, message: text }, {
-        send: async (targetChat, message) => {
-          await client.sendMessage(targetChat, { message });
-        }
-      });
-    });
-    digestTimer = setInterval(() => {
-      if (!client) return;
-      void listTelegramNotificationDigestScopes().then((scopes) => Promise.all(scopes.map(
-        (scope) => flushTelegramNotificationDigest(scope.userId, scope.chatId, {
-          send: async (chatId, message) => {
-            await client.sendMessage(chatId, { message });
-          }
-        }).catch(() => 0)
-      ))).catch(() => void 0);
-    }, 6e4);
-    digestTimer.unref?.();
     try {
       await query(`
                 CREATE TABLE IF NOT EXISTS telegram_auth (
@@ -18635,40 +18592,10 @@ async function initTelegramBot(credentialsOverride) {
     })), 1e4, "Telegram Bot \u547D\u4EE4\u83DC\u5355\u6CE8\u518C\u8D85\u65F6\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
     console.log("\u{1F916} Bot \u547D\u4EE4\u83DC\u5355\u5DF2\u66F4\u65B0");
     try {
-      const cleanupSetting = await query("SELECT value FROM system_settings WHERE key = $1", ["auto_cleanup_orphans"]);
-      if (cleanupSetting.rows[0]?.value !== void 0) {
-        process.env.AUTO_CLEANUP_ORPHANS = String(cleanupSetting.rows[0].value);
-      }
-    } catch (e) {
-      console.warn("\u{1F9F9} \u8BFB\u53D6\u81EA\u52A8\u6E05\u7406\u8BBE\u7F6E\u5931\u8D25\uFF0C\u4F7F\u7528\u73AF\u5883\u53D8\u91CF\u9ED8\u8BA4\u503C:", e);
-    }
-    try {
       const fileConcurrency = await loadFileDownloadConcurrencySetting();
       console.log(`\u{1F916} Telegram \u6587\u4EF6\u7EA7\u5E76\u53D1: ${fileConcurrency}`);
     } catch (e) {
       console.warn("\u{1F916} \u8BFB\u53D6\u6587\u4EF6\u7EA7\u5E76\u53D1\u8BBE\u7F6E\u5931\u8D25\uFF0C\u4F7F\u7528\u73AF\u5883\u53D8\u91CF\u9ED8\u8BA4\u503C:", e);
-    }
-    if (isAutoCleanupEnabled()) {
-      try {
-        const stats = await cleanupOrphanFiles();
-        if (stats.deletedCount > 0) {
-          console.log(`\u{1F9F9} \u542F\u52A8\u6E05\u7406: \u5220\u9664\u4E86 ${stats.deletedCount} \u4E2A\u5B64\u513F\u6587\u4EF6\uFF0C\u91CA\u653E ${stats.freedSpace}`);
-          const allowedUsers = await getConfiguredTelegramAllowedUsers();
-          const recipients = allowedUsers.length > 0 ? (await reconcileTelegramAllowedUsers(allowedUsers)).recipients : [];
-          for (const userId of recipients) {
-            try {
-              await client.sendMessage(userId, {
-                message: buildCleanupNotice(stats.deletedCount, stats.freedSpace)
-              });
-            } catch (e) {
-            }
-          }
-        }
-      } catch (e) {
-        console.error("\u{1F9F9} \u542F\u52A8\u6E05\u7406\u5931\u8D25:", e);
-      }
-    } else {
-      console.log("\u{1F9F9} \u542F\u52A8\u5B64\u513F\u6E05\u7406\u5DF2\u8DF3\u8FC7\uFF1AAUTO_CLEANUP_ORPHANS=false");
     }
     client.addEventHandler(async (event) => {
       if (!client) return;
@@ -19314,8 +19241,32 @@ ${buildPathPreviewLine(appliedPath.folder)}
       displayName: [me?.firstName, me?.lastName].filter(Boolean).join(" ") || null
     });
     markTelegramBotReady();
+    setYtDlpNotifier(async (task, text) => {
+      if (!client || !task.chatId) return;
+      const kind = /^✅/.test(text) ? "success" : /^❌|^⚠️/.test(text) ? "failure" : "success";
+      const userId = resolveNotificationOwnerUserId(task.ownerUserId, task.chatId);
+      await enqueueTelegramNotification({ userId, chatId: task.chatId, kind, message: text }, {
+        send: async (targetChat, message) => {
+          await client.sendMessage(targetChat, { message });
+        }
+      });
+    });
+    digestTimer = setInterval(() => {
+      if (!client) return;
+      void listTelegramNotificationDigestScopes().then((scopes) => Promise.all(scopes.map(
+        (scope) => flushTelegramNotificationDigest(scope.userId, scope.chatId, {
+          send: async (chatId, message) => {
+            await client.sendMessage(chatId, { message });
+          }
+        }).catch(() => 0)
+      ))).catch(() => void 0);
+    }, 6e4);
+    digestTimer.unref?.();
     console.log("\u{1F916} Telegram Bot \u542F\u52A8\u6210\u529F! (\u6700\u5927 2GB\uFF0C\u8D26\u53F7\u7EA7\u4E0B\u8F7D\u5668\u4E0D\u53D7\u6B64\u9650\u5236)");
   } catch (error) {
+    if (digestTimer) clearInterval(digestTimer);
+    digestTimer = null;
+    setYtDlpNotifier(null);
     const failedClient = client;
     client = null;
     if (failedClient) {

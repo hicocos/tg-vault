@@ -31,8 +31,7 @@ import {
     retryTelegramBackgroundJob,
     TELEGRAM_COMMENTS_MAX_PER_POST,
 } from './telegramChannelJobs.js';
-import { cleanupOrphanFiles, isAutoCleanupEnabled } from './orphanCleanup.js';
-import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildCleanupNotice } from '../utils/telegramMessages.js';
+import { MSG, buildStartPrompt, buildAuthSuccess, build2FASetupCaption } from '../utils/telegramMessages.js';
 import { query } from '../db/index.js';
 import { getConfiguredTelegramAllowedUsers, addTelegramAllowedUser, countAuthenticatedTelegramUsers, shouldAutoAllowFirstTelegramUser, verifyTelegramPin } from '../utils/authSettings.js';
 import { assertPublicHttpUrl } from '../utils/networkSecurity.js';
@@ -160,9 +159,6 @@ async function handleBotHomeCallback(update: Api.UpdateBotCallbackQuery, data: s
         message: definition ? `${definition.description}\n\n请按提示输入，或返回“更多功能”选择其它入口。` : '这个入口暂时不可用。',
     });
 }
-
-// Session File Path
-const SESSION_FILE = process.env.TELEGRAM_SESSION_FILE || './data/telegram_session.txt';
 
 // GramJS Client
 let client: TelegramClient | null = null;
@@ -1541,11 +1537,6 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
     }
 
     try {
-        const sessionDir = path.dirname(SESSION_FILE);
-        if (!fs.existsSync(sessionDir)) {
-            fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
-        }
-
         client = new TelegramClient(new StringSession(''), apiId, apiHash, {
             connectionRetries: 5,
             reconnectRetries: 5,
@@ -1562,28 +1553,7 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
         await client.start({ botAuthToken: botToken });
         await client.getMe();
 
-        const newSession = client.session.save() as unknown as string;
-        fs.writeFileSync(SESSION_FILE, newSession, { mode: 0o600 });
-        try { fs.chmodSync(SESSION_FILE, 0o600); } catch (e) { console.warn('🤖 修正 Telegram Bot session 文件权限失败:', e); }
-
         console.log('🤖 Telegram Bot 已连接!');
-        setYtDlpNotifier(async (task, text) => {
-            if (!client || !task.chatId) return;
-            const kind = /^✅/.test(text) ? 'success' : /^❌|^⚠️/.test(text) ? 'failure' : 'success';
-            const userId = resolveNotificationOwnerUserId(task.ownerUserId, task.chatId);
-            await enqueueTelegramNotification({ userId, chatId: task.chatId, kind, message: text }, {
-                send: async (targetChat, message) => { await client!.sendMessage(targetChat, { message }); },
-            });
-        });
-        digestTimer = setInterval(() => {
-            if (!client) return;
-            void listTelegramNotificationDigestScopes().then(scopes => Promise.all(scopes.map(scope =>
-                flushTelegramNotificationDigest(scope.userId, scope.chatId, {
-                    send: async (chatId, message) => { await client!.sendMessage(chatId, { message }); },
-                }).catch(() => 0),
-            ))).catch(() => undefined);
-        }, 60_000);
-        digestTimer.unref?.();
 
         // Ensure database table exists
         try {
@@ -1607,48 +1577,10 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
         console.log('🤖 Bot 命令菜单已更新');
 
         try {
-            const cleanupSetting = await query('SELECT value FROM system_settings WHERE key = $1', ['auto_cleanup_orphans']);
-            if (cleanupSetting.rows[0]?.value !== undefined) {
-                process.env.AUTO_CLEANUP_ORPHANS = String(cleanupSetting.rows[0].value);
-            }
-        } catch (e) {
-            console.warn('🧹 读取自动清理设置失败，使用环境变量默认值:', e);
-        }
-
-        try {
             const fileConcurrency = await loadFileDownloadConcurrencySetting();
             console.log(`🤖 Telegram 文件级并发: ${fileConcurrency}`);
         } catch (e) {
             console.warn('🤖 读取文件级并发设置失败，使用环境变量默认值:', e);
-        }
-
-        // 启动时清理孤儿文件（默认开启，可通过 /cleanup_settings 关闭）
-        if (isAutoCleanupEnabled()) {
-            try {
-                const stats = await cleanupOrphanFiles();
-                if (stats.deletedCount > 0) {
-                    console.log(`🧹 启动清理: 删除了 ${stats.deletedCount} 个孤儿文件，释放 ${stats.freedSpace}`);
-
-                    // 广播收件人始终与当前 allowlist 收敛。
-                    const allowedUsers = await getConfiguredTelegramAllowedUsers();
-                    const recipients = allowedUsers.length > 0
-                        ? (await reconcileTelegramAllowedUsers(allowedUsers)).recipients
-                        : [];
-                    for (const userId of recipients) {
-                        try {
-                            await client.sendMessage(userId, {
-                                message: buildCleanupNotice(stats.deletedCount, stats.freedSpace)
-                            });
-                        } catch (e) {
-                            // 用户可能已删除对话或阻止了 Bot
-                        }
-                    }
-                }
-            } catch (e) {
-                console.error('🧹 启动清理失败:', e);
-            }
-        } else {
-            console.log('🧹 启动孤儿清理已跳过：AUTO_CLEANUP_ORPHANS=false');
         }
 
         // 后台任务由应用级编排显式启动；Bot 凭证绑定只安装交互处理器，
@@ -2403,9 +2335,29 @@ export async function initTelegramBot(credentialsOverride?: TelegramBotCredentia
             displayName: [me?.firstName, me?.lastName].filter(Boolean).join(' ') || null,
         });
         markTelegramBotReady();
+        setYtDlpNotifier(async (task, text) => {
+            if (!client || !task.chatId) return;
+            const kind = /^✅/.test(text) ? 'success' : /^❌|^⚠️/.test(text) ? 'failure' : 'success';
+            const userId = resolveNotificationOwnerUserId(task.ownerUserId, task.chatId);
+            await enqueueTelegramNotification({ userId, chatId: task.chatId, kind, message: text }, {
+                send: async (targetChat, message) => { await client!.sendMessage(targetChat, { message }); },
+            });
+        });
+        digestTimer = setInterval(() => {
+            if (!client) return;
+            void listTelegramNotificationDigestScopes().then(scopes => Promise.all(scopes.map(scope =>
+                flushTelegramNotificationDigest(scope.userId, scope.chatId, {
+                    send: async (chatId, message) => { await client!.sendMessage(chatId, { message }); },
+                }).catch(() => 0),
+            ))).catch(() => undefined);
+        }, 60_000);
+        digestTimer.unref?.();
         console.log('🤖 Telegram Bot 启动成功! (最大 2GB，账号级下载器不受此限制)');
 
     } catch (error) {
+        if (digestTimer) clearInterval(digestTimer);
+        digestTimer = null;
+        setYtDlpNotifier(null);
         const failedClient = client;
         client = null;
         if (failedClient) {

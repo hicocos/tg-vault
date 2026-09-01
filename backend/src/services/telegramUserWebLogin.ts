@@ -26,6 +26,7 @@ interface Flow<C> {
     errors: number;
     step: 'code' | 'password';
     client: C;
+    credentials: { apiId: number; apiHash: string };
 }
 
 export type TelegramUserLoginFlowErrorCode =
@@ -64,7 +65,7 @@ export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
     constructor(private readonly deps: {
         credentials(): Promise<{ apiId: number; apiHash: string } | null>;
         createClient(credentials: { apiId: number; apiHash: string }): C;
-        persistAndActivate(session: string, account: TelegramUserLoginAccount): Promise<void>;
+        persistAndActivate(session: string, account: TelegramUserLoginAccount, credentials: { apiId: number; apiHash: string }): Promise<void>;
         now?: () => number;
         ttlMs?: number;
         maxErrors?: number;
@@ -86,7 +87,7 @@ export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
             const sent = await client.sendCode(credentials, phone);
             const flowId = crypto.randomBytes(24).toString('base64url');
             const expiresAt = this.now() + this.ttlMs;
-            this.flows.set(flowId, { id: flowId, owner, phone, phoneCodeHash: sent.phoneCodeHash, expiresAt, errors: 0, step: 'code', client });
+            this.flows.set(flowId, { id: flowId, owner, phone, phoneCodeHash: sent.phoneCodeHash, expiresAt, errors: 0, step: 'code', client, credentials });
             return { flowId, delivery: sent.isCodeViaApp ? 'app' : 'sms', expiresAt: new Date(expiresAt).toISOString() };
         } catch (error) {
             await this.closeClient(client);
@@ -138,7 +139,7 @@ export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
     private async complete(flow: Flow<C>): Promise<{ step: 'complete'; account: TelegramUserLoginAccount }> {
         try {
             const account = normalizeAccount(await flow.client.getMe());
-            await this.deps.persistAndActivate(flow.client.saveSession(), account);
+            await this.deps.persistAndActivate(flow.client.saveSession(), account, flow.credentials);
             this.flows.delete(flow.id);
             return { step: 'complete', account };
         } finally {

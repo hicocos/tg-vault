@@ -307,6 +307,18 @@ export async function upsertTelegramUserAccount(input: Parameters<TelegramAccoun
     return { ...publicAccount, connected: telegramUserClientPool.getReadyAccountIds().includes(account.id), activeConnections: 0 };
 }
 
+export async function upsertTelegramUserAccountWithoutRuntimeRefresh(
+    input: Parameters<TelegramAccountRepository['upsertAccount']>[0],
+): Promise<PublicTelegramUserAccount> {
+    const account = await telegramAccountRepository.upsertAccount(input);
+    const { session: _session, ...publicAccount } = account;
+    return {
+        ...publicAccount,
+        connected: telegramUserClientPool.getReadyAccountIds().includes(account.id),
+        activeConnections: telegramUserClientPool.getActiveConnections(account.id),
+    };
+}
+
 export async function setTelegramUserAccountEnabled(accountId: string, enabled: boolean): Promise<boolean> {
     const changed = await telegramAccountRepository.setEnabled(accountId, enabled);
     if (changed) await reloadTelegramUserClientPool();

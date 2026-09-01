@@ -11,7 +11,7 @@ import {
     deleteTelegramUserAccount,
     listTelegramUserAccounts,
     telegramUserClientPool,
-    upsertTelegramUserAccount,
+    upsertTelegramUserAccountWithoutRuntimeRefresh,
 } from './telegramUserClientPool.js';
 import { initializeTelegramMultiAccountRuntime } from './telegramMultiAccountRuntime.js';
 
@@ -142,14 +142,18 @@ export async function activateTelegramUserAccount(accountId: string): Promise<vo
     if (!telegramUserClientPool.getAccountClient(accountId)) throw new Error('Telegram 用户账号连接失败');
 }
 
-async function persistAndActivate(session: string, account: TelegramUserLoginAccount): Promise<void> {
+async function persistAndActivate(
+    session: string,
+    account: TelegramUserLoginAccount,
+    credentials: { apiId: number; apiHash: string },
+): Promise<void> {
     await setSettings([
         [TELEGRAM_USER_SESSION_SETTING, session],
         [TELEGRAM_USER_ENABLED_SETTING, 'true'],
         [TELEGRAM_USER_ID_SETTING, account.userId],
         [TELEGRAM_USER_USERNAME_SETTING, account.username || ''],
     ]);
-    await upsertTelegramUserAccount({
+    const persisted = await upsertTelegramUserAccountWithoutRuntimeRefresh({
         telegramUserId: account.userId,
         username: account.username,
         displayName: account.displayName,
@@ -157,7 +161,8 @@ async function persistAndActivate(session: string, account: TelegramUserLoginAcc
         enabled: true,
         isLegacy: true,
     });
-    await initTelegramUserClient();
+    await telegramUserClientPool.activateAccount(persisted.id, 'login_complete', credentials);
+    if (!telegramUserClientPool.getAccountClient(persisted.id)) throw new Error('Telegram 用户账号连接失败');
 }
 
 class GramJsWebLoginClient implements TelegramUserLoginClient {

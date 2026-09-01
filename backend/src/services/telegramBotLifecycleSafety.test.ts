@@ -46,13 +46,28 @@ test('Bot migrate, disable and delete routes remain isolated from Telegram user-
 
 test('Bot replacement avoids stale saved sessions and requires full activation before ready', () => {
     assert.doesNotMatch(bot, /fs\.readFileSync\(SESSION_FILE/);
-    const startupSection = bot.slice(bot.indexOf("console.log('🤖 Telegram Bot 正在启动...')"), bot.indexOf('const newSession = client.session.save()'));
+    assert.doesNotMatch(bot, /session\.save\(\)[\s\S]*writeFileSync\(SESSION_FILE/);
+    const startupSection = bot.slice(bot.indexOf("console.log('🤖 Telegram Bot 正在启动...')"), bot.indexOf("console.log('🤖 Telegram Bot 已连接!')"));
     assert.doesNotMatch(startupSection, /Promise\.race|withTelegramClientDeadline/);
     assert.match(bot, /new TelegramClient\(new StringSession\(''\)/);
     assert.match(bot, /await client\.start[\s\S]*SetBotCommands[\s\S]*addEventHandler[\s\S]*markTelegramBotReady\(\)/);
     assert.doesNotMatch(bot, /startTelegramSubscriptionWorker|startTelegramJobRecoveryWorker|startPeriodicCleanup/);
     assert.match(bot, /markTelegramBotReady\(\)[\s\S]*Telegram Bot 启动成功/);
     assert.match(bot, /catch \(error\) \{[\s\S]*const failedClient = client;[\s\S]*client = null;[\s\S]*failedClient\.disconnect/);
+});
+
+test('Bot startup defers global notifier and timer effects until ready and rolls them back on failure', () => {
+    const startup = bot.slice(bot.indexOf('export async function initTelegramBot'), bot.indexOf('async function withTelegramClientDeadline'));
+    const readyIndex = startup.indexOf('markTelegramBotReady()');
+    assert.ok(readyIndex >= 0);
+    assert.ok(startup.indexOf('setYtDlpNotifier(', readyIndex) > readyIndex);
+    assert.ok(startup.indexOf('digestTimer = setInterval(', readyIndex) > readyIndex);
+    assert.match(startup, /catch \(error\) \{[\s\S]*clearInterval\(digestTimer\)[\s\S]*setYtDlpNotifier\(null\)/);
+});
+
+test('Bot startup never performs orphan cleanup or sends cleanup notifications', () => {
+    const startup = bot.slice(bot.indexOf('export async function initTelegramBot'), bot.indexOf('async function withTelegramClientDeadline'));
+    assert.doesNotMatch(startup, /cleanupOrphanFiles\(|buildCleanupNotice|启动清理/);
 });
 
 test('client teardown waits for in-flight subscription and recovery work', () => {
