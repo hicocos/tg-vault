@@ -1,4 +1,5 @@
 import type { Api } from 'telegram';
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
 
 export type TelegramAdFilterMode = 'off' | 'conservative' | 'aggressive';
 export type TelegramAdDecision = 'allow' | 'review' | 'block';
@@ -50,6 +51,7 @@ interface TelegramAdClassificationOptions {
     mode: TelegramAdFilterMode;
     rules: TelegramAdRule[];
     history: TelegramAdHistoryTemplate[];
+    locale?: TelegramLocale;
 }
 
 const TRACKING_QUERY_KEYS = /^(utm_.+|fbclid|gclid|yclid|ref|referrer|source|campaign|code)$/i;
@@ -214,7 +216,7 @@ export function classifyTelegramAdCandidate(candidate: TelegramAdCandidate, opti
     if (allowRules.length > 0) {
         return {
             decision: 'allow', score: 0,
-            reasons: allowRules.map(rule => ({ code: 'allow_rule', label: '命中允许规则', score: -100, ruleId: rule.id })),
+            reasons: allowRules.map(rule => ({ code: 'allow_rule', label: t(options.locale || DEFAULT_LOCALE, 'ads.reason.allowRule'), score: -100, ruleId: rule.id })),
             matchedRuleIds: allowRules.map(rule => rule.id),
         };
     }
@@ -230,28 +232,33 @@ export function classifyTelegramAdCandidate(candidate: TelegramAdCandidate, opti
 
     for (const rule of enabledRules.filter(rule => rule.action === 'block' && matchesRule(candidate, rule))) {
         const points = rule.kind === 'template' ? 90 : rule.kind === 'domain' || rule.kind === 'username' || rule.kind === 'media' ? 100 : 70;
-        add(rule.kind === 'template' ? 'blocked_template' : 'block_rule', rule.kind === 'template' ? '命中已确认广告模板' : '命中屏蔽规则', points, rule.id);
+        add(
+            rule.kind === 'template' ? 'blocked_template' : 'block_rule',
+            t(options.locale || DEFAULT_LOCALE, rule.kind === 'template' ? 'ads.reason.blockedTemplate' : 'ads.reason.blockRule'),
+            points,
+            rule.id,
+        );
     }
 
     const normalHistory = options.history.filter(item => item.decision === 'normal' && item.confirmations > 0);
     const adHistory = options.history.filter(item => item.decision === 'ad' && item.confirmations > 0);
     const normalSimilarity = Math.max(0, ...normalHistory.map(item => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
     const adSimilarity = Math.max(0, ...adHistory.map(item => telegramAdTextSimilarity(candidate.textFingerprint, item.fingerprint)));
-    if (normalSimilarity >= 0.82) add('normal_template', '与已确认正常内容相似', -50);
-    else if (adSimilarity >= 0.82) add('ad_history_template', '与历史广告模板高度相似', 60);
+    if (normalSimilarity >= 0.82) add('normal_template', t(options.locale || DEFAULT_LOCALE, 'ads.reason.normalTemplate'), -50);
+    else if (adSimilarity >= 0.82) add('ad_history_template', t(options.locale || DEFAULT_LOCALE, 'ads.reason.adHistoryTemplate'), 60);
 
     const hasTransaction = TRANSACTION_PATTERN.test(candidate.text);
     const hasCta = CTA_PATTERN.test(`${candidate.text}\n${candidate.buttonTexts.join('\n')}`);
     const hasContact = CONTACT_PATTERN.test(candidate.text) && (candidate.usernames.length > 0 || candidate.urls.length > 0);
     const hasExternalTarget = candidate.urls.length > 0 || candidate.usernames.length > 0;
-    if (hasTransaction && hasContact) add('transaction_contact', '包含交易意图和外部联系方式', 35);
-    else if (hasTransaction) add('transaction_intent', '包含交易或促销意图', 15);
-    if (hasCta && hasExternalTarget) add('cta_link', '包含行动号召和外部跳转', 40);
-    else if (hasCta) add('call_to_action', '包含明显行动号召', 10);
-    if (candidate.urls.length + candidate.usernames.length >= 3) add('link_density', '外部链接或联系方式密集', 15);
-    if (SCARCITY_PATTERN.test(candidate.text)) add('scarcity', '包含限时或稀缺性话术', 10);
+    if (hasTransaction && hasContact) add('transaction_contact', t(options.locale || DEFAULT_LOCALE, 'ads.reason.transactionContact'), 35);
+    else if (hasTransaction) add('transaction_intent', t(options.locale || DEFAULT_LOCALE, 'ads.reason.transactionIntent'), 15);
+    if (hasCta && hasExternalTarget) add('cta_link', t(options.locale || DEFAULT_LOCALE, 'ads.reason.ctaLink'), 40);
+    else if (hasCta) add('call_to_action', t(options.locale || DEFAULT_LOCALE, 'ads.reason.callToAction'), 10);
+    if (candidate.urls.length + candidate.usernames.length >= 3) add('link_density', t(options.locale || DEFAULT_LOCALE, 'ads.reason.linkDensity'), 15);
+    if (SCARCITY_PATTERN.test(candidate.text)) add('scarcity', t(options.locale || DEFAULT_LOCALE, 'ads.reason.scarcity'), 10);
     const emojiCount = (candidate.text.match(/\p{Extended_Pictographic}/gu) || []).length;
-    if (emojiCount >= 6) add('decorative_marketing', '营销式符号较多', 5);
+    if (emojiCount >= 6) add('decorative_marketing', t(options.locale || DEFAULT_LOCALE, 'ads.reason.decorativeMarketing'), 5);
 
     score = Math.max(0, Math.min(100, score));
     const decision: TelegramAdDecision = score >= 70

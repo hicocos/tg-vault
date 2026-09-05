@@ -288,7 +288,6 @@ CREATE OR REPLACE TRIGGER chunk_upload_sessions_updated_at
     EXECUTE FUNCTION update_updated_at();
 
 -- Cross-entry-point task records. Channel jobs and browser chunk sessions retain
--- their specialized tables, while this table persists ordinary Bot and yt-dlp tasks.
 CREATE TABLE IF NOT EXISTS transfer_tasks (
     source_type VARCHAR(30) NOT NULL,
     id VARCHAR(128) NOT NULL,
@@ -338,30 +337,6 @@ CREATE TABLE IF NOT EXISTS task_center_dismissals (
 CREATE INDEX IF NOT EXISTS idx_task_center_dismissals_version
     ON task_center_dismissals(source_type, task_id, task_updated_at);
 
-CREATE TABLE IF NOT EXISTS ytdlp_write_reconciliations (
-    operation_id UUID PRIMARY KEY,
-    source_type VARCHAR(30) NOT NULL DEFAULT 'ytdlp' CHECK (source_type = 'ytdlp'),
-    task_id VARCHAR(128) NOT NULL,
-    execution_generation BIGINT NOT NULL,
-    task_lease_token UUID NOT NULL,
-    provider VARCHAR(50) NOT NULL,
-    account_id UUID REFERENCES storage_accounts(id) ON DELETE SET NULL,
-    stored_path VARCHAR(2000),
-    file_id UUID,
-    object_state VARCHAR(20) NOT NULL DEFAULT 'unknown' CHECK (object_state IN ('unknown', 'present', 'deleted')),
-    index_state VARCHAR(20) NOT NULL DEFAULT 'unknown' CHECK (index_state IN ('unknown', 'present', 'deleted')),
-    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'resolved')),
-    resolution VARCHAR(30),
-    reason TEXT NOT NULL,
-    resolved_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    FOREIGN KEY (source_type, task_id) REFERENCES transfer_tasks(source_type, id) ON DELETE CASCADE
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ytdlp_reconciliation_pending_task
-    ON ytdlp_write_reconciliations(task_id) WHERE status = 'pending';
-CREATE INDEX IF NOT EXISTS idx_ytdlp_reconciliation_status
-    ON ytdlp_write_reconciliations(status, created_at);
 
 CREATE OR REPLACE TRIGGER transfer_tasks_updated_at
     BEFORE UPDATE ON transfer_tasks
@@ -467,6 +442,17 @@ CREATE OR REPLACE TRIGGER telegram_channel_subscriptions_updated_at
     BEFORE UPDATE ON telegram_channel_subscriptions
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at();
+
+CREATE TABLE IF NOT EXISTS telegram_user_locales (
+    user_id BIGINT PRIMARY KEY,
+    locale VARCHAR(10) NOT NULL DEFAULT 'zh-CN' CHECK (locale IN ('zh-CN', 'en', 'ru')),
+    explicit BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE OR REPLACE TRIGGER telegram_user_locales_updated_at
+    BEFORE UPDATE ON telegram_user_locales
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 CREATE TABLE IF NOT EXISTS telegram_notification_preferences (
     user_id BIGINT NOT NULL,

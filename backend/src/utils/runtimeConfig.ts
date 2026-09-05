@@ -44,7 +44,7 @@ const NUMBER_SPECS: NumberSpec[] = [
     { name: 'STORAGE_PROBE_TIMEOUT_MS', fallback: 15_000, min: 1_000, max: 60_000 },
     { name: 'WEBDAV_INACTIVITY_TIMEOUT_MS', fallback: 300_000, min: 30_000, max: 86_400_000 },
     { name: 'WEBDAV_UPLOAD_TIMEOUT_MS', fallback: 21_600_000, min: 60_000, max: 604_800_000 },
-    { name: 'YTDLP_MAX_CONCURRENT', fallback: 1, min: 1, max: 16 },
+
 ];
 
 function configured(env: RuntimeEnv, name: string): boolean {
@@ -63,6 +63,16 @@ function parseNumbers(env: RuntimeEnv, errors: string[]): Record<string, number>
         values[spec.name] = value;
     }
     return values;
+}
+
+function parseOptionalBoundedNumber(raw: string | undefined, name: string, min: number, max: number, fallback: number, errors: string[]): number {
+    if (!raw?.trim()) return fallback;
+    const value = Number(raw.trim());
+    if (!Number.isSafeInteger(value) || value < min || value > max) {
+        errors.push(`${name} 必须是 ${min}–${max} 范围内的整数`);
+        return fallback;
+    }
+    return value;
 }
 
 function validateEnum(env: RuntimeEnv, errors: string[], name: string, values: string[], fallback: string): string {
@@ -97,7 +107,7 @@ export interface RuntimeConfigSummary {
     upload: Record<string, unknown>;
     logging: Record<string, unknown>;
     telegram: Record<string, unknown>;
-    ytdlp: Record<string, unknown>;
+
     storage: Record<string, unknown>;
     security: Record<string, unknown>;
 }
@@ -153,16 +163,14 @@ export function validateRuntimeConfig(env: RuntimeEnv = process.env): RuntimeCon
             allowedUserCount: userCount,
             sourceAllowlistConfigured: configured(env, 'TELEGRAM_ALLOWED_SOURCES') || configured(env, 'TELEGRAM_SOURCE_ALLOWLIST'),
             userSessionPathConfigured: configured(env, 'TELEGRAM_USER_SESSION_FILE'),
+            botSessionPathConfigured: configured(env, 'TELEGRAM_SESSION_FILE'),
+            botStartupTimeoutMs: parseOptionalBoundedNumber(env.TELEGRAM_BOT_STARTUP_TIMEOUT_MS, 'TELEGRAM_BOT_STARTUP_TIMEOUT_MS', 5_000, 120_000, 30_000, errors),
             downloadWorkers: numbers.TELEGRAM_DOWNLOAD_WORKERS,
             fileConcurrency: numbers.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY,
             subscriptionIntervalMs: numbers.TELEGRAM_SUBSCRIPTION_INTERVAL_MS,
             statusDebug: debugStatus,
         },
-        ytdlp: {
-            binary: env.YTDLP_BIN || 'yt-dlp',
-            maxConcurrent: numbers.YTDLP_MAX_CONCURRENT,
-            workDir: env.YTDLP_WORK_DIR || './data/uploads/ytdlp',
-        },
+
         storage: {
             probeTimeoutMs: numbers.STORAGE_PROBE_TIMEOUT_MS,
             webdavInactivityTimeoutMs: numbers.WEBDAV_INACTIVITY_TIMEOUT_MS,

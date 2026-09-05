@@ -1,8 +1,7 @@
 import { query } from '../db/index.js';
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
-import { reconcileCommittedYtDlpWrites } from './ytDlpExecution.js';
 
-export type TransferTaskSource = 'telegram_bot' | 'ytdlp';
+export type TransferTaskSource = 'telegram_bot';
 export type TransferTaskStatus =
     | 'pending'
     | 'running'
@@ -257,30 +256,12 @@ export async function listTransferTasks(options: {
 }
 
 export async function markTransferTasksAfterRestart(): Promise<void> {
-    await reconcileCommittedYtDlpWrites({ query });
     await query(
         `UPDATE transfer_tasks
          SET status = 'interrupted', stage = 'retry_required', retryable = true,
              error = '服务重启中断了普通 Bot 下载。请在 Telegram 中重新发送原文件后重试。',
              finished_at = NOW(), updated_at = NOW()
          WHERE source_type = 'telegram_bot' AND status IN ('pending','running','paused')`,
-    );
-    await query(
-        `UPDATE transfer_tasks t
-         SET status = CASE WHEN EXISTS (
-                 SELECT 1 FROM ytdlp_write_reconciliations r WHERE r.task_id = t.id AND r.status = 'pending'
-             ) THEN 'retry_required' ELSE 'pending' END,
-             stage = CASE WHEN EXISTS (
-                 SELECT 1 FROM ytdlp_write_reconciliations r WHERE r.task_id = t.id AND r.status = 'pending'
-             ) THEN 'reconciliation_required' ELSE 'recovering' END,
-             retryable = CASE WHEN EXISTS (
-                 SELECT 1 FROM ytdlp_write_reconciliations r WHERE r.task_id = t.id AND r.status = 'pending'
-             ) THEN false ELSE true END,
-             error = CASE WHEN EXISTS (
-                 SELECT 1 FROM ytdlp_write_reconciliations r WHERE r.task_id = t.id AND r.status = 'pending'
-             ) THEN '上次外部写结果需要对账，已阻止自动重试' ELSE '服务重启后正在重新排队' END,
-             cancel_requested = false, lease_token = NULL, lease_expires_at = NULL, updated_at = NOW()
-         WHERE source_type = 'ytdlp' AND status = 'running'`,
     );
 }
 

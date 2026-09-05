@@ -1,4 +1,5 @@
 import { formatBytes } from '../utils/telegramUtils.js';
+import { DEFAULT_LOCALE, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
 import { query } from '../db/index.js';
 import {
     buildFilePageQuery,
@@ -36,26 +37,26 @@ function compactText(value: unknown, maxLength: number): string {
     return text.length > maxLength ? `${text.slice(0, Math.max(1, maxLength - 1))}…` : text;
 }
 
-export function buildTelegramFileActionRows(file: any): Array<Array<{ text: string; data: string }>> {
+export function buildTelegramFileActionRows(file: any, locale: TelegramLocale = DEFAULT_LOCALE): Array<Array<{ text: string; data: string }>> {
     const id = String(file.id);
     const rows: Array<Array<{ text: string; data: string }>> = [
-        [{ text: '详情', data: encodeTelegramFileCallback('detail', id) }, { text: '复制 ID', data: encodeTelegramFileCallback('copy', id) }],
-        [{ text: file.is_favorite ? '取消收藏' : '收藏', data: encodeTelegramFileCallback('favorite', id) }],
-        [{ text: '签名链接', data: encodeTelegramFileCallback('link', id) }],
-        [{ text: '移动', data: encodeTelegramFileCallback('move', id) }, { text: '重命名', data: encodeTelegramFileCallback('rename', id) }],
-        [{ text: '删除…', data: encodeTelegramFileCallback('delete', id) }],
+        [{ text: t(locale, 'fileBrowser.detail'), data: encodeTelegramFileCallback('detail', id) }, { text: t(locale, 'fileBrowser.copyId'), data: encodeTelegramFileCallback('copy', id) }],
+        [{ text: file.is_favorite ? t(locale, 'fileBrowser.unfavorite') : t(locale, 'fileBrowser.favorite'), data: encodeTelegramFileCallback('favorite', id) }],
+        [{ text: t(locale, 'fileBrowser.signedLink'), data: encodeTelegramFileCallback('link', id) }],
+        [{ text: t(locale, 'fileBrowser.move'), data: encodeTelegramFileCallback('move', id) }, { text: t(locale, 'fileBrowser.rename'), data: encodeTelegramFileCallback('rename', id) }],
+        [{ text: t(locale, 'fileBrowser.delete'), data: encodeTelegramFileCallback('delete', id) }],
     ];
     return rows;
 }
 
-export function buildTelegramFileDetail(file: any): string {
+export function buildTelegramFileDetail(file: any, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `📄 **${compactText(file.name, 80) || '未命名文件'}**`,
+        `📄 **${compactText(file.name, 80) || t(locale, 'fileBrowser.unnamed')}**`,
         `🆔 ${file.id}`,
-        `📦 ${formatBytes(Number(file.size || 0))} · ${compactText(file.type || '其他', 20)}`,
-        `📍 ${compactText(file.source || '本地存储', 50)}`,
-        `📁 ${compactText(file.folder || '根目录', 100)}`,
-        `🕒 ${file.created_at ? new Date(file.created_at).toLocaleString('zh-CN', { hour12: false }) : '未知'}`,
+        `📦 ${formatBytes(Number(file.size || 0))} · ${compactText(file.type || t(locale, 'fileBrowser.other'), 20)}`,
+        `📍 ${compactText(file.source || t(locale, 'fileBrowser.localStorage'), 50)}`,
+        `📁 ${compactText(file.folder || t(locale, 'fileBrowser.rootFolder'), 100)}`,
+        `🕒 ${file.created_at ? formatDate(file.created_at, locale, { dateStyle: 'medium', timeStyle: 'short', hour12: false }) : t(locale, 'fileBrowser.unknown')}`,
     ].join('\n');
 }
 
@@ -88,24 +89,24 @@ export async function queryTelegramFiles(
     };
 }
 
-export function buildTelegramFileCard(file: any, index: number): string {
+export function buildTelegramFileCard(file: any, index: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const shortId = String(file.id || '').slice(0, 12);
-    const createdAt = file.created_at ? new Date(file.created_at).toLocaleString('zh-CN', { hour12: false }) : '未知';
-    const name = compactText(file.name, 46) || '未命名文件';
-    const folder = compactText(file.folder || '根目录', 60);
+    const createdAt = file.created_at ? formatDate(file.created_at, locale, { dateStyle: 'medium', timeStyle: 'short', hour12: false }) : t(locale, 'fileBrowser.unknown');
+    const name = compactText(file.name, 46) || t(locale, 'fileBrowser.unnamed');
+    const folder = compactText(file.folder || t(locale, 'fileBrowser.rootFolder'), 60);
     return [
         `${index + 1}. ${file.is_favorite ? '⭐ ' : ''}${name}`,
-        `   🆔 ${shortId} · ${compactText(file.type || '其他', 16)} · ${formatBytes(Number(file.size || 0))}`,
+        `   🆔 ${shortId} · ${compactText(file.type || t(locale, 'fileBrowser.other'), 16)} · ${formatBytes(Number(file.size || 0))}`,
         `   📁 ${folder} · ${createdAt}`,
     ].join('\n');
 }
 
-export function buildTelegramFileBrowserText(page: TelegramFileBrowserPage, queryText: string): string {
+export function buildTelegramFileBrowserText(page: TelegramFileBrowserPage, queryText: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `🔎 **文件搜索**：${compactText(queryText || '最近文件', 80)}`,
+        `🔎 **${t(locale, 'fileBrowser.search')}:** ${compactText(queryText || t(locale, 'fileBrowser.recentFiles'), 80)}`,
         '',
-        ...(page.files.length > 0 ? page.files.map(buildTelegramFileCard) : ['没有匹配文件。']),
+        ...(page.files.length > 0 ? page.files.map((file, index) => buildTelegramFileCard(file, index, locale)) : [t(locale, 'fileBrowser.noMatches')]),
         '',
-        '点击文件可查看详情、复制 ID、收藏、生成链接、移动/重命名或进入删除确认。',
+        t(locale, 'fileBrowser.hint'),
     ].join('\n');
 }

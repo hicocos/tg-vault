@@ -32,8 +32,8 @@ interface SettingsSectionProps {
     children: React.ReactNode;
 }
 
-const SettingsSection = ({ title, children }: SettingsSectionProps) => (
-    <div className="space-y-4">
+const SettingsSection = ({ title, children, sectionId }: SettingsSectionProps & { sectionId?: string }) => (
+    <div className="space-y-4" data-settings-section={sectionId}>
         <h3 className="text-lg font-medium tracking-tight text-foreground">{title}</h3>
         <div className="rounded-xl border border-border bg-card overflow-hidden">
             {children}
@@ -51,7 +51,7 @@ interface SettingsRowProps {
     stackActionOnMobile?: boolean;
 }
 
-const SettingsRow = ({ icon: Icon, label, value, action, onClick, description, stackActionOnMobile = false }: SettingsRowProps) => (
+const SettingsRow = ({ icon: Icon, label, value, action, onClick, description, stackActionOnMobile = true }: SettingsRowProps) => (
     <div
         className={cn(
             "flex justify-between gap-4 p-4 border-b border-border/50 last:border-0 transition-colors",
@@ -111,7 +111,7 @@ const StorageProbeStatus = ({ account, busy, feedback, onProbe }: { account: Sto
                 <Icon className="h-3.5 w-3.5" />
                 {label}
             </span>
-            {account.last_probed_at && <span className="text-muted-foreground break-words">{new Date(account.last_probed_at).toLocaleString(i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en-US', { hour12: false })}</span>}
+            {account.last_probed_at && <span className="text-muted-foreground break-words">{new Date(account.last_probed_at).toLocaleString(i18n.resolvedLanguage || i18n.language, { hour12: false })}</span>}
             <Button size="sm" variant="ghost" className="h-7 gap-1 px-2 text-xs" disabled={busy} onClick={onProbe}>
                 {busy ? <IndeterminateSpinner label={t('settings.probe.testing')} size="sm" /> : <RefreshCw className="h-3.5 w-3.5" />}
                 {t('settings.probe.test')}
@@ -123,6 +123,7 @@ const StorageProbeStatus = ({ account, busy, feedback, onProbe }: { account: Sto
 };
 
 const ActionNotice = ({ state, onClose }: { state: ActionNoticeState; onClose: () => void }) => {
+    const { t } = useTranslation();
     return createPortal(
         <motion.div
         initial={{ opacity: 0, y: -12, scale: 0.98 }}
@@ -145,7 +146,7 @@ const ActionNotice = ({ state, onClose }: { state: ActionNoticeState; onClose: (
                 <p className="text-sm font-semibold">{state.title}</p>
                 <p className="mt-0.5 whitespace-pre-line break-words text-sm text-muted-foreground">{state.message}</p>
             </div>
-            <button type="button" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40" onClick={onClose} aria-label="关闭提示" title="关闭提示"><X className="h-4 w-4" /></button>
+            <button type="button" className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40" onClick={onClose} aria-label={t('settings.remaining.copy.124')} title={t('settings.remaining.copy.124')}><X className="h-4 w-4" /></button>
         </div>
         </motion.div>,
         document.body,
@@ -159,6 +160,7 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
     onCancel: () => void;
     onConfirm: () => void;
 }) => {
+    const { t } = useTranslation();
     const danger = state.tone === 'danger';
     return (
         <Dialog open onClose={onCancel} labelledBy="settings-action-title" describedBy="settings-action-message" alert={danger} className="w-full max-w-lg">
@@ -173,9 +175,9 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
                     </div>
                     <div className="min-w-0 flex-1">
                         <h3 id="settings-action-title" className="text-base font-semibold sm:text-lg">{state.title}</h3>
-                        {danger && <p className="mt-1 text-xs font-medium text-destructive">{state.dangerDescription || '此操作不可撤销，请谨慎确认'}</p>}
+                        {danger && <p className="mt-1 text-xs font-medium text-destructive">{state.dangerDescription || t('settings.dialog.irreversible')}</p>}
                     </div>
-                    <button type="button" onClick={onCancel} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground" aria-label="关闭确认弹窗"><X className="h-4 w-4" /></button>
+                    <button type="button" onClick={onCancel} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground" aria-label={t('settings.dialog.close')}><X className="h-4 w-4" /></button>
                 </div>
                 <div className="max-h-[min(60vh,32rem)] overflow-y-auto px-5 py-5 sm:px-6">
                     <p id="settings-action-message" className="whitespace-pre-line text-sm leading-6 text-muted-foreground">{state.message}</p>
@@ -191,8 +193,8 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
                     )}
                 </div>
                 <div className="flex flex-col-reverse gap-2 border-t border-border bg-muted/20 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
-                    <Button variant="outline" onClick={onCancel}>{state.cancelLabel || '取消'}</Button>
-                    <Button variant={danger ? 'destructive' : 'default'} onClick={onConfirm}>{state.confirmLabel || '确认'}</Button>
+                    <Button variant="outline" onClick={onCancel}>{state.cancelLabel || t('settings.remaining.copy.124')}</Button>
+                    <Button variant={danger ? 'destructive' : 'default'} onClick={onConfirm}>{state.confirmLabel || t('settings.remaining.copy.125')}</Button>
                 </div>
             </motion.div>
         </Dialog>
@@ -200,7 +202,7 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
 };
 
 export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount, onStorageConfigChanged, onStorageStatsRefresh, activeSection, onSectionChange }: SettingsPageProps) => {
-    const { t } = useTranslation();
+    const { t, i18n } = useTranslation();
 
     const oauthPopupCleanupRef = useRef<(() => void) | null>(null);
     const oauthPopupRef = useRef<Window | null>(null);
@@ -218,15 +220,15 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         const timer = window.setTimeout(() => closeActionNotice(), 4_000);
         return () => window.clearTimeout(timer);
     }, [actionNotice, closeActionNotice]);
-    const showNotice = (message: string, title = '操作结果') => {
-        const errorTone = /失败|错误|不完整|被引用|阻止/.test(title);
-        setActionNotice({ title, message, tone: errorTone ? 'error' : 'success' });
+    const showNotice = (message: string, title = t('settings.remaining.copy.126'), tone?: ActionNoticeState['tone']) => {
+        const inferredError = /失败|错误|不完整|被引用|阻止|failed|error|incomplete|blocked|could not/i.test(title);
+        setActionNotice({ title, message, tone: tone ?? (inferredError ? 'error' : 'success') });
         return Promise.resolve();
     };
-    const requestConfirmation = (message: string, title = '请确认', options?: { tone?: 'default' | 'danger'; dangerDescription?: string; cancelLabel?: string; confirmLabel?: string }) => new Promise<boolean>(resolve => {
+    const requestConfirmation = (message: string, title = t('settings.remaining.copy.127'), options?: { tone?: 'default' | 'danger'; dangerDescription?: string; cancelLabel?: string; confirmLabel?: string }) => new Promise<boolean>(resolve => {
         setActionDialog({ mode: 'confirm', title, message, ...options, resolve: value => resolve(value === true) });
     });
-    const requestInput = (message: string, title = '请输入', inputType: 'text' | 'password' = 'text') => new Promise<string | null>(resolve => {
+    const requestInput = (message: string, title = t('settings.remaining.copy.128'), inputType: 'text' | 'password' = 'text') => new Promise<string | null>(resolve => {
         setActionDialogInput('');
         setActionDialog({ mode: 'prompt', title, message, inputType, resolve: value => resolve(typeof value === 'string' ? value : null) });
     });
@@ -341,30 +343,30 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             if (errorCode(error) !== 'CONFIRMATION_REQUIRED') throw error;
             const enablingPhotoFilter = patch.skipTelegramPhotosInBatch === true;
             const confirmationMessage = enablingPhotoFilter
-                ? '此功能一般不需要开启。仅适合频道同时发布一张普通图片和一个原图文件，而你只想保存原图文件的场景。\n\n开启后，订阅、按日期和按标签批量下载将跳过频道中的所有普通图片，只下载作为文件发送的图片及其他文件；如果频道只发普通图片，这些图片会被漏掉。确认开启吗？'
-                : '该并发值可能触发 Telegram 限流、断流或账号风控。确认继续吗？';
-            const confirmationTitle = enablingPhotoFilter ? '确认跳过频道普通图片' : '高并发二次确认';
+                ? t('settings.remaining.copy.129')
+                : t('settings.remaining.copy.130');
+            const confirmationTitle = enablingPhotoFilter ? t('settings.remaining.copy.131') : t('settings.remaining.copy.132');
             if (!(await requestConfirmation(confirmationMessage, confirmationTitle))) return;
             result = await fileApi.updateAdvancedTaskSetting(patch, true);
         }
         await reloadAdvancedTasks();
         if ('telegramDownloadHistoryPolicy' in patch) {
             const message = patch.telegramDownloadHistoryPolicy === 'errors_only'
-                ? `已改为仅保留错误；同时移除了 ${result.deletedCount || 0} 条已完成的成功/跳过明细。`
-                : '已改为保留全部明细；从现在开始记录完整下载历史。';
+                ? t('settings.remaining.copy.133', { value1: result.deletedCount || 0 })
+                : t('settings.remaining.copy.134');
             await showNotice(message);
         }
     };
 
     const handleCleanupDownloadItems = async () => {
         if (isCleaningDownloadItems) return;
-        if (!(await requestConfirmation(`确定删除 ${cleanupRetentionDays} 天前已完成的 Telegram 下载任务历史吗？\n\n只删除任务审计明细，不删除文件索引，也不删除云端文件。`, '删除任务历史'))) return;
+        if (!(await requestConfirmation(t('settings.remaining.copy.135', { value1: cleanupRetentionDays }), t('settings.remaining.copy.136')))) return;
         setIsCleaningDownloadItems(true);
         try {
             const result = await fileApi.cleanupDownloadItems(cleanupRetentionDays);
-            await showNotice(`已删除 ${result.deletedCount} 条已完成下载任务历史。`);
+            await showNotice(t('settings.remaining.copy.137', { value1: result.deletedCount }));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || '删除下载任务历史失败', '操作失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.138'), t('settings.remaining.copy.139'));
         } finally {
             setIsCleaningDownloadItems(false);
         }
@@ -401,15 +403,15 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     const handleChangeTelegramPin = async () => {
         if (!telegramPinVerificationSecret) {
-            await showNotice(`请输入${telegramPinVerificationMethod === 'current_pin' ? '当前 PIN' : '网页管理员密码'}`, '修改失败');
+            await showNotice(t('settings.remaining.copy.140', { value1: telegramPinVerificationMethod === 'current_pin' ? t('settings.remaining.copy.038') : t('settings.remaining.copy.039') }), t('settings.remaining.copy.141'));
             return;
         }
         if (!/^\d{4}$/.test(newTelegramPin)) {
-            await showNotice('新 Telegram Bot PIN 必须是 4 位数字', '修改失败');
+            await showNotice(t('settings.remaining.copy.142'), t('settings.remaining.copy.141'));
             return;
         }
         if (newTelegramPin !== confirmNewTelegramPin) {
-            await showNotice('两次输入的新 PIN 不一致', '修改失败');
+            await showNotice(t('settings.remaining.copy.144'), t('settings.remaining.copy.141'));
             return;
         }
         setIsChangingTelegramPin(true);
@@ -421,9 +423,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             });
             handleCancelTelegramPinChange();
             await reloadTelegramBotConfig();
-            await showNotice(result.message || 'Telegram Bot PIN 已修改');
+            await showNotice(result.message || t('settings.remaining.copy.146'));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || '修改 Telegram Bot PIN 失败', '修改失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.147'), t('settings.remaining.copy.141'));
         } finally {
             setIsChangingTelegramPin(false);
         }
@@ -433,15 +435,15 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         setIsSavingTelegramBot(true);
         try {
             const result = await fileApi.testTelegramBotConfig({ botToken: telegramBotToken, apiId: telegramApiId, apiHash: telegramApiHash });
-            await showNotice(`连接成功${result.bot.username ? `：@${result.bot.username}` : ''}`);
+            await showNotice(t('settings.remaining.shared.credentialProbeSuccess', { value1: result.bot.username ? `: @${result.bot.username}` : '' }));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || 'Telegram Bot 凭证测试失败', '测试失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.150'), t('settings.remaining.copy.151'));
         } finally { setIsSavingTelegramBot(false); }
     };
 
     const handleSaveTelegramBot = async () => {
         if (!telegramBotConfig?.pinConfigured && !/^\d{4}$/.test(telegramPin)) {
-            await showNotice('Telegram Bot PIN 必须是 4 位数字', '保存失败');
+            await showNotice(t('settings.remaining.copy.152'), t('settings.remaining.copy.153'));
             return;
         }
         setIsSavingTelegramBot(true);
@@ -450,37 +452,37 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             setTelegramBotConfig(result.config);
             clearTelegramBotInputs();
             setShowTelegramBotForm(false);
-            await showNotice('Telegram Bot 凭证已安全保存并启用');
+            await showNotice(t('settings.remaining.copy.154'));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || '保存 Telegram Bot 配置失败', '保存失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.155'), t('settings.remaining.copy.153'));
         } finally { setIsSavingTelegramBot(false); }
     };
 
     const handleMigrateTelegramBot = async () => {
         if (!telegramBotConfig?.pinConfigured && !/^\d{4}$/.test(telegramPin)) {
-            await showNotice('迁移前请创建正好 4 位数字的 Telegram Bot PIN', '需要创建 PIN');
+            await showNotice(t('settings.remaining.copy.157'), t('settings.remaining.copy.158'));
             return;
         }
-        if (!(await requestConfirmation('将从后端环境变量读取 Telegram Bot 凭证，加密保存到数据库，并切换为网页管理。浏览器不会收到原凭证。确认迁移吗？', '迁移 Telegram Bot 配置'))) return;
+        if (!(await requestConfirmation(t('settings.remaining.copy.159'), t('settings.remaining.copy.160')))) return;
         setIsSavingTelegramBot(true);
         try {
             const result = await fileApi.migrateTelegramBotConfig({ telegramPin: telegramBotConfig?.pinConfigured ? undefined : telegramPin });
             setTelegramBotConfig(result.config);
             setTelegramPin('');
-            await showNotice('已迁移到网页加密管理；确认运行正常后可从 .env 删除旧凭证');
-        } catch (error: unknown) { await showNotice(errorMessage(error) || '迁移失败', '迁移失败'); }
+            await showNotice(t('settings.remaining.copy.161'));
+        } catch (error: unknown) { await showNotice(errorMessage(error) || t('settings.remaining.copy.162'), t('settings.remaining.copy.162')); }
         finally { setIsSavingTelegramBot(false); }
     };
 
     const handleDeleteTelegramBot = async () => {
         if (!(await requestConfirmation(
-            '删除后 Bot 将立即停止，已保存的 Bot Token、API ID、API Hash 和 Bot session 将被永久删除。\n\nTelegram 允许用户列表会保留；如需再次使用 Bot，必须重新填写完整凭证并建立连接。此操作无法撤销。',
-            '二次确认：删除 Telegram Bot 配置',
-            { tone: 'danger', dangerDescription: '将永久删除凭证和 Bot session，无法撤销', cancelLabel: '取消删除', confirmLabel: '确认永久删除' },
+            t('settings.remaining.copy.164'),
+            t('settings.remaining.copy.165'),
+            { tone: 'danger', dangerDescription: t('settings.remaining.copy.166'), cancelLabel: t('settings.remaining.copy.167'), confirmLabel: t('settings.remaining.copy.168') },
         ))) return;
         setIsSavingTelegramBot(true);
-        try { const result = await fileApi.deleteTelegramBotConfig(); setTelegramBotConfig(result.config); clearTelegramBotInputs(); setShowTelegramBotForm(true); await showNotice('Telegram Bot 配置已删除'); }
-        catch (error: unknown) { await showNotice(errorMessage(error) || '删除失败', '操作失败'); }
+        try { const result = await fileApi.deleteTelegramBotConfig(); setTelegramBotConfig(result.config); clearTelegramBotInputs(); setShowTelegramBotForm(true); await showNotice(t('settings.remaining.copy.169')); }
+        catch (error: unknown) { await showNotice(errorMessage(error) || t('settings.remaining.copy.170'), t('settings.remaining.copy.139')); }
         finally { setIsSavingTelegramBot(false); }
     };
 
@@ -491,9 +493,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             const result = await fileApi.setTelegramAllowedUserIds(telegramAllowedUserIdsInput);
             setTelegramAllowedUserIdsInput(result.userIds.join(', '));
             await reloadStorageConfig();
-            await showNotice('Telegram 允许用户列表已保存');
+            await showNotice(t('settings.remaining.copy.172'));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || '更新 Telegram 允许用户列表失败', '保存失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.173'), t('settings.remaining.copy.153'));
         } finally {
             setIsSavingTelegramAllowedUsers(false);
         }
@@ -518,7 +520,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             await onStorageStatsRefresh(data.activeAccountId);
             return true;
         } catch (error) {
-            console.error('存储账户已更新，但容量统计刷新失败:', error);
+            console.error('Storage account updated, but refreshing capacity statistics failed:', error);
             return false;
         }
     };
@@ -539,7 +541,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 ? t('updates.found', { version: status.latestVersion })
                 : t('updates.alreadyLatest', { version: status.currentVersion }));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error) || '检查版本失败', '检查失败');
+            await showNotice(errorMessage(error) || t('settings.remaining.copy.175'), t('settings.remaining.copy.176'));
         } finally {
             setIsCheckingUpdates(false);
         }
@@ -558,10 +560,10 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         try {
             await fileApi.probeStorageAccount(account.id);
             await reloadStorageConfig();
-            setProbeFeedback(previous => ({ accountId: account.id, tone: 'success', message: '连接测试成功', sequence: (previous?.sequence ?? 0) + 1 }));
+            setProbeFeedback(previous => ({ accountId: account.id, tone: 'success', message: t('settings.remaining.copy.177'), sequence: (previous?.sequence ?? 0) + 1 }));
         } catch (error: unknown) {
             await reloadStorageConfig().catch(() => undefined);
-            setProbeFeedback(previous => ({ accountId: account.id, tone: 'error', message: errorMessage(error) || '连接测试失败，请稍后重试', sequence: (previous?.sequence ?? 0) + 1 }));
+            setProbeFeedback(previous => ({ accountId: account.id, tone: 'error', message: errorMessage(error) || t('settings.remaining.copy.178'), sequence: (previous?.sequence ?? 0) + 1 }));
         } finally {
             setProbingAccountId(null);
         }
@@ -635,17 +637,17 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         }
 
         const providerNames = {
-            'local': '本地存储',
+            'local': t('settings.remaining.copy.179'),
             'onedrive': 'OneDrive',
-            'aliyun_oss': '阿里云 OSS',
-            's3': 'S3 兼容存储',
-            'webdav': 'WebDAV 存储',
-            'openlist': 'OpenList 原生存储',
+            'aliyun_oss': t('settings.remaining.copy.180'),
+            's3': t('settings.remaining.copy.181'),
+            'webdav': t('settings.remaining.copy.182'),
+            'openlist': t('settings.remaining.copy.183'),
             'google_drive': 'Google Drive'
         };
         const providerName = providerNames[provider];
 
-        if (!(await requestConfirmation(`确定要把系统默认存储切换到 ${providerName}${accountId ? '（指定账户）' : ''}吗？\n\n这会影响所有用户后续新提交的任务；已经提交的上传、Telegram 和 yt-dlp 任务仍使用原目标。切换前会执行只读连接测试。`, '切换系统默认存储'))) return;
+        if (!(await requestConfirmation(t('settings.remaining.copy.184', { value1: providerName, value2: accountId ? t('settings.remaining.shared.specifiedAccount') : '' }), t('settings.remaining.copy.185')))) return;
 
         setIsSaving(true);
         try {
@@ -653,12 +655,12 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             const data = await reloadStorageConfig();
             const statisticsFresh = await refreshStorageStats(data);
             await showNotice(statisticsFresh
-                ? `已成功切换到 ${providerName}`
-                : `已成功切换到 ${providerName}，但容量统计刷新失败，请稍后手动刷新`,
-            statisticsFresh ? '操作结果' : '切换完成');
+                ? t('settings.remaining.copy.186', { value1: providerName })
+                : t('settings.remaining.copy.187', { value1: providerName }),
+            statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.189'));
         } catch (error: unknown) {
             await reloadStorageConfig().catch(() => undefined);
-            await showNotice(errorMessage(error), '操作失败');
+            await showNotice(errorMessage(error), t('settings.remaining.copy.139'));
         } finally {
             setIsSaving(false);
         }
@@ -670,9 +672,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         let confirmed = false;
         if (enabled) {
             confirmed = await requestConfirmation(
-                '开启后，WebDAV 可以访问内网、回环或保留地址，并允许使用明文 HTTP。\n\n风险：这会扩大服务端请求伪造（SSRF）攻击面；恶意或填错的地址可能探测、访问本机或局域网服务。HTTP 还会让 WebDAV 用户名、密码和文件内容在传输途中以明文暴露。\n\n仅在 TG Vault 为可信管理员专用、WebDAV 地址由你控制且网络隔离可靠时开启。是否确认承担风险并开启？',
-                '二次确认：开启高风险 WebDAV 访问',
-                { tone: 'danger', dangerDescription: '此操作会降低默认网络安全保护', cancelLabel: '保持关闭', confirmLabel: '确认开启' },
+                t('settings.cards.security.unsafeWebdav.confirmation'),
+                t('settings.cards.security.unsafeWebdav.confirmationTitle'),
+                { tone: 'danger', dangerDescription: t('settings.cards.security.unsafeWebdav.dangerDescription'), cancelLabel: t('settings.cards.security.unsafeWebdav.keepDisabled'), confirmLabel: t('settings.cards.security.unsafeWebdav.confirmEnable') },
             );
             if (!confirmed) return;
         }
@@ -680,12 +682,12 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         try {
             const result = await fileApi.setUnsafeWebdavEndpointsAllowed(enabled, confirmed);
             setConfig(previous => previous ? { ...previous, allowUnsafeWebdavEndpoints: result.allowUnsafeWebdavEndpoints } : previous);
-            await showNotice(enabled ? '已允许内网和不安全的 WebDAV 地址' : '已恢复 WebDAV 安全限制');
+            await showNotice(t(enabled ? 'settings.cards.security.unsafeWebdav.enabledNotice' : 'settings.cards.security.unsafeWebdav.disabledNotice'));
         } catch (error: unknown) {
             if (errorCode(error) === 'CONFIRMATION_REQUIRED') {
-                await showNotice('服务端要求二次确认，请重新操作。', '未完成确认');
+                await showNotice(t('settings.cards.security.unsafeWebdav.confirmationRequired'), t('settings.cards.security.unsafeWebdav.confirmationIncomplete'));
             } else {
-                await showNotice(errorMessage(error) || '更新 WebDAV 安全设置失败', '操作失败');
+                await showNotice(errorMessage(error) || t('settings.cards.security.unsafeWebdav.updateFailed'), t('settings.remaining.copy.139'));
             }
         } finally {
             setIsSavingWebdavSecurity(false);
@@ -694,7 +696,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     const handleSaveGDConfig = async () => {
         if (!gdClientId || !gdClientSecret) {
-            await showNotice('请填写 Client ID 和 Client Secret', '信息不完整');
+            await showNotice(t('settings.remaining.copy.202'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
@@ -713,7 +715,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
             const authWindow = window.open(authUrl, 'GoogleDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
             if (!authWindow) {
-                throw new Error('授权窗口被浏览器拦截，请允许弹窗后重试');
+                throw new Error(t('settings.remaining.copy.204'));
             }
 
             oauthPopupCleanupRef.current?.();
@@ -734,7 +736,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 },
                 onSuccess: async event => {
                     const accountId = (event.data as { accountId?: unknown }).accountId;
-                    if (typeof accountId !== 'string' || !accountId) throw new Error('授权回调缺少新账户标识');
+                    if (typeof accountId !== 'string' || !accountId) throw new Error(t('settings.remaining.copy.205'));
                     const data = await synchronizeStorageConfig({
                         loadConfig: () => fileApi.getStorageConfig(),
                         publishConfig: nextConfig => {
@@ -750,22 +752,22 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         setIsSaving(false);
                         oauthPopupRef.current = null;
                     }
-                    if (state === 'cancelled') await showNotice('Google Drive 授权已取消，表单内容已保留。', '授权已取消');
+                    if (state === 'cancelled') await showNotice(t('settings.remaining.copy.206'), t('settings.remaining.copy.207'));
                     if (state === 'failed') {
                         const providerError = flowError instanceof MessageEvent
                             ? (flowError.data as { error?: unknown }).error
                             : undefined;
-                        await showNotice(`Google Drive 授权失败: ${typeof providerError === 'string' ? providerError : flowError instanceof Error ? flowError.message : '未知错误'}`, '授权失败');
+                        await showNotice(t('settings.remaining.copy.208', { value1: typeof providerError === 'string' ? providerError : flowError instanceof Error ? flowError.message : t('settings.remaining.shared.unknownError') }), t('settings.remaining.copy.209'));
                     }
                     if (state === 'success') await showNotice(statisticsFresh
-                        ? 'Google Drive 授权成功并已启用！'
-                        : 'Google Drive 授权成功并已启用，但容量统计刷新失败，请稍后手动刷新。',
-                    statisticsFresh ? '操作结果' : '授权完成');
+                        ? t('settings.remaining.copy.210')
+                        : t('settings.remaining.copy.211'),
+                    statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.213'));
                 },
             });
         } catch (error: unknown) {
             setIsSaving(false);
-            await showNotice('发起授权失败: ' + errorMessage(error), '授权失败');
+            await showNotice(t('settings.remaining.copy.214') + errorMessage(error), t('settings.remaining.copy.209'));
         }
     };
 
@@ -775,40 +777,40 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             const impact = preview.impact;
             const busyCount = impact.activeLeaseCount + impact.activeTaskCount + impact.activeUploadCount;
             const impactText = [
-                `账户：${accountName}`,
-                `将删除 TG Vault 索引：${impact.fileCount} 条`,
-                `索引容量：${(impact.totalSizeBytes / 1024 / 1024).toFixed(2)} MiB`,
-                `涉及目录：${impact.folderCount} 个`,
-                `活动租约/任务/上传：${impact.activeLeaseCount}/${impact.activeTaskCount}/${impact.activeUploadCount}`,
+                t('settings.remaining.copy.216', { value1: accountName }),
+                t('settings.remaining.copy.217', { value1: impact.fileCount }),
+                t('settings.remaining.copy.218', { value1: (impact.totalSizeBytes / 1024 / 1024).toFixed(2) }),
+                t('settings.remaining.copy.219', { value1: impact.folderCount }),
+                t('settings.remaining.copy.220', { value1: impact.activeLeaseCount, value2: impact.activeTaskCount, value3: impact.activeUploadCount }),
                 '',
-                '不会删除云端原文件；执行时服务端会重新检查活动租约和任务。',
-                ...(busyCount > 0 ? ['', '当前存在活动引用，执行将被服务端阻止。请先结束相关任务。'] : []),
+                t('settings.remaining.copy.221'),
+                ...(busyCount > 0 ? ['', t('settings.remaining.copy.222')] : []),
             ].join('\n');
             if (busyCount > 0) {
                 await showNotice([
                     impactText,
                     '',
-                    '请到任务中心取消对应任务；频道订阅等固定目标会在任务中心展示其账户引用。',
-                ].join('\n'), '账户仍被引用');
+                    t('settings.remaining.copy.223'),
+                ].join('\n'), t('settings.remaining.copy.224'));
                 onOpenTasksForAccount?.(accountId);
                 return;
             }
-            if (!(await requestConfirmation(impactText, '删除存储账户'))) return;
+            if (!(await requestConfirmation(impactText, t('settings.remaining.copy.225')))) return;
             const result = await fileApi.deleteAccount(accountId, preview.confirmationToken);
             const data = await reloadStorageConfig();
             const statisticsFresh = await refreshStorageStats(data);
             await showNotice(statisticsFresh
                 ? result.message
-                : `${result.message}；但容量统计刷新失败，请稍后手动刷新`,
-            statisticsFresh ? '操作结果' : '删除完成');
+                : t('settings.remaining.copy.226', { value1: result.message }),
+            statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.228'));
         } catch (error: unknown) {
-            await showNotice(errorMessage(error), '操作失败');
+            await showNotice(errorMessage(error), t('settings.remaining.copy.139'));
         }
     };
 
     const handleSaveOneDriveConfig = async () => {
         if (!odClientId) {
-            await showNotice('请填写 Client ID', '信息不完整');
+            await showNotice(t('settings.remaining.copy.230'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
@@ -827,7 +829,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
             const authWindow = window.open(authUrl, 'OneDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
             if (!authWindow) {
-                throw new Error('授权窗口被浏览器拦截，请允许弹窗后重试');
+                throw new Error(t('settings.remaining.copy.204'));
             }
 
             oauthPopupCleanupRef.current?.();
@@ -848,7 +850,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 },
                 onSuccess: async event => {
                     const accountId = (event.data as { accountId?: unknown }).accountId;
-                    if (typeof accountId !== 'string' || !accountId) throw new Error('授权回调缺少新账户标识');
+                    if (typeof accountId !== 'string' || !accountId) throw new Error(t('settings.remaining.copy.205'));
                     const data = await synchronizeStorageConfig({
                         loadConfig: () => fileApi.getStorageConfig(),
                         publishConfig: nextConfig => {
@@ -864,38 +866,38 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         setIsSaving(false);
                         oauthPopupRef.current = null;
                     }
-                    if (state === 'cancelled') await showNotice('OneDrive 授权已取消，表单内容已保留。', '授权已取消');
+                    if (state === 'cancelled') await showNotice(t('settings.remaining.copy.234'), t('settings.remaining.copy.207'));
                     if (state === 'failed') {
                         const providerError = flowError instanceof MessageEvent
                             ? (flowError.data as { error?: unknown }).error
                             : undefined;
-                        await showNotice(`OneDrive 授权失败: ${typeof providerError === 'string' ? providerError : flowError instanceof Error ? flowError.message : '未知错误'}`, '授权失败');
+                        await showNotice(t('settings.remaining.copy.236', { value1: typeof providerError === 'string' ? providerError : flowError instanceof Error ? flowError.message : t('settings.remaining.shared.unknownError') }), t('settings.remaining.copy.209'));
                     }
                     if (state === 'success') await showNotice(statisticsFresh
-                        ? 'OneDrive 授权成功并已启用！'
-                        : 'OneDrive 授权成功并已启用，但容量统计刷新失败，请稍后手动刷新。',
-                    statisticsFresh ? '操作结果' : '授权完成');
+                        ? t('settings.remaining.copy.238')
+                        : t('settings.remaining.copy.239'),
+                    statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.213'));
                 },
             });
         } catch (error: unknown) {
             setIsSaving(false);
-            await showNotice('发起授权失败: ' + errorMessage(error), '授权失败');
+            await showNotice(t('settings.remaining.copy.214') + errorMessage(error), t('settings.remaining.copy.209'));
         }
     };
 
     const handleSaveOSSConfig = async () => {
         if (!ossAccountName || !ossRegion || !ossAccessKeyId || !ossAccessKeySecret || !ossBucket) {
-            await showNotice('请填写所有必填项', '信息不完整');
+            await showNotice(t('settings.remaining.copy.244'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
         try {
             await fileApi.addAliyunOSSAccount(ossAccountName, ossRegion, ossAccessKeyId, ossAccessKeySecret, ossBucket);
             await reloadStorageConfig();
-            await showNotice('阿里云 OSS 账户添加成功！');
+            await showNotice(t('settings.remaining.copy.246'));
             setShowOSSForm(false);
         } catch (error: unknown) {
-            await showNotice('添加阿里云 OSS 账户失败: ' + errorMessage(error), '添加失败');
+            await showNotice(t('settings.remaining.copy.247') + errorMessage(error), t('settings.remaining.copy.248'));
         } finally {
             setIsSaving(false);
         }
@@ -903,17 +905,17 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     const handleSaveS3Config = async () => {
         if (!s3AccountName || !s3Endpoint || !s3Region || !s3AccessKeyId || !s3AccessKeySecret || !s3Bucket) {
-            await showNotice('请填写所有必填项', '信息不完整');
+            await showNotice(t('settings.remaining.copy.244'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
         try {
             await fileApi.addS3Account(s3AccountName, s3Endpoint, s3Region, s3AccessKeyId, s3AccessKeySecret, s3Bucket, s3ForcePathStyle);
             await reloadStorageConfig();
-            await showNotice('S3 兼容存储账户添加成功！');
+            await showNotice(t('settings.remaining.copy.251'));
             setShowS3Form(false);
         } catch (error: unknown) {
-            await showNotice('添加 S3 兼容存储账户失败: ' + errorMessage(error), '添加失败');
+            await showNotice(t('settings.remaining.copy.252') + errorMessage(error), t('settings.remaining.copy.248'));
         } finally {
             setIsSaving(false);
         }
@@ -921,17 +923,17 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     const handleSaveWebDAVConfig = async () => {
         if (!webdavAccountName || !webdavUrl) {
-            await showNotice('请填写账户名称和 URL', '信息不完整');
+            await showNotice(t('settings.remaining.copy.254'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
         try {
             await fileApi.addWebDAVAccount(webdavAccountName, webdavUrl, webdavUsername, webdavPassword);
             await reloadStorageConfig();
-            await showNotice('WebDAV 存储账户添加成功！');
+            await showNotice(t('settings.remaining.copy.256'));
             setShowWebDAVForm(false);
         } catch (error: unknown) {
-            await showNotice('添加 WebDAV 存储账户失败: ' + errorMessage(error), '添加失败');
+            await showNotice(t('settings.remaining.copy.257') + errorMessage(error), t('settings.remaining.copy.248'));
         } finally {
             setIsSaving(false);
         }
@@ -986,7 +988,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 setIs2FAActivated(true);
                 setActivationCode("");
             } else {
-                setTwoFAError(result.error || "验证失败");
+                setTwoFAError(result.error || t('settings.cards.security.twoFactor.verificationFailed'));
             }
         } catch (error: unknown) {
             setTwoFAError(errorMessage(error));
@@ -996,7 +998,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     };
 
     const handleDisable2FA = async () => {
-        const password = await requestInput('为了安全，请确认您的管理员密码以禁用 2FA：', '禁用双重验证', 'password');
+        const password = await requestInput(t('settings.cards.security.twoFactor.disablePrompt'), t('settings.cards.security.twoFactor.disableTitle'), 'password');
         if (!password) return;
 
         setIsLoading2FA(true);
@@ -1006,10 +1008,10 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 setIs2FAActivated(false);
                 setShow2FA(false);
             } else {
-                await showNotice(result.error || '禁用失败', '操作失败');
+                await showNotice(result.error || t('settings.cards.security.twoFactor.disableFailed'), t('settings.remaining.copy.139'));
             }
         } catch (error: unknown) {
-            await showNotice(errorMessage(error), '操作失败');
+            await showNotice(errorMessage(error), t('settings.remaining.copy.139'));
         } finally {
             setIsLoading2FA(false);
         }
@@ -1017,13 +1019,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     const handleChangePassword = async () => {
         if (isChangingPassword) return;
-        if (newPassword.length < 8) return setPasswordError('新密码至少需要 8 位');
-        if (newPassword !== confirmPassword) return setPasswordError('两次输入的新密码不一致');
+        if (newPassword.length < 8) return setPasswordError(t('settings.cards.security.changePassword.tooShort'));
+        if (newPassword !== confirmPassword) return setPasswordError(t('settings.cards.security.changePassword.mismatch'));
         setIsChangingPassword(true);
         setPasswordError(null);
         try {
             const result = await authService.changePassword(currentPassword, newPassword);
-            if (!result.success) return setPasswordError(result.error || '修改密码失败');
+            if (!result.success) return setPasswordError(result.error || t('settings.cards.security.changePassword.failed'));
             onSignedOut?.();
         } finally {
             setIsChangingPassword(false);
@@ -1031,9 +1033,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     };
 
     const handleRevokeAllSessions = async () => {
-        if (!(await requestConfirmation('确定退出所有设备吗？当前浏览器也需要重新登录。', '退出所有设备'))) return;
+        if (!(await requestConfirmation(t('settings.cards.security.signOutAll.confirmation'), t('settings.cards.security.signOutAll.title')))) return;
         const result = await authService.revokeAllSessions();
-        if (!result.success) return void await showNotice(result.error || '退出所有设备失败', '操作失败');
+        if (!result.success) return void await showNotice(result.error || t('settings.cards.security.signOutAll.failed'), t('settings.remaining.copy.139'));
         onSignedOut?.();
     };
 
@@ -1061,11 +1063,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     onConfirm={() => closeActionDialog(true)}
                 />
             )}
-            <div className="flex items-center gap-4 mb-2">
-                <div className="p-3 bg-secondary rounded-xl">
+            <div className="flex min-w-0 items-start gap-3 sm:items-center">
+                <div className="shrink-0 rounded-xl bg-secondary p-3">
                     <Palette className="h-6 w-6 text-foreground" />
                 </div>
-                <div>
+                <div className="min-w-0">
                     <h2 className="text-2xl font-bold tracking-tight">{t("settings.title")}</h2>
                     <p className="text-muted-foreground">{t("settings.subtitle")}</p>
                 </div>
@@ -1073,7 +1075,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
             <nav
                 data-testid="settings-tabs"
-                className="sticky top-0 z-20 -mx-1 flex w-full max-w-full gap-2 overflow-x-auto overscroll-x-contain rounded-xl border border-border bg-background/95 p-2 shadow-sm backdrop-blur touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                className="sticky top-0 z-20 -mx-1 flex w-full max-w-full flex-wrap gap-2 overflow-x-auto overscroll-x-contain rounded-xl border border-border bg-background/95 p-2 shadow-sm backdrop-blur touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:flex-nowrap"
                 aria-label={t('settings.title')}
             >
                 {SETTINGS_SECTIONS.map(section => (
@@ -1081,7 +1083,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         key={section.id}
                         size="sm"
                         variant={activeSection === section.id ? 'default' : 'ghost'}
-                        className="min-h-10 shrink-0"
+                        className="min-h-10 shrink-0 max-[420px]:flex-1"
                         onClick={() => onSectionChange(section.id)}
                         aria-current={activeSection === section.id ? 'page' : undefined}
                     >
@@ -1105,7 +1107,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     icon={PackageCheck}
                     label="TG Vault"
                     description={updateStatus?.checkedAt
-                        ? `${t('updates.lastChecked', { time: new Date(updateStatus.checkedAt).toLocaleString() })}${updateStatus.stale ? t('updates.staleSuffix') : ''}`
+                        ? `${t('updates.lastChecked', { time: new Date(updateStatus.checkedAt).toLocaleString(i18n.resolvedLanguage || i18n.language) })}${updateStatus.stale ? t('updates.staleSuffix') : ''}`
                         : updateStatus?.enabled === false ? t('updates.disabled') : t('updates.notChecked')}
                     stackActionOnMobile
                     action={
@@ -1137,44 +1139,44 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     <div className="flex items-start gap-3">
                         <div className="p-2 rounded-lg bg-muted text-muted-foreground"><KeyRound className="h-4 w-4" /></div>
                         <div>
-                            <p className="text-sm font-medium">修改管理员密码</p>
-                            <p className="text-xs text-muted-foreground mt-1">修改成功后会撤销全部 Web 会话，所有设备都需要使用新密码重新登录。</p>
+                            <p className="text-sm font-medium">{t('settings.cards.security.changePassword.title')}</p>
+                            <p className="text-xs text-muted-foreground mt-1">{t('settings.cards.security.changePassword.description')}</p>
                         </div>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-3">
-                        <input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} placeholder="当前密码" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
-                        <input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} placeholder="新密码（至少 8 位）" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
-                        <input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} placeholder="再次输入新密码" className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                        <input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} placeholder={t('settings.cards.security.changePassword.currentPassword')} className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                        <input type="password" autoComplete="new-password" value={newPassword} onChange={event => setNewPassword(event.target.value)} placeholder={t('settings.cards.security.changePassword.newPassword')} className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
+                        <input type="password" autoComplete="new-password" value={confirmPassword} onChange={event => setConfirmPassword(event.target.value)} placeholder={t('settings.cards.security.changePassword.confirmPassword')} className="h-10 rounded-lg border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20" />
                     </div>
-                    <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
                         <p className="text-xs text-destructive">{passwordError}</p>
                         <Button size="sm" onClick={handleChangePassword} disabled={isChangingPassword || !currentPassword || !newPassword || !confirmPassword}>
-                            {isChangingPassword ? '修改中...' : '修改并退出全部设备'}
+                            {t(isChangingPassword ? 'settings.cards.security.changePassword.changing' : 'settings.cards.security.changePassword.changeAndSignOut')}
                         </Button>
                     </div>
                 </div>
                 <SettingsRow
                     icon={LogOut}
-                    label="退出当前设备"
-                    description="立即撤销当前浏览器的登录会话。"
-                    action={<Button size="sm" variant="outline" onClick={handleLogoutCurrentSession}>退出</Button>}
+                    label={t('settings.cards.security.signOutCurrent.title')}
+                    description={t('settings.cards.security.signOutCurrent.description')}
+                    action={<Button size="sm" variant="outline" onClick={handleLogoutCurrentSession}>{t('settings.cards.security.signOutCurrent.action')}</Button>}
                 />
                 <SettingsRow
                     icon={UserX}
-                    label="退出所有设备"
-                    description="撤销当前密码下签发的全部 Web 会话。"
-                    action={<Button size="sm" variant="outline" className="text-destructive" onClick={handleRevokeAllSessions}>全部退出</Button>}
+                    label={t('settings.cards.security.signOutAll.title')}
+                    description={t('settings.cards.security.signOutAll.description')}
+                    action={<Button size="sm" variant="outline" className="text-destructive" onClick={handleRevokeAllSessions}>{t('settings.cards.security.signOutAll.action')}</Button>}
                 />
                 <SettingsRow
                     icon={Shield}
-                    label="双重验证 (2FA)"
-                    description="启用 TOTP 二次验证以保护您的账户安全。支持 Google Authenticator, Authy 等应用。"
+                    label={t('settings.cards.security.twoFactor.title')}
+                    description={t('settings.cards.security.twoFactor.description')}
                     action={
-                        <div className="flex items-center gap-2">
+                        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">
                             {is2FAActivated && (
                                 <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                     <ShieldCheck className="h-3.5 w-3.5" />
-                                    <span className="text-xs font-semibold">已启用</span>
+                                    <span className="text-xs font-semibold">{t('settings.cards.security.twoFactor.enabled')}</span>
                                 </div>
                             )}
                             <Button
@@ -1183,7 +1185,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 onClick={handleSetup2FA}
                                 disabled={isLoading2FA}
                             >
-                                {isLoading2FA ? "加载中..." : (show2FA ? "隐藏设置" : (is2FAActivated ? "重新配置" : "立即设置"))}
+                                {isLoading2FA ? t('settings.cards.security.twoFactor.loading') : (show2FA ? t('settings.cards.security.twoFactor.hide') : (is2FAActivated ? t('settings.cards.security.twoFactor.reconfigure') : t('settings.cards.security.twoFactor.setup')))}
                             </Button>
                             {is2FAActivated && (
                                 <Button
@@ -1193,7 +1195,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     onClick={handleDisable2FA}
                                     disabled={isLoading2FA}
                                 >
-                                    禁用
+                                    {t('settings.cards.security.twoFactor.disable')}
                                 </Button>
                             )}
                         </div>
@@ -1212,21 +1214,21 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 {twoFAQrCode ? (
                                     <div className="max-w-xs space-y-4">
                                         <div className="p-3 bg-white rounded-xl shadow-inner inline-block mx-auto">
-                                            <img src={twoFAQrCode} alt="2FA QR Code" className="w-48 h-48" />
+                                            <img src={twoFAQrCode} alt={t('settings.cards.security.twoFactor.qrAlt')} className="w-48 h-48" />
                                         </div>
 
                                         <div className="space-y-2">
-                                            <p className="text-sm font-medium">1. 扫描二维码</p>
+                                            <p className="text-sm font-medium">{t('settings.cards.security.twoFactor.scanTitle')}</p>
                                             <p className="text-xs text-muted-foreground">
-                                                使用您的 2FA App（如 Google Authenticator）扫描此二维码。
+                                                {t('settings.cards.security.twoFactor.scanDescription')}
                                             </p>
                                         </div>
 
                                         {!is2FAActivated ? (
                                             <div className="pt-2 space-y-3">
-                                                <p className="text-sm font-medium">2. 验证并激活</p>
+                                                <p className="text-sm font-medium">{t('settings.cards.security.twoFactor.verifyTitle')}</p>
                                                 <p className="text-xs text-muted-foreground">
-                                                    输入 App 生成的 6 位验证码以确认设置。
+                                                    {t('settings.cards.security.twoFactor.verifyDescription')}
                                                 </p>
                                                 <div className="flex gap-2 justify-center">
                                                     <input
@@ -1241,7 +1243,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                         onClick={handleActivate2FA}
                                                         disabled={isActivating2FA || activationCode.length !== 6}
                                                     >
-                                                        {isActivating2FA ? "激活中..." : "验证激活"}
+                                                        {t(isActivating2FA ? 'settings.cards.security.twoFactor.activating' : 'settings.cards.security.twoFactor.activate')}
                                                     </Button>
                                                 </div>
                                             </div>
@@ -1249,10 +1251,10 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             <div className="pt-2">
                                                 <div className="flex items-center gap-2 justify-center text-green-600 dark:text-green-400">
                                                     <ShieldCheck className="h-4 w-4" />
-                                                    <p className="text-sm font-medium">状态：已激活</p>
+                                                    <p className="text-sm font-medium">{t('settings.cards.security.twoFactor.activeStatus')}</p>
                                                 </div>
                                                 <p className="text-xs text-muted-foreground mt-1">
-                                                    您的账户已受到 2FA 保护。登录时将要求输入验证码。
+                                                    {t('settings.cards.security.twoFactor.activeDescription')}
                                                 </p>
                                             </div>
                                         )}
@@ -1260,7 +1262,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 ) : (
                                     <div className="py-4 text-destructive flex flex-col items-center gap-2">
                                         <ShieldAlert className="h-8 w-8" />
-                                        <p className="text-sm">{twoFAError || "无法加载 2FA 信息"}</p>
+                                        <p className="text-sm">{twoFAError || t('settings.cards.security.twoFactor.loadFailed')}</p>
                                     </div>
                                 )}
                             </div>
@@ -1271,26 +1273,26 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {/* i18n source: 网络与存储安全 */}
             <SettingsSection title={t('settings.security.networkTitle')}>
                 <div className={cn("p-4 sm:p-5", config?.allowUnsafeWebdavEndpoints && "bg-destructive/[0.035]")}>
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="flex min-w-0 items-start gap-3">
                             <div className={cn("rounded-lg p-2", config?.allowUnsafeWebdavEndpoints ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")}>
                                 <Network className="h-4 w-4" />
                             </div>
                             <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <p className="text-sm font-medium">允许内网和不安全的 WebDAV 地址</p>
+                                    <p className="text-sm font-medium">{t('settings.cards.security.unsafeWebdav.title')}</p>
                                     <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", config?.allowUnsafeWebdavEndpoints ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground")}>
-                                        {config?.allowUnsafeWebdavEndpoints ? '高风险模式' : '推荐：关闭'}
+                                        {t(config?.allowUnsafeWebdavEndpoints ? 'settings.cards.security.unsafeWebdav.highRisk' : 'settings.cards.security.unsafeWebdav.recommendedOff')}
                                     </span>
                                 </div>
-                                <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">用于飞牛等局域网 WebDAV。开启后允许内网、回环、保留地址和 HTTP，可能带来 SSRF、局域网服务暴露及明文传输风险。</p>
+                                <p className="mt-1 max-w-2xl text-xs leading-5 text-muted-foreground">{t('settings.cards.security.unsafeWebdav.description')}</p>
                             </div>
                         </div>
                         <button
                             type="button"
                             role="switch"
                             aria-checked={!!config?.allowUnsafeWebdavEndpoints}
-                            aria-label="允许内网和不安全的 WebDAV 地址"
+                            aria-label={t('settings.cards.security.unsafeWebdav.title')}
                             onClick={handleUnsafeWebdavToggle}
                             disabled={!config || isSavingWebdavSecurity}
                             className={cn(
@@ -1299,7 +1301,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             )}
                         >
                             <span className={cn("absolute left-0 top-0.5 h-[22px] w-[22px] rounded-full bg-white shadow-sm transition-transform", config?.allowUnsafeWebdavEndpoints ? "translate-x-6" : "translate-x-0.5")} />
-                            <span className="sr-only">{isSavingWebdavSecurity ? '保存中' : config?.allowUnsafeWebdavEndpoints ? '已开启' : '已关闭'}</span>
+                            <span className="sr-only">{t(isSavingWebdavSecurity ? 'settings.cards.security.unsafeWebdav.saving' : config?.allowUnsafeWebdavEndpoints ? 'settings.cards.security.unsafeWebdav.enabled' : 'settings.cards.security.unsafeWebdav.disabled')}</span>
                         </button>
                     </div>
                 </div>
@@ -1310,56 +1312,56 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {/* i18n source: 高级任务设置 */}
             <SettingsSection title={t('settings.maintenance.advancedTasks')}>
                 {advancedTasks ? <div className="divide-y divide-border/50">
-                    <SettingsRow icon={Gauge} label="单文件分片并发" description="与 Bot /download_workers 共用；12/16 需要二次确认。" action={
+                    <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.chunkConcurrency.title')} description={t('settings.cards.maintenance.chunkConcurrency.description')} action={
                         <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.telegramDownloadWorkers} onChange={event => void updateAdvancedTask({ telegramDownloadWorkers: Number(event.target.value) })}>
                             {[4, 8, 12, 16].map(value => <option key={value} value={value}>{value}</option>)}
                         </select>
                     } />
-                    <SettingsRow icon={Gauge} label="同时下载文件数" description="与 Bot /file_concurrency 共用；4 需要二次确认。" action={
+                    <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.fileConcurrency.title')} description={t('settings.cards.maintenance.fileConcurrency.description')} action={
                         <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.telegramFileConcurrency} onChange={event => void updateAdvancedTask({ telegramFileConcurrency: Number(event.target.value) })}>
                             {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
                         </select>
                     } />
-                    <SettingsRow icon={Copy} label="重复文件处理" description="同名、同目录、同大小文件的统一策略。" action={
+                    <SettingsRow icon={Copy} label={t('settings.cards.maintenance.duplicateMode.title')} description={t('settings.cards.maintenance.duplicateMode.description')} action={
                         <select className="h-10 rounded-lg border border-border bg-background px-3" value={advancedTasks.duplicateMode} onChange={event => void updateAdvancedTask({ duplicateMode: event.target.value as 'copy' | 'skip' })}>
-                            <option value="copy">生成副本</option><option value="skip">跳过重复</option>
+                            <option value="copy">{t('settings.cards.maintenance.duplicateMode.copy')}</option><option value="skip">{t('settings.cards.maintenance.duplicateMode.skip')}</option>
                         </select>
                     } />
-                    <SettingsRow icon={Copy} label="跳过频道普通图片" description="一般不需要开启。仅适合频道同时发布预览图片和原图文件，而你只想保存原图文件的场景。开启后，订阅和按日期批量下载（以及按标签批量下载）会跳过所有普通图片；频道只发普通图片时会漏图。" action={
+                    <SettingsRow icon={Copy} label={t('settings.cards.maintenance.skipPhotos.title')} description={t('settings.cards.maintenance.skipPhotos.description')} action={
                         <Button size="sm" variant={advancedTasks.skipTelegramPhotosInBatch ? 'default' : 'outline'} onClick={() => void updateAdvancedTask({ skipTelegramPhotosInBatch: !advancedTasks.skipTelegramPhotosInBatch })}>
-                            {advancedTasks.skipTelegramPhotosInBatch ? '已开启' : '已关闭'}
+                            {t(advancedTasks.skipTelegramPhotosInBatch ? 'settings.cards.maintenance.enabled' : 'settings.cards.maintenance.disabled')}
                         </Button>
                     } />
-                    <SettingsRow icon={Trash2} label="自动清理未索引临时文件" description="不删除文件索引或云端实体，只清理超过保护期的本地孤儿文件。" action={
+                    <SettingsRow icon={Trash2} label={t('settings.cards.maintenance.cleanupOrphans.title')} description={t('settings.cards.maintenance.cleanupOrphans.description')} action={
                         <Button size="sm" variant={advancedTasks.autoCleanupOrphans ? 'default' : 'outline'} onClick={() => void updateAdvancedTask({ autoCleanupOrphans: !advancedTasks.autoCleanupOrphans })}>
-                            {advancedTasks.autoCleanupOrphans ? '已开启' : '已关闭'}
+                            {t(advancedTasks.autoCleanupOrphans ? 'settings.cards.maintenance.enabled' : 'settings.cards.maintenance.disabled')}
                         </Button>
                     } />
-                </div> : <div className="p-6 text-sm text-muted-foreground">正在加载高级任务设置…</div>}
+                </div> : <div className="p-6 text-sm text-muted-foreground">{t('settings.cards.maintenance.loadingAdvanced')}</div>}
             </SettingsSection>
             {/* i18n source: 数据维护 */}
             <SettingsSection title={t('settings.maintenance.title')}>
                 <SettingsRow
                     icon={Database}
-                    label="下载明细记录"
-                    description="推荐仅保留错误：适合磁盘空间较小或不需要完整审计的设备。任务运行时仍会临时记录，完成后自动删除成功和跳过明细，只留下失败记录用于排错和重试。磁盘充足且需要逐条核对下载历史时，可选择保留全部。"
+                    label={t('settings.cards.maintenance.history.title')}
+                    description={t('settings.cards.maintenance.history.description')}
                     stackActionOnMobile
                     action={advancedTasks ? (
                         <select
                             value={advancedTasks.telegramDownloadHistoryPolicy}
-                            onChange={(event) => void updateAdvancedTask({ telegramDownloadHistoryPolicy: event.target.value as AdvancedTaskSettings['telegramDownloadHistoryPolicy'] }).catch((error: any) => showNotice(errorMessage(error) || '更新下载明细记录失败', '操作失败'))}
+                            onChange={(event) => void updateAdvancedTask({ telegramDownloadHistoryPolicy: event.target.value as AdvancedTaskSettings['telegramDownloadHistoryPolicy'] }).catch((error: any) => showNotice(errorMessage(error) || t('settings.cards.maintenance.history.updateFailed'), t('settings.remaining.copy.139')))}
                             className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40 sm:w-auto sm:min-w-48"
-                            aria-label="下载明细记录策略"
+                            aria-label={t('settings.cards.maintenance.history.policyLabel')}
                         >
-                            <option value="errors_only">仅保留错误（推荐）</option>
-                            <option value="all">保留全部（完整审计）</option>
+                            <option value="errors_only">{t('settings.cards.maintenance.history.errorsOnly')}</option>
+                            <option value="all">{t('settings.cards.maintenance.history.all')}</option>
                         </select>
-                    ) : <span className="text-sm text-muted-foreground">正在加载…</span>}
+                    ) : <span className="text-sm text-muted-foreground">{t('settings.cards.maintenance.loading')}</span>}
                 />
                 <SettingsRow
                     icon={Trash2}
-                    label="清理历史明细"
-                    description="手动删除指定天数以前的 Telegram 下载审计明细。只清理记录，不删除文件索引，也不删除云端文件。"
+                    label={t('settings.cards.maintenance.cleanupHistory.title')}
+                    description={t('settings.cards.maintenance.cleanupHistory.description')}
                     stackActionOnMobile
                     action={
                         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:items-center sm:justify-end">
@@ -1369,10 +1371,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm outline-none"
                                 disabled={isCleaningDownloadItems}
                             >
-                                <option value={1}>保留 1 天</option>
-                                <option value={7}>保留 7 天</option>
-                                <option value={30}>保留 30 天</option>
-                                <option value={90}>保留 90 天</option>
+                                {[1, 7, 30, 90].map(days => <option key={days} value={days}>{t('settings.cards.maintenance.cleanupHistory.keepDays', { count: days })}</option>)}
                             </select>
                             <Button
                                 size="sm"
@@ -1381,7 +1380,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 onClick={handleCleanupDownloadItems}
                                 disabled={isCleaningDownloadItems}
                             >
-                                {isCleaningDownloadItems ? "清理中..." : "立即清理"}
+                                {t(isCleaningDownloadItems ? 'settings.cards.maintenance.cleanupHistory.cleaning' : 'settings.cards.maintenance.cleanupHistory.cleanNow')}
                             </Button>
                         </div>
                     }
@@ -1399,62 +1398,64 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground"><KeyRound className="h-4 w-4" /></div>
                             <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">Bot 凭证与连接</span>
-                                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", telegramBotConfig?.status === 'ready' ? "bg-green-500/10 text-green-600" : telegramBotConfig?.configured ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{telegramBotConfig?.status === 'ready' ? '已连接' : telegramBotConfig?.configured ? '已配置' : '未配置'}</span>
-                                    {telegramBotConfig?.source === 'environment' && <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] font-semibold text-blue-600">环境变量兼容</span>}
-                                    {telegramBotConfig?.source === 'web' && <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-semibold text-green-600">网页加密管理</span>}
+                                    <span className="text-sm font-medium">{t('settings.remaining.copy.021')}</span>
+                                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", telegramBotConfig?.status === 'ready' ? "bg-green-500/10 text-green-600" : telegramBotConfig?.configured ? "bg-amber-500/10 text-amber-700" : "bg-muted text-muted-foreground")}>{telegramBotConfig?.status === 'ready' ? t('settings.remaining.copy.319') : telegramBotConfig?.configured ? t('settings.remaining.copy.320') : t('settings.remaining.copy.321')}</span>
+                                    {telegramBotConfig?.source === 'environment' && <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] font-semibold text-blue-600">{t('settings.remaining.copy.022')}</span>}
+                                    {telegramBotConfig?.source === 'web' && <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-semibold text-green-600">{t('settings.remaining.copy.023')}</span>}
                                 </div>
-                                <p className="mt-1 text-xs text-muted-foreground">配置后只显示状态，不会回显 Bot Token、API ID 或 API Hash。</p>
+                                <p className="mt-1 text-xs text-muted-foreground">{t('settings.remaining.copy.024')}</p>
                                 {telegramBotConfig?.configured && <div className="mt-2 text-xs leading-5 text-muted-foreground">
-                                    <p>凭证已安全保存</p>
+                                    <p>{t('settings.remaining.copy.025')}</p>
                                     {telegramBotConfig.bot?.username && <p>Bot：@{telegramBotConfig.bot.username}</p>}
-                                    {telegramBotConfig.lastConnectedAt && <p>最近连接：{new Date(telegramBotConfig.lastConnectedAt).toLocaleString()}</p>}
-                                    {telegramBotConfig.lastError && <p className="text-destructive">最近错误：{telegramBotConfig.lastError}</p>}
+                                    {telegramBotConfig.lastConnectedAt && <p>{t('settings.remaining.shared.lastConnected')}{new Date(telegramBotConfig.lastConnectedAt).toLocaleString()}</p>}
+                                    {telegramBotConfig.lastError && <p className="text-destructive">{t('settings.remaining.shared.lastError')}{telegramBotConfig.lastError}</p>}
+                                    {telegramBotConfig.action && <p className="text-amber-700">{telegramBotConfig.action}</p>}
+                                    {telegramBotConfig.status !== 'ready' && <p>{t('settings.remaining.shared.runtimeNotReady')}</p>}
                                 </div>}
                             </div>
                         </div>
                         <div className="w-full sm:w-auto">
-                            {telegramBotConfig?.source === 'environment' && <div className="flex flex-wrap gap-2 sm:justify-end"><Button size="sm" onClick={handleMigrateTelegramBot} disabled={isSavingTelegramBot}>迁移到网页管理</Button>{telegramBotConfig?.configured && <Button size="sm" variant="outline" disabled={isChangingTelegramPin} onClick={() => { if (showTelegramPinForm) handleCancelTelegramPinChange(); else { handleCancelTelegramBotEdit(); clearTelegramPinChangeInputs(); setTelegramPinVerificationMethod(telegramBotConfig.pinConfigured ? 'current_pin' : 'web_password'); setShowTelegramPinForm(true); } }}>{showTelegramPinForm ? (telegramBotConfig.pinConfigured ? '取消修改 PIN' : '取消设置 PIN') : (telegramBotConfig.pinConfigured ? '修改 Bot PIN' : '设置 Bot PIN')}</Button>}</div>}
+                            {telegramBotConfig?.source === 'environment' && <div className="flex flex-wrap gap-2 sm:justify-end"><Button size="sm" onClick={handleMigrateTelegramBot} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.026')}</Button>{telegramBotConfig?.configured && <Button size="sm" variant="outline" disabled={isChangingTelegramPin} onClick={() => { if (showTelegramPinForm) handleCancelTelegramPinChange(); else { handleCancelTelegramBotEdit(); clearTelegramPinChangeInputs(); setTelegramPinVerificationMethod(telegramBotConfig.pinConfigured ? 'current_pin' : 'web_password'); setShowTelegramPinForm(true); } }}>{showTelegramPinForm ? (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.322') : t('settings.remaining.copy.323')) : (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.324') : t('settings.remaining.copy.325'))}</Button>}</div>}
                             {telegramBotConfig?.source === 'web' && <div className="grid w-full grid-cols-3 gap-1.5 sm:w-auto sm:gap-2">
-                                <Button size="sm" variant="outline" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" disabled={isSavingTelegramBot} onClick={() => { if (showTelegramBotForm) handleCancelTelegramBotEdit(); else { handleCancelTelegramPinChange(); clearTelegramBotInputs(); setShowTelegramBotForm(true); } }}>{showTelegramBotForm ? '取消更换' : '更换凭证'}</Button>
-                                <Button size="sm" variant="outline" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" disabled={isChangingTelegramPin} onClick={() => { if (showTelegramPinForm) handleCancelTelegramPinChange(); else { handleCancelTelegramBotEdit(); clearTelegramPinChangeInputs(); setTelegramPinVerificationMethod(telegramBotConfig.pinConfigured ? 'current_pin' : 'web_password'); setShowTelegramPinForm(true); } }}>{showTelegramPinForm ? (telegramBotConfig.pinConfigured ? '取消修改 PIN' : '取消设置 PIN') : (telegramBotConfig.pinConfigured ? '修改 Bot PIN' : '设置 Bot PIN')}</Button>
-                                <Button size="sm" variant="destructive" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" onClick={handleDeleteTelegramBot} disabled={isSavingTelegramBot}>删除配置</Button>
+                                <Button size="sm" variant="outline" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" disabled={isSavingTelegramBot} onClick={() => { if (showTelegramBotForm) handleCancelTelegramBotEdit(); else { handleCancelTelegramPinChange(); clearTelegramBotInputs(); setShowTelegramBotForm(true); } }}>{showTelegramBotForm ? t('settings.remaining.copy.326') : t('settings.remaining.copy.327')}</Button>
+                                <Button size="sm" variant="outline" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" disabled={isChangingTelegramPin} onClick={() => { if (showTelegramPinForm) handleCancelTelegramPinChange(); else { handleCancelTelegramBotEdit(); clearTelegramPinChangeInputs(); setTelegramPinVerificationMethod(telegramBotConfig.pinConfigured ? 'current_pin' : 'web_password'); setShowTelegramPinForm(true); } }}>{showTelegramPinForm ? (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.322') : t('settings.remaining.copy.323')) : (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.324') : t('settings.remaining.copy.325'))}</Button>
+                                <Button size="sm" variant="destructive" className="min-w-0 whitespace-nowrap px-1 text-[11px] sm:px-3 sm:text-xs" onClick={handleDeleteTelegramBot} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.027')}</Button>
                             </div>}
                         </div>
-                        {telegramBotConfig?.configured && !telegramBotConfig.pinConfigured && <p className="mt-3 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">Telegram Bot PIN：未设置。请设置 4 位 PIN，供 Telegram 用户首次身份验证。</p>}
-                        {!telegramBotConfig?.pinConfigured && telegramBotConfig?.source === 'environment' && <div className="mt-4 space-y-2"><label className="text-sm font-medium">Telegram Bot PIN（4 位数字）</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={telegramPin} onChange={event => setTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="迁移前创建 PIN" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /><p className="text-xs text-muted-foreground">迁移环境变量凭证前必须创建 PIN，且只能是正好 4 位数字。</p></div>}
+                        {telegramBotConfig?.configured && !telegramBotConfig.pinConfigured && <p className="mt-3 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-300">{t('settings.remaining.copy.028')}</p>}
+                        {!telegramBotConfig?.pinConfigured && telegramBotConfig?.source === 'environment' && <div className="mt-4 space-y-2"><label className="text-sm font-medium">{t('settings.remaining.copy.029')}</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={telegramPin} onChange={event => setTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={t('settings.remaining.shared.createPinBeforeMigration')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /><p className="text-xs text-muted-foreground">{t('settings.remaining.copy.030')}</p></div>}
                     </div>
 
                     {(!telegramBotConfig?.configured || showTelegramBotForm) && <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-4">
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                            <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">Bot Token</label><input type="password" autoComplete="new-password" value={telegramBotToken} onChange={event => setTelegramBotToken(event.target.value)} placeholder="从 @BotFather 获取" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
-                            <div className="space-y-2"><label className="text-sm font-medium">API ID</label><input type="password" inputMode="numeric" autoComplete="new-password" value={telegramApiId} onChange={event => setTelegramApiId(event.target.value)} placeholder="从 my.telegram.org 获取" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
-                            <div className="space-y-2"><label className="text-sm font-medium">API Hash</label><input type="password" autoComplete="new-password" value={telegramApiHash} onChange={event => setTelegramApiHash(event.target.value)} placeholder="32 位 API Hash" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
-                            {telegramBotConfig?.pinConfigured && <p className="md:col-span-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-muted-foreground">Telegram Bot PIN：已设置，本次更换不会修改</p>}
-                            {!telegramBotConfig?.pinConfigured && <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">Telegram Bot PIN（4 位数字）</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={telegramPin} onChange={event => setTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="用于 Bot 首次身份验证" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /><p className="text-xs text-muted-foreground">PIN 只在首次配置时创建，必须正好是 4 位数字。</p></div>}
+                            <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">Bot Token</label><input type="password" autoComplete="new-password" value={telegramBotToken} onChange={event => setTelegramBotToken(event.target.value)} placeholder={t('settings.remaining.copy.333')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            <div className="space-y-2"><label className="text-sm font-medium">API ID</label><input type="password" inputMode="numeric" autoComplete="new-password" value={telegramApiId} onChange={event => setTelegramApiId(event.target.value)} placeholder={t('settings.remaining.copy.334')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            <div className="space-y-2"><label className="text-sm font-medium">API Hash</label><input type="password" autoComplete="new-password" value={telegramApiHash} onChange={event => setTelegramApiHash(event.target.value)} placeholder={t('settings.remaining.copy.335')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            {telegramBotConfig?.pinConfigured && <p className="md:col-span-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-muted-foreground">{t('settings.remaining.copy.031')}</p>}
+                            {!telegramBotConfig?.pinConfigured && <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{t('settings.remaining.copy.029')}</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={telegramPin} onChange={event => setTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={t('settings.remaining.shared.pinInitialVerification')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /><p className="text-xs text-muted-foreground">{t('settings.remaining.copy.033')}</p></div>}
                         </div>
-                        <div className="flex flex-wrap justify-end gap-2">{telegramBotConfig?.configured && <Button variant="ghost" onClick={handleCancelTelegramBotEdit} disabled={isSavingTelegramBot}>取消</Button>}<Button variant="outline" onClick={handleTestTelegramBot} disabled={isSavingTelegramBot || !telegramBotToken || !telegramApiId || !telegramApiHash}>安全测试</Button><Button onClick={handleSaveTelegramBot} disabled={isSavingTelegramBot || !telegramBotToken || !telegramApiId || !telegramApiHash}>{isSavingTelegramBot ? '处理中...' : '保存并启用'}</Button></div>
-                        <p className="text-xs leading-5 text-muted-foreground">安全测试只通过 Telegram HTTPS Bot API 校验 Token，不创建额外 MTProto 登录，也不会连接账号级下载器。</p>
+                        <div className="flex flex-wrap justify-end gap-2">{telegramBotConfig?.configured && <Button variant="ghost" onClick={handleCancelTelegramBotEdit} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.034')}</Button>}<Button variant="outline" onClick={handleTestTelegramBot} disabled={isSavingTelegramBot || !telegramBotToken || !telegramApiId || !telegramApiHash}>{t('settings.remaining.copy.035')}</Button><Button onClick={handleSaveTelegramBot} disabled={isSavingTelegramBot || !telegramBotToken || !telegramApiId || !telegramApiHash}>{isSavingTelegramBot ? t('settings.remaining.copy.337') : t('settings.remaining.copy.338')}</Button></div>
+                        <p className="text-xs leading-5 text-muted-foreground">{t('settings.remaining.copy.036')}</p>
                     </div>}
 
                     {showTelegramPinForm && telegramBotConfig?.configured && <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-4">
                         <div>
-                            <h4 className="text-sm font-semibold">{telegramBotConfig.pinConfigured ? '修改 Telegram Bot PIN' : '设置 Telegram Bot PIN'}</h4>
-                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{telegramBotConfig.pinConfigured ? '请使用当前 PIN 或网页管理员密码验证身份。修改成功后，所有已认证的 Telegram 用户都需要使用新 PIN 重新验证。' : '未设置 PIN 时，需要使用网页管理员密码验证身份。设置后，Telegram 用户可使用该 4 位 PIN 完成首次身份验证。'}</p>
+                            <h4 className="text-sm font-semibold">{telegramBotConfig.pinConfigured ? t('settings.remaining.copy.339') : t('settings.remaining.copy.340')}</h4>
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">{telegramBotConfig.pinConfigured ? t('settings.remaining.copy.341') : t('settings.remaining.copy.342')}</p>
                         </div>
                         {telegramBotConfig.pinConfigured && <div className="space-y-2">
-                            <label className="text-sm font-medium">验证方式</label>
+                            <label className="text-sm font-medium">{t('settings.remaining.copy.037')}</label>
                             <div className="grid grid-cols-2 gap-2">
-                                <Button type="button" variant={telegramPinVerificationMethod === 'current_pin' ? 'default' : 'outline'} onClick={() => { setTelegramPinVerificationMethod('current_pin'); setTelegramPinVerificationSecret(''); }}>当前 PIN</Button>
-                                <Button type="button" variant={telegramPinVerificationMethod === 'web_password' ? 'default' : 'outline'} onClick={() => { setTelegramPinVerificationMethod('web_password'); setTelegramPinVerificationSecret(''); }}>网页管理员密码</Button>
+                                <Button type="button" variant={telegramPinVerificationMethod === 'current_pin' ? 'default' : 'outline'} onClick={() => { setTelegramPinVerificationMethod('current_pin'); setTelegramPinVerificationSecret(''); }}>{t('settings.remaining.copy.038')}</Button>
+                                <Button type="button" variant={telegramPinVerificationMethod === 'web_password' ? 'default' : 'outline'} onClick={() => { setTelegramPinVerificationMethod('web_password'); setTelegramPinVerificationSecret(''); }}>{t('settings.remaining.copy.039')}</Button>
                             </div>
                         </div>}
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                            <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? '当前 PIN' : '网页管理员密码'}</label><input type="password" inputMode={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? 'numeric' : undefined} maxLength={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? 4 : 256} autoComplete="current-password" value={telegramPinVerificationSecret} onChange={event => setTelegramPinVerificationSecret(telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? event.target.value.replace(/\D/g, '').slice(0, 4) : event.target.value)} placeholder={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? '输入当前 4 位 PIN' : '输入网页管理员密码'} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
-                            <div className="space-y-2"><label className="text-sm font-medium">新 PIN</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={newTelegramPin} onChange={event => setNewTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="4 位数字" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
-                            <div className="space-y-2"><label className="text-sm font-medium">确认新 PIN</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={confirmNewTelegramPin} onChange={event => setConfirmNewTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder="再次输入 4 位数字" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? t('settings.remaining.copy.038') : t('settings.remaining.copy.039')}</label><input type="password" inputMode={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? 'numeric' : undefined} maxLength={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? 4 : 256} autoComplete="current-password" value={telegramPinVerificationSecret} onChange={event => setTelegramPinVerificationSecret(telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? event.target.value.replace(/\D/g, '').slice(0, 4) : event.target.value)} placeholder={telegramBotConfig.pinConfigured && telegramPinVerificationMethod === 'current_pin' ? t('settings.remaining.shared.enterCurrentPin') : t('settings.remaining.shared.enterWebPassword')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            <div className="space-y-2"><label className="text-sm font-medium">{t('settings.remaining.copy.040')}</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={newTelegramPin} onChange={event => setNewTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={t('settings.remaining.copy.345')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
+                            <div className="space-y-2"><label className="text-sm font-medium">{t('settings.remaining.copy.041')}</label><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={confirmNewTelegramPin} onChange={event => setConfirmNewTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={t('settings.remaining.copy.346')} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20" /></div>
                         </div>
-                        <div className="flex flex-wrap justify-end gap-2"><Button variant="ghost" onClick={handleCancelTelegramPinChange} disabled={isChangingTelegramPin}>取消</Button><Button onClick={handleChangeTelegramPin} disabled={isChangingTelegramPin || !telegramPinVerificationSecret || newTelegramPin.length !== 4 || confirmNewTelegramPin.length !== 4}>{isChangingTelegramPin ? '处理中...' : (telegramBotConfig.pinConfigured ? '确认修改 PIN' : '确认设置 PIN')}</Button></div>
+                        <div className="flex flex-wrap justify-end gap-2"><Button variant="ghost" onClick={handleCancelTelegramPinChange} disabled={isChangingTelegramPin}>{t('settings.remaining.copy.034')}</Button><Button onClick={handleChangeTelegramPin} disabled={isChangingTelegramPin || !telegramPinVerificationSecret || newTelegramPin.length !== 4 || confirmNewTelegramPin.length !== 4}>{isChangingTelegramPin ? t('settings.remaining.copy.337') : (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.348') : t('settings.remaining.copy.349'))}</Button></div>
                     </div>}
                 </div>
             </SettingsSection>
@@ -1462,24 +1463,23 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             <SettingsSection title={t('settings.telegram.permissions')}>
                 <div className="p-4 bg-muted/20 border-b border-border/50">
                     <div className="flex items-start justify-between gap-4">
-                        <div className="flex items-start gap-3">
+                        <div className="flex min-w-0 items-start gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <ShieldCheck className="h-4 w-4" />
                             </div>
                             <div>
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">允许使用 Bot 的 Telegram 用户</span>
+                                    <span className="text-sm font-medium">{t('settings.remaining.copy.043')}</span>
                                     {config?.telegramAllowedUserIdsFromEnv ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[11px] font-semibold">由环境变量管理</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 text-[11px] font-semibold">{t('settings.remaining.copy.044')}</span>
                                     ) : config?.telegramAllowedUserIds?.length ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-600 dark:text-green-400 text-[11px] font-semibold">已配置 {config.telegramAllowedUserIds.length} 个</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-600 dark:text-green-400 text-[11px] font-semibold">{t('settings.remaining.copy.320')}{config.telegramAllowedUserIds.length} {t('settings.remaining.shared.countSuffix')}</span>
                                     ) : (
-                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] font-semibold">未配置</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] font-semibold">{t('settings.remaining.copy.045')}</span>
                                     )}
                                 </div>
                                 <p className="text-xs text-muted-foreground mt-1">
-                                    输入允许通过 Telegram Bot PIN 登录的 user id，多个用英文逗号、空格或换行分隔。空列表会拒绝所有用户；首次无人认证时，首个正确输入 PIN 的用户会自动加入。
-                                </p>
+                                    {t('settings.remaining.shared.allowlistDescription')}</p>
                             </div>
                         </div>
                     </div>
@@ -1490,20 +1490,19 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         onChange={(event) => setTelegramAllowedUserIdsInput(event.target.value)}
                         disabled={!!config?.telegramAllowedUserIdsFromEnv || isSavingTelegramAllowedUsers}
                         rows={3}
-                        placeholder="例如：123456789, 987654321"
+                        placeholder={t('settings.remaining.copy.350')}
                         className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary disabled:bg-muted/40 disabled:text-muted-foreground"
                     />
-                    <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
                         <p className="text-xs text-muted-foreground">
-                            获取 user id：让用户在 Telegram 私聊 <code className="px-1 py-0.5 rounded bg-muted">@userinfobot</code> 查看 Id。
-                            {config?.telegramAllowedUserIdsFromEnv ? ' 当前后端设置了 TELEGRAM_ALLOWED_USER_IDS，请修改 .env 并重启后端。' : ''}
+                            {t('settings.remaining.shared.getUserIdPrefix')}<code className="px-1 py-0.5 rounded bg-muted">@userinfobot</code> {t('settings.remaining.shared.getUserIdSuffix')}{config?.telegramAllowedUserIdsFromEnv ? t('settings.remaining.copy.351') : ''}
                         </p>
                         <Button
                             size="sm"
                             onClick={handleSaveTelegramAllowedUsers}
                             disabled={!!config?.telegramAllowedUserIdsFromEnv || isSavingTelegramAllowedUsers || !telegramAllowedUserIdsInput.trim()}
                         >
-                            {isSavingTelegramAllowedUsers ? '保存中...' : '保存允许列表'}
+                            {isSavingTelegramAllowedUsers ? t('settings.remaining.copy.352') : t('settings.remaining.copy.353')}
                         </Button>
                     </div>
                 </div>
@@ -1511,23 +1510,23 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
             <SettingsSection title={t('settings.telegram.downloadSettings')}>
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="flex min-w-0 items-start gap-3">
                             <div className="mt-0.5 shrink-0 p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Cloud className="h-4 w-4" />
                             </div>
                             <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
-                                    <span className="text-sm font-medium">账号级下载器</span>
+                                    <span className="text-sm font-medium">{t('settings.remaining.copy.046')}</span>
                                     {!showTelegramUserDownload ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[11px] font-medium">未启用</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-muted text-muted-foreground text-[11px] font-medium">{t('settings.remaining.copy.047')}</span>
                                     ) : config?.telegramUserSessionReady ? (
-                                        <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-600 dark:text-green-400 text-[11px] font-semibold">已开启</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-green-500/10 text-green-600 dark:text-green-400 text-[11px] font-semibold">{t('settings.remaining.copy.048')}</span>
                                     ) : (
-                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] font-semibold">session 未就绪</span>
+                                        <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] font-semibold">{t('settings.remaining.copy.049')}</span>
                                     )}
                                 </div>
-                                <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">开启后，文件下载由已启用的 Telegram 用户账号按权限、健康状态和负载智能调度</p>
+                                <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{t('settings.remaining.copy.050')}</p>
                             </div>
                         </div>
                         <Button
@@ -1544,13 +1543,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     setConfig(refreshedConfig);
                                     setShowTelegramUserDownload(!!refreshedConfig.telegramUserDownloadEnabled);
                                 } catch (error: unknown) {
-                                    await showNotice(errorMessage(error) || '更新 Telegram 下载设置失败', '保存失败');
+                                    await showNotice(errorMessage(error) || t('settings.remaining.copy.354'), t('settings.remaining.copy.153'));
                                 } finally {
                                     setIsSaving(false);
                                 }
                             }}
                         >
-                            {showTelegramUserDownload ? "停用账号级下载" : "启用账号级下载"}
+                            {showTelegramUserDownload ? t('settings.remaining.copy.356') : t('settings.remaining.copy.357')}
                         </Button>
                     </div>
                 </div>
@@ -1570,50 +1569,49 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 <div className="mx-4 mt-3 mb-4 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5 flex items-center gap-3">
                     <BookOpen className="h-4 w-4 text-blue-500 flex-shrink-0" />
                     <p className="text-xs text-muted-foreground">
-                        首次配置？请参阅{" "}
+                        {t('settings.remaining.shared.guidePrefix')}{" "}
                         <a
                             href="https://hicocos.github.io/tg-vault/storage.html"
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 font-medium hover:underline"
                         >
-                            存储源配置指南
-                            <ExternalLink className="h-3 w-3" />
+                            {t('settings.remaining.shared.guideLink')}<ExternalLink className="h-3 w-3" />
                         </a>
-                        {" "}查看详细教程。
-                    </p>
+                        {" "}{t('settings.remaining.shared.guideSuffix')}</p>
                 </div>
                 <div className="border-b border-border/50">
                     <SettingsRow
                         icon={Database}
-                        label="本地存储 (Local)"
-                        description="文件存储在服务器本地磁盘。适合常规使用，速度最快。"
-                        value={config?.provider === 'local' ? "正在使用" : ""}
+                        label={t('settings.remaining.copy.358')}
+                        description={t('settings.remaining.copy.359')}
+                        stackActionOnMobile
+                        value={config?.provider === 'local' ? t('settings.remaining.copy.360') : ""}
                         action={
                             config?.provider === 'local' ? (
                                 <CheckCircle className="h-5 w-5 text-green-500" />
                             ) : (
                                 <Button
                                     size="sm" variant="outline"
+                                    className="w-full whitespace-normal text-center leading-tight sm:w-auto"
                                     onClick={() => handleSwitchProvider('local')}
                                     disabled={isSaving || !config}
                                 >
-                                    切换使用
-                                </Button>
+                                    {t('settings.remaining.shared.switchUse')}</Button>
                             )
                         }
                     />
                 </div>
 
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Database className="h-4 w-4" />
                             </div>
                             <div>
-                                <span className="text-sm font-medium">Google Drive 账户</span>
-                                <p className="text-xs text-muted-foreground">管理及切换多个 Google Drive 账户</p>
+                                <span className="text-sm font-medium">{t('settings.remaining.copy.051')}</span>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.052')}</p>
                             </div>
                         </div>
                         <Button
@@ -1621,7 +1619,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             variant="outline"
                             onClick={() => setShowGDForm(!showGDForm)}
                         >
-                            {showGDForm ? "取消添加" : "添加新账户"}
+                            {showGDForm ? t('settings.remaining.copy.361') : t('settings.remaining.copy.362')}
                         </Button>
                     </div>
 
@@ -1642,7 +1640,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
+                                        <p className="text-sm font-medium">{account.name || t('settings.remaining.copy.363')}</p>
                                         <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
                                         <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
@@ -1651,7 +1649,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
-                                            <span className="text-xs font-semibold">正在使用</span>
+                                            <span className="text-xs font-semibold">{t('settings.remaining.copy.110')}</span>
                                         </div>
                                     ) : (
                                         <>
@@ -1662,8 +1660,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                 onClick={() => handleSwitchProvider('google_drive', account.id)}
                                                 disabled={isSaving}
                                             >
-                                                切换到此账户
-                                            </Button>
+                                                {t('settings.remaining.shared.switchAccount')}</Button>
                                             <Button
                                                 size="sm"
                                                 variant="ghost"
@@ -1680,15 +1677,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         ))}
                         {config?.accounts.filter(a => a.type === 'google_drive').length === 0 && !showGDForm && (
                             <div className="text-center py-6 border border-dashed rounded-lg border-border/50">
-                                <p className="text-xs text-muted-foreground">尚未配置 Google Drive 账户</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.054')}</p>
                                 <Button
                                     variant="link"
                                     size="sm"
                                     className="mt-1"
                                     onClick={() => setShowGDForm(true)}
                                 >
-                                    立即添加
-                                </Button>
+                                    {t('settings.remaining.shared.addNow')}</Button>
                             </div>
                         )}
                     </div>
@@ -1706,28 +1702,27 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="space-y-4">
                                     <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                                         <Database className="h-4 w-4" />
-                                        <span>Google Drive API 凭证</span>
+                                        <span>{t('settings.remaining.copy.055')}</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        前往 <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">Google Cloud Console</a> 创建 <b>OAuth 2.0 客户端 ID</b>。
-                                        应用类型选择 <code>Web 应用程序</code>，并添加以下<b>已授权的重定向 URI</b>：
+                                        {t('settings.remaining.shared.goTo')}<a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">Google Cloud Console</a> {t('settings.remaining.copy.056')}<b>{t('settings.remaining.copy.057')}</b>{t('settings.remaining.shared.googleAppTypePrefix')}<code>{t('settings.remaining.copy.058')}</code>{t('settings.remaining.copy.059')}<b>{t('settings.remaining.copy.060')}</b>：
                                         <code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.googleDriveRedirectUri || `${window.location.origin}/api/storage/google-drive/callback`}</code>
                                     </p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">账户名称 (显示名称)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.061')}</label>
                                         <input
                                             type="text"
                                             value={gdAccountName}
                                             onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGdAccountName(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="例如: 我的 Google Drive"
+                                            placeholder={t('settings.remaining.copy.364')}
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">客户端 ID (Client ID)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.062')}</label>
                                         <input
                                             type="text"
                                             value={gdClientId}
@@ -1737,7 +1732,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">客户端密钥 (Client Secret)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.063')}</label>
                                         <input
                                             type="password"
                                             value={gdClientSecret}
@@ -1747,25 +1742,24 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">共享云端硬盘 ID / 团队盘 ID（可选）</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.064')}</label>
                                         <input
                                             type="text"
                                             value={gdSharedDriveId}
                                             onChange={e => setGdSharedDriveId(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="例如: 0Axxxxxxxxxxxxxxxxx"
+                                            placeholder={t('settings.remaining.copy.365')}
                                         />
                                         <p className="text-xs text-muted-foreground leading-relaxed">
-                                            留空则使用“我的云端硬盘”。如需上传到共享云端硬盘，请填写 URL 中 <code>folders/</code> 后面的共享盘 ID；授权账号必须已加入该共享盘并具备创建文件权限。
-                                        </p>
+                                            {t('settings.remaining.shared.sharedDriveHintPrefix')}<code>folders/</code> {t('settings.remaining.shared.sharedDriveHintSuffix')}</p>
                                     </div>
                                 </div>
 
                                 <div className="p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-0.5">
-                                            <h4 className="text-sm font-medium text-blue-600 dark:text-blue-400">开始授权</h4>
-                                            <p className="text-xs text-muted-foreground">点击按钮前往 Google 页面完成授权。</p>
+                                            <h4 className="text-sm font-medium text-blue-600 dark:text-blue-400">{t('settings.remaining.copy.065')}</h4>
+                                            <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.066')}</p>
                                         </div>
                                         <Button
                                             size="sm"
@@ -1773,13 +1767,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             disabled={isSaving || !gdClientId || !gdClientSecret}
                                             className="bg-blue-600 hover:bg-blue-700 text-white"
                                         >
-                                            {isSaving ? "发起中..." : "保存并授权"}
+                                            {isSaving ? t('settings.remaining.copy.366') : t('settings.remaining.copy.367')}
                                         </Button>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end pt-2">
-                                    <Button variant="ghost" onClick={() => setShowGDForm(false)}>关闭</Button>
+                                    <Button variant="ghost" onClick={() => setShowGDForm(false)}>{t('settings.remaining.copy.107')}</Button>
                                 </div>
                             </div>
                         </motion.div>
@@ -1787,14 +1781,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 </AnimatePresence>
 
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Cloud className="h-4 w-4" />
                             </div>
                             <div>
-                                <span className="text-sm font-medium">Microsoft OneDrive 账户</span>
-                                <p className="text-xs text-muted-foreground">管理及切换多个 OneDrive 账户</p>
+                                <span className="text-sm font-medium">{t('settings.remaining.copy.068')}</span>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.069')}</p>
                             </div>
                         </div>
                         <Button
@@ -1802,7 +1796,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             variant="outline"
                             onClick={() => setShowOneDriveForm(!showOneDriveForm)}
                         >
-                            {showOneDriveForm ? "取消添加" : "添加新账户"}
+                            {showOneDriveForm ? t('settings.remaining.copy.361') : t('settings.remaining.copy.362')}
                         </Button>
                     </div>
 
@@ -1823,7 +1817,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
+                                        <p className="text-sm font-medium">{account.name || t('settings.remaining.copy.363')}</p>
                                         <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
                                         <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
@@ -1832,7 +1826,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
-                                            <span className="text-xs font-semibold">正在使用</span>
+                                            <span className="text-xs font-semibold">{t('settings.remaining.copy.110')}</span>
                                         </div>
                                     ) : (
                                         <>
@@ -1843,8 +1837,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                 onClick={() => handleSwitchProvider('onedrive', account.id)}
                                                 disabled={isSaving}
                                             >
-                                                切换到此账户
-                                            </Button>
+                                                {t('settings.remaining.shared.switchAccount')}</Button>
                                             <Button
                                                 size="sm"
                                                 variant="ghost"
@@ -1861,15 +1854,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         ))}
                         {config?.accounts.filter(a => a.type === 'onedrive').length === 0 && !showOneDriveForm && (
                             <div className="text-center py-6 border border-dashed rounded-lg border-border/50">
-                                <p className="text-xs text-muted-foreground">尚未配置 OneDrive 账户</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.071')}</p>
                                 <Button
                                     variant="link"
                                     size="sm"
                                     className="mt-1"
                                     onClick={() => setShowOneDriveForm(true)}
                                 >
-                                    立即添加
-                                </Button>
+                                    {t('settings.remaining.shared.addNow')}</Button>
                             </div>
                         )}
                     </div>
@@ -1887,21 +1879,19 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="space-y-4">
                                     <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                                         <Database className="h-4 w-4" />
-                                        <span>Entra ID (Azure) 应用信息</span>
+                                        <span>{t('settings.remaining.copy.072')}</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        前往 <a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">Microsoft Entra ID 控制台</a> 并登录。授权账号可与最终存储账号不同。
-                                        注册应用时，<b>重定向 URI</b> 请选择 <code>Web</code>，并填写：
-                                        <code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.redirectUri || `${import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`}</code>
+                                        {t('settings.remaining.shared.goTo')}<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-blue-500 hover:underline">{t('settings.remaining.copy.073')}</a> {t('settings.remaining.shared.entraGuideMiddle')}<b>{t('settings.remaining.copy.074')}</b> {t('settings.remaining.copy.075')}<code>Web</code>{t('settings.remaining.shared.andEnter')}<code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.redirectUri || `${import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`}</code>
                                     </p>
                                     <p className="text-xs text-amber-600 dark:text-amber-400 leading-relaxed rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
-                                        如果填写客户端密码，请复制 Azure「证书和密码」里新建密码后的<b>值 Value</b>；不要复制“机密 ID/Secret ID”。复制错会导致 Microsoft 返回 <code>AADSTS7000215 Invalid client secret</code>。
+                                        {t('settings.remaining.shared.azureSecretPrefix')}<b>{t('settings.remaining.copy.076')}</b>{t('settings.remaining.copy.077')}<code>AADSTS7000215 Invalid client secret</code>。
                                     </p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">应用程序 (客户端) ID</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.078')}</label>
                                         <input
                                             type="text"
                                             value={odClientId}
@@ -1911,43 +1901,43 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">租户 ID (Tenant ID)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.079')}</label>
                                         <input
                                             type="text"
                                             value={odTenantId}
                                             onChange={e => setOdTenantId(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="默认为 common"
+                                            placeholder={t('settings.remaining.copy.371')}
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">账户名称 (可选)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.080')}</label>
                                         <input
                                             type="text"
                                             value={odAccountName}
                                             onChange={e => setOdAccountName(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="自定义显示名称，例如：个人网盘"
+                                            placeholder={t('settings.remaining.copy.372')}
                                         />
                                     </div>
                                 </div>
 
                                 <div className="space-y-2">
-                                    <label className="text-sm font-medium">客户端密码 (Client Secret - 可选)</label>
+                                    <label className="text-sm font-medium">{t('settings.remaining.copy.081')}</label>
                                     <input
                                         type="password"
                                         value={odClientSecret}
                                         onChange={e => setOdClientSecret(e.target.value)}
                                         className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                        placeholder="公共客户端模式可不填"
+                                        placeholder={t('settings.remaining.copy.373')}
                                     />
                                 </div>
 
                                 <div className="p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-0.5">
-                                            <h4 className="text-sm font-medium text-blue-600 dark:text-blue-400">开始授权新账户</h4>
-                                            <p className="text-xs text-muted-foreground">点击下方按钮前往微软页面完成授权，系统将自动识别并添加该账户。</p>
+                                            <h4 className="text-sm font-medium text-blue-600 dark:text-blue-400">{t('settings.remaining.copy.082')}</h4>
+                                            <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.083')}</p>
                                         </div>
                                         <Button
                                             size="sm"
@@ -1955,13 +1945,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             disabled={isSaving || !odClientId}
                                             className="bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-500/20"
                                         >
-                                            {isSaving ? "发起中..." : "保存并授权"}
+                                            {isSaving ? t('settings.remaining.copy.366') : t('settings.remaining.copy.367')}
                                         </Button>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end pt-2">
-                                    <Button variant="ghost" onClick={() => setShowOneDriveForm(false)}>关闭</Button>
+                                    <Button variant="ghost" onClick={() => setShowOneDriveForm(false)}>{t('settings.remaining.copy.107')}</Button>
                                 </div>
                             </div>
                         </motion.div>
@@ -1972,14 +1962,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {/* Aliyun OSS Configuration Section */}
             <SettingsSection title={t('settings.storageSources.aliyunTitle')}>
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Database className="h-4 w-4" />
                             </div>
                             <div>
-                                <span className="text-sm font-medium">Aliyun OSS 账户</span>
-                                <p className="text-xs text-muted-foreground">管理及切换多个阿里云 OSS 存储源</p>
+                                <span className="text-sm font-medium">{t('settings.remaining.copy.085')}</span>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.086')}</p>
                             </div>
                         </div>
                         <Button
@@ -1987,7 +1977,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             variant="outline"
                             onClick={() => setShowOSSForm(!showOSSForm)}
                         >
-                            {showOSSForm ? "取消添加" : "添加新账户"}
+                            {showOSSForm ? t('settings.remaining.copy.361') : t('settings.remaining.copy.362')}
                         </Button>
                     </div>
 
@@ -2008,7 +1998,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
+                                        <p className="text-sm font-medium">{account.name || t('settings.remaining.copy.363')}</p>
                                         <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
                                         <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
@@ -2017,7 +2007,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
-                                            <span className="text-xs font-semibold">正在使用</span>
+                                            <span className="text-xs font-semibold">{t('settings.remaining.copy.110')}</span>
                                         </div>
                                     ) : (
                                         <>
@@ -2028,8 +2018,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                 onClick={() => handleSwitchProvider('aliyun_oss', account.id)}
                                                 disabled={isSaving}
                                             >
-                                                切换到此账户
-                                            </Button>
+                                                {t('settings.remaining.shared.switchAccount')}</Button>
                                             <Button
                                                 size="sm"
                                                 variant="ghost"
@@ -2046,15 +2035,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         ))}
                         {config?.accounts.filter(a => a.type === 'aliyun_oss').length === 0 && !showOSSForm && (
                             <div className="text-center py-6 border border-dashed rounded-lg border-border/50">
-                                <p className="text-xs text-muted-foreground">尚未配置 Aliyun OSS 账户</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.088')}</p>
                                 <Button
                                     variant="link"
                                     size="sm"
                                     className="mt-1"
                                     onClick={() => setShowOSSForm(true)}
                                 >
-                                    立即添加
-                                </Button>
+                                    {t('settings.remaining.shared.addNow')}</Button>
                             </div>
                         )}
                     </div>
@@ -2072,26 +2060,25 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="space-y-4">
                                     <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                                         <Database className="h-4 w-4" />
-                                        <span>阿里云 OSS 凭证信息</span>
+                                        <span>{t('settings.remaining.copy.089')}</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        请提供您的阿里云 OSS 访问凭证。建议使用具有最小权限的 RAM 用户。
-                                    </p>
+                                        {t('settings.remaining.shared.ossCredentialsHint')}</p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">账户显示名称</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.101')}</label>
                                         <input
                                             type="text"
                                             value={ossAccountName}
                                             onChange={e => setOssAccountName(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="例如：我的备份 OSS"
+                                            placeholder={t('settings.remaining.copy.379')}
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">区域 (Region)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.103')}</label>
                                         <input
                                             type="text"
                                             value={ossRegion}
@@ -2101,7 +2088,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">存储空间 (Bucket)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.104')}</label>
                                         <input
                                             type="text"
                                             value={ossBucket}
@@ -2133,21 +2120,21 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="p-4 rounded-xl border border-primary/20 bg-primary/5 space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-0.5">
-                                            <h4 className="text-sm font-medium text-primary">保存配置</h4>
-                                            <p className="text-xs text-muted-foreground">保存后系统将尝试连接此 OSS 账户。</p>
+                                            <h4 className="text-sm font-medium text-primary">{t('settings.remaining.copy.105')}</h4>
+                                            <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.094')}</p>
                                         </div>
                                         <Button
                                             size="sm"
                                             onClick={handleSaveOSSConfig}
                                             disabled={isSaving || !ossAccessKeyId}
                                         >
-                                            {isSaving ? "正在保存..." : "保存账户"}
+                                            {isSaving ? t('settings.remaining.copy.380') : t('settings.remaining.copy.381')}
                                         </Button>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end pt-2">
-                                    <Button variant="ghost" onClick={() => setShowOSSForm(false)}>关闭</Button>
+                                    <Button variant="ghost" onClick={() => setShowOSSForm(false)}>{t('settings.remaining.copy.107')}</Button>
                                 </div>
                             </div>
                         </motion.div>
@@ -2158,14 +2145,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {/* S3 Configuration Section */}
             <SettingsSection title={t('settings.storageSources.s3Title')}>
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Database className="h-4 w-4" />
                             </div>
                             <div>
-                                <span className="text-sm font-medium">S3 兼容存储账户</span>
-                                <p className="text-xs text-muted-foreground">管理及切换多个 S3 (MinIO, Cloudflare R2, AWS S3 等) 存储源</p>
+                                <span className="text-sm font-medium">{t('settings.remaining.copy.096')}</span>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.097')}</p>
                             </div>
                         </div>
                         <Button
@@ -2173,7 +2160,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             variant="outline"
                             onClick={() => setShowS3Form(!showS3Form)}
                         >
-                            {showS3Form ? "取消添加" : "添加新账户"}
+                            {showS3Form ? t('settings.remaining.copy.361') : t('settings.remaining.copy.362')}
                         </Button>
                     </div>
 
@@ -2194,7 +2181,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
+                                        <p className="text-sm font-medium">{account.name || t('settings.remaining.copy.363')}</p>
                                         <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
                                         <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
@@ -2203,7 +2190,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
-                                            <span className="text-xs font-semibold">正在使用</span>
+                                            <span className="text-xs font-semibold">{t('settings.remaining.copy.110')}</span>
                                         </div>
                                     ) : (
                                         <>
@@ -2214,8 +2201,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                 onClick={() => handleSwitchProvider('s3', account.id)}
                                                 disabled={isSaving}
                                             >
-                                                切换到此账户
-                                            </Button>
+                                                {t('settings.remaining.shared.switchAccount')}</Button>
                                             <Button
                                                 size="sm"
                                                 variant="ghost"
@@ -2232,15 +2218,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         ))}
                         {config?.accounts.filter(a => a.type === 's3').length === 0 && !showS3Form && (
                             <div className="text-center py-6 border border-dashed rounded-lg border-border/50">
-                                <p className="text-xs text-muted-foreground">尚未配置 S3 兼容存储账户</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.099')}</p>
                                 <Button
                                     variant="link"
                                     size="sm"
                                     className="mt-1"
                                     onClick={() => setShowS3Form(true)}
                                 >
-                                    立即添加
-                                </Button>
+                                    {t('settings.remaining.shared.addNow')}</Button>
                             </div>
                         )}
                     </div>
@@ -2258,26 +2243,25 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="space-y-4">
                                     <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                                         <Database className="h-4 w-4" />
-                                        <span>S3 兼容存储凭证信息</span>
+                                        <span>{t('settings.remaining.copy.100')}</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        支持 MinIO, Cloudflare R2, AWS S3 等。请确保已开启跨域访问 (CORS)。
-                                    </p>
+                                        {t('settings.remaining.shared.s3CredentialsHint')}</p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">账户显示名称</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.101')}</label>
                                         <input
                                             type="text"
                                             value={s3AccountName}
                                             onChange={e => setS3AccountName(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="例如：我的 MinIO 存储"
+                                            placeholder={t('settings.remaining.copy.385')}
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">节点地址 (Endpoint)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.102')}</label>
                                         <input
                                             type="text"
                                             value={s3Endpoint}
@@ -2287,7 +2271,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">区域 (Region)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.103')}</label>
                                         <input
                                             type="text"
                                             value={s3Region}
@@ -2297,7 +2281,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">存储空间 (Bucket)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.104')}</label>
                                         <input
                                             type="text"
                                             value={s3Bucket}
@@ -2333,29 +2317,28 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             className="rounded border-border"
                                         />
                                         <label htmlFor="forcePathStyle" className="text-xs text-muted-foreground">
-                                            强制路径风格 (Force Path Style) - MinIO 或私有化部署建议勾选
-                                        </label>
+                                            {t('settings.remaining.shared.forcePathStyle')}</label>
                                     </div>
                                 </div>
 
                                 <div className="p-4 rounded-xl border border-primary/20 bg-primary/5 space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-0.5">
-                                            <h4 className="text-sm font-medium text-primary">保存配置</h4>
-                                            <p className="text-xs text-muted-foreground">保存后系统将尝试连接此 S3 账户。</p>
+                                            <h4 className="text-sm font-medium text-primary">{t('settings.remaining.copy.105')}</h4>
+                                            <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.106')}</p>
                                         </div>
                                         <Button
                                             size="sm"
                                             onClick={handleSaveS3Config}
                                             disabled={isSaving || !s3AccessKeyId}
                                         >
-                                            {isSaving ? "正在保存..." : "保存账户"}
+                                            {isSaving ? t('settings.remaining.copy.380') : t('settings.remaining.copy.381')}
                                         </Button>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end pt-2">
-                                    <Button variant="ghost" onClick={() => setShowS3Form(false)}>关闭</Button>
+                                    <Button variant="ghost" onClick={() => setShowS3Form(false)}>{t('settings.remaining.copy.107')}</Button>
                                 </div>
                             </div>
                         </motion.div>
@@ -2366,14 +2349,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {/* WebDAV Configuration Section */}
             <SettingsSection title={t('settings.storageSources.webdavTitle')}>
                 <div className="p-4 bg-muted/20 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-4">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="p-2 rounded-lg bg-muted text-muted-foreground">
                                 <Network className="h-4 w-4" />
                             </div>
                             <div>
-                                <span className="text-sm font-medium">WebDAV 存储账户</span>
-                                <p className="text-xs text-muted-foreground">管理及切换多个 WebDAV (坚果云, InfiniCLOUD, Synology 等) 存储源</p>
+                                <span className="text-sm font-medium">{t('settings.remaining.copy.108')}</span>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.109')}</p>
                             </div>
                         </div>
                         <Button
@@ -2381,7 +2364,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             variant="outline"
                             onClick={() => setShowWebDAVForm(!showWebDAVForm)}
                         >
-                            {showWebDAVForm ? "取消添加" : "添加新账户"}
+                            {showWebDAVForm ? t('settings.remaining.copy.361') : t('settings.remaining.copy.362')}
                         </Button>
                     </div>
 
@@ -2402,7 +2385,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         account.is_active ? "bg-primary animate-pulse" : "bg-muted-foreground/30"
                                     )} />
                                     <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium">{account.name || "未命名账户"}</p>
+                                        <p className="text-sm font-medium">{account.name || t('settings.remaining.copy.363')}</p>
                                         <p className="break-all text-[10px] text-muted-foreground font-mono opacity-60">{account.id}</p>
                                         <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                     </div>
@@ -2411,7 +2394,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     {account.is_active ? (
                                         <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-green-500/10 text-green-600 dark:text-green-400">
                                             <CheckCircle className="h-3.5 w-3.5" />
-                                            <span className="text-xs font-semibold">正在使用</span>
+                                            <span className="text-xs font-semibold">{t('settings.remaining.copy.110')}</span>
                                         </div>
                                     ) : (
                                         <>
@@ -2422,8 +2405,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                                 onClick={() => handleSwitchProvider('webdav', account.id)}
                                                 disabled={isSaving}
                                             >
-                                                切换到此账户
-                                            </Button>
+                                                {t('settings.remaining.shared.switchAccount')}</Button>
                                             <Button
                                                 size="sm"
                                                 variant="ghost"
@@ -2440,15 +2422,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         ))}
                         {config?.accounts.filter(a => a.type === 'webdav').length === 0 && !showWebDAVForm && (
                             <div className="text-center py-6 border border-dashed rounded-lg border-border/50">
-                                <p className="text-xs text-muted-foreground">尚未配置 WebDAV 存储账户</p>
+                                <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.111')}</p>
                                 <Button
                                     variant="link"
                                     size="sm"
                                     className="mt-1"
                                     onClick={() => setShowWebDAVForm(true)}
                                 >
-                                    立即添加
-                                </Button>
+                                    {t('settings.remaining.shared.addNow')}</Button>
                             </div>
                         )}
                     </div>
@@ -2466,26 +2447,25 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="space-y-4">
                                     <div className="flex items-center gap-2 text-sm font-semibold text-primary">
                                         <Network className="h-4 w-4" />
-                                        <span>WebDAV 凭证信息</span>
+                                        <span>{t('settings.remaining.copy.112')}</span>
                                     </div>
                                     <p className="text-xs text-muted-foreground leading-relaxed">
-                                        请提供您的 WebDAV 服务器地址及登录凭证。
-                                    </p>
+                                        {t('settings.remaining.shared.webdavCredentialsHint')}</p>
                                 </div>
 
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">账户显示名称</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.101')}</label>
                                         <input
                                             type="text"
                                             value={webdavAccountName}
                                             onChange={e => setWebdavAccountName(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="例如：我的坚果云"
+                                            placeholder={t('settings.remaining.copy.391')}
                                         />
                                     </div>
                                     <div className="space-y-2 md:col-span-2">
-                                        <label className="text-sm font-medium">服务器 URL</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.114')}</label>
                                         <input
                                             type="text"
                                             value={webdavUrl}
@@ -2495,23 +2475,23 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">用户名 (可选)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.115')}</label>
                                         <input
                                             type="text"
                                             value={webdavUsername}
                                             onChange={e => setWebdavUsername(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="WebDAV 用户名"
+                                            placeholder={t('settings.remaining.copy.392')}
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">密码 / 应用口令 (可选)</label>
+                                        <label className="text-sm font-medium">{t('settings.remaining.copy.116')}</label>
                                         <input
                                             type="password"
                                             value={webdavPassword}
                                             onChange={e => setWebdavPassword(e.target.value)}
                                             className="w-full px-3 py-2 rounded-lg border border-border bg-background text-sm focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                                            placeholder="WebDAV 密码"
+                                            placeholder={t('settings.remaining.copy.393')}
                                         />
                                     </div>
                                 </div>
@@ -2519,21 +2499,21 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <div className="p-4 rounded-xl border border-primary/20 bg-primary/5 space-y-3">
                                     <div className="flex items-center justify-between">
                                         <div className="space-y-0.5">
-                                            <h4 className="text-sm font-medium text-primary">保存配置</h4>
-                                            <p className="text-xs text-muted-foreground">保存后系统将尝试连接此 WebDAV 账户。</p>
+                                            <h4 className="text-sm font-medium text-primary">{t('settings.remaining.copy.105')}</h4>
+                                            <p className="text-xs text-muted-foreground">{t('settings.remaining.copy.118')}</p>
                                         </div>
                                         <Button
                                             size="sm"
                                             onClick={handleSaveWebDAVConfig}
                                             disabled={isSaving || !webdavUrl}
                                         >
-                                            {isSaving ? "正在保存..." : "保存账户"}
+                                            {isSaving ? t('settings.remaining.copy.380') : t('settings.remaining.copy.381')}
                                         </Button>
                                     </div>
                                 </div>
 
                                 <div className="flex justify-end pt-2">
-                                    <Button variant="ghost" onClick={() => setShowWebDAVForm(false)}>关闭</Button>
+                                    <Button variant="ghost" onClick={() => setShowWebDAVForm(false)}>{t('settings.remaining.copy.107')}</Button>
                                 </div>
                             </div>
                         </motion.div>
@@ -2542,14 +2522,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             </SettingsSection>
 
             {/* OpenList native storage: connection and account switching only. */}
-            <SettingsSection title={t('settings.openlist.title')}>
+            <SettingsSection sectionId="openlist" title={t('settings.openlist.title')}>
                 <div className="border-b border-border/50 bg-muted/20 p-4">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
                             <div className="rounded-lg bg-muted p-2 text-muted-foreground"><Server className="h-4 w-4" /></div>
-                            <div>
-                                <span className="text-sm font-medium">{t('settings.openlist.accounts')}</span>
-                                <p className="text-xs text-muted-foreground">{t('settings.openlist.description')}</p>
+                            <div className="min-w-0 flex-1">
+                                <span className="ru-copy text-sm font-medium">{t('settings.openlist.accounts')}</span>
+                                <p className="ru-copy text-xs text-muted-foreground">{t('settings.openlist.description')}</p>
                             </div>
                         </div>
                         <Button size="sm" variant="outline" onClick={() => setShowOpenListForm(!showOpenListForm)}>
@@ -2579,11 +2559,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     {showOpenListForm && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="border-t border-border/50 bg-muted/30">
                         <div className="space-y-5 p-6">
                             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                                <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{t('settings.openlist.accountName')}</label><input value={openlistAccountName} onChange={event => setOpenlistAccountName(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder={t('settings.openlist.accountPlaceholder')} /></div>
-                                <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{t('settings.openlist.address')}</label><input type="url" value={openlistBaseUrl} onChange={event => setOpenlistBaseUrl(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="https://openlist.example.com" /></div>
-                                <div className="space-y-2 md:col-span-2"><label className="text-sm font-medium">{t('settings.openlist.rootPath')}</label><input value={openlistRootPath} onChange={event => setOpenlistRootPath(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="/" /><p className="text-xs text-muted-foreground">{t('settings.openlist.rootHint')}</p></div>
-                                <div className="space-y-2"><label className="text-sm font-medium">{t('settings.openlist.username')}</label><input autoComplete="username" value={openlistUsername} onChange={event => setOpenlistUsername(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></div>
-                                <div className="space-y-2"><label className="text-sm font-medium">{t('settings.openlist.password')}</label><input type="password" autoComplete="new-password" value={openlistPassword} onChange={event => setOpenlistPassword(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></div>
+                                <div className="space-y-2 md:col-span-2"><label className="ru-copy text-sm font-medium">{t('settings.openlist.accountName')}</label><input value={openlistAccountName} onChange={event => setOpenlistAccountName(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder={t('settings.openlist.accountPlaceholder')} /></div>
+                                <div className="space-y-2 md:col-span-2"><label className="ru-copy text-sm font-medium">{t('settings.openlist.address')}</label><input type="url" value={openlistBaseUrl} onChange={event => setOpenlistBaseUrl(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="https://openlist.example.com" /></div>
+                                <div className="space-y-2 md:col-span-2"><label className="ru-copy text-sm font-medium">{t('settings.openlist.rootPath')}</label><input value={openlistRootPath} onChange={event => setOpenlistRootPath(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" placeholder="/" /><p className="ru-copy text-xs text-muted-foreground">{t('settings.openlist.rootHint')}</p></div>
+                                <div className="space-y-2"><label className="ru-copy text-sm font-medium">{t('settings.openlist.username')}</label><input autoComplete="username" value={openlistUsername} onChange={event => setOpenlistUsername(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></div>
+                                <div className="space-y-2"><label className="ru-copy text-sm font-medium">{t('settings.openlist.password')}</label><input type="password" autoComplete="new-password" value={openlistPassword} onChange={event => setOpenlistPassword(event.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm" /></div>
                             </div>
                             <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setShowOpenListForm(false); setOpenlistPassword(''); }}>{t('settings.openlist.cancel')}</Button><Button onClick={handleSaveOpenListConfig} disabled={isSaving || !openlistBaseUrl || !openlistUsername || !openlistPassword}>{isSaving ? t('settings.openlist.saving') : t('settings.openlist.save')}</Button></div>
                         </div>
@@ -2596,22 +2576,22 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         <>
                             {/* 服务器存储 */}
                             <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
+                                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="flex min-w-0 items-center gap-3">
                                         <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
                                             <Server className="h-5 w-5" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-medium">服务器存储</p>
+                                            <p className="text-sm font-medium">{t('settings.remaining.copy.120')}</p>
                                             <div className="flex items-baseline gap-1">
                                                 <span className="text-2xl font-bold tracking-tight">{storageStats.server.used}</span>
                                                 <span className="text-sm text-muted-foreground font-medium">/ {storageStats.server.total}</span>
                                             </div>
                                         </div>
                                     </div>
-                                    <div className="flex items-center gap-4">
+                                    <div className="flex min-w-0 flex-wrap items-center gap-3">
                                         <div className="flex items-center gap-2">
-                                            <span className="text-sm text-muted-foreground">可用空间</span>
+                                            <span className="text-sm text-muted-foreground">{t('settings.remaining.copy.121')}</span>
                                             <span className="text-sm font-medium text-green-600">{storageStats.server.free}</span>
                                         </div>
                                         <span className={cn(
@@ -2648,11 +2628,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             <Cloud className="h-5 w-5" />
                                         </div>
                                         <div>
-                                            <p className="text-sm font-medium">TG Vault 存储</p>
+                                            <p className="text-sm font-medium">{t('settings.remaining.copy.122')}</p>
                                             <div className="flex items-baseline gap-1">
                                                 <span className="text-2xl font-bold tracking-tight">{storageStats.tgvault.used}</span>
                                                 <span className="text-sm text-muted-foreground font-medium">
-                                                    ({t('storage.fileCount', { count: storageStats.tgvault.fileCount })})
+                                                    ({t('files.ui.storage.fileCount', { count: storageStats.tgvault.fileCount })})
                                                 </span>
                                             </div>
                                         </div>
@@ -2664,7 +2644,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         <div className="flex items-center justify-center py-8">
                             <div className="text-center text-muted-foreground">
                                 <HardDrive className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                                <p className="text-sm">加载存储信息中...</p>
+                                <p className="text-sm">{t('settings.remaining.copy.123')}</p>
                             </div>
                         </div>
                     )}

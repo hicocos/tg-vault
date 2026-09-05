@@ -1,4 +1,5 @@
 import type { StorageConfig } from './api.js';
+import { tr } from '../i18n/runtime';
 import { createUploadTargetSnapshot } from './uploadTargetSnapshot.js';
 
 export interface StorageConfigSynchronizationDependencies {
@@ -12,7 +13,7 @@ export async function synchronizeStorageConfig(
 ): Promise<StorageConfig> {
     const config = await dependencies.loadConfig();
     if (expectedAccountId && config.activeAccountId !== expectedAccountId) {
-        throw new Error('授权已返回，但后端尚未切换到新存储账户');
+        throw new Error(tr('errors.services.storage.authorizationNotSynchronized'));
     }
     await dependencies.publishConfig(config);
     return config;

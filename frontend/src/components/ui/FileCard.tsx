@@ -58,7 +58,7 @@ export const FileCard = ({
         } catch (error: unknown) {
             console.error("下载失败", error);
             if (error instanceof ApiActionError && error.kind === 'unauthorized') authService.invalidateSession(error.status);
-            setDownloadError(describeActionFailure('下载', error));
+            setDownloadError(describeActionFailure(t('files.ui.preview.downloadAction'), error));
         }
     };
 
@@ -133,7 +133,7 @@ export const FileCard = ({
                 layout
                 role="button"
                 tabIndex={0}
-                aria-label={`${isSelectionMode ? '选择' : '打开'} ${file.name}`}
+                aria-label={t(isSelectionMode ? 'files.ui.cards.selectFile' : 'files.ui.cards.openFile', { name: file.name })}
                 onKeyDown={handleCardKeyDown}
                 whileHover={{ y: isSelectionMode ? 0 : -4, transition: { duration: 0.2 } }}
                 className={`group relative flex flex-col rounded-2xl border ${isSelected ? 'border-primary ring-2 ring-primary/20 bg-primary/5' : 'border-border/50 bg-card'} overflow-hidden shadow-sm transition-all touch-manipulation select-none ${!isSelectionMode ? 'hover:shadow-lg hover:border-border cursor-pointer active:scale-[0.99]' : 'cursor-pointer active:scale-[0.99]'}`}
@@ -167,7 +167,7 @@ export const FileCard = ({
                             <div
                                 role="checkbox"
                                 aria-checked={isSelected}
-                                aria-label={`选择 ${file.name}`}
+                                aria-label={t('files.ui.cards.selectFile', { name: file.name })}
                                 className={`h-7 w-7 rounded-full border-2 flex items-center justify-center transition-all cursor-pointer shadow-sm ${isSelected ? 'bg-primary border-primary' : 'bg-black/35 border-white/70 backdrop-blur-sm'}`}
                                 onClick={() => onSelect?.(file.id)}
                             >
@@ -213,7 +213,7 @@ export const FileCard = ({
                                 onMouseUp={(e) => e.stopPropagation()}
                                 onTouchStart={(e) => e.stopPropagation()}
                                 onTouchEnd={(e) => e.stopPropagation()}
-                                title="预览"
+                                title={t('files.ui.actions.preview')}
                             >
                                 <Eye className="h-4 w-4" />
                             </Button>
@@ -229,7 +229,7 @@ export const FileCard = ({
                                 onMouseUp={(e) => e.stopPropagation()}
                                 onTouchStart={(e) => e.stopPropagation()}
                                 onTouchEnd={(e) => e.stopPropagation()}
-                                title="下载"
+                                title={t('files.ui.actions.download')}
                             >
                                 <Download className="h-4 w-4" />
                             </Button>
@@ -264,7 +264,7 @@ export const FileCard = ({
                             onMouseUp={(e) => e.stopPropagation()}
                             onTouchStart={(e) => e.stopPropagation()}
                             onTouchEnd={(e) => e.stopPropagation()}
-                            aria-label={`更多操作：${file.name}`}
+                            aria-label={t('files.ui.actions.more', { name: file.name })}
                             aria-haspopup="menu"
                             aria-expanded={!!contextMenu}
                         >

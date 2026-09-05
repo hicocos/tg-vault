@@ -1,5 +1,5 @@
 import type {
-    CreateYtDlpTaskResult,
+
     TaskDismissalInput,
     TaskDismissalPreview,
     TaskDismissalResult,
@@ -8,20 +8,11 @@ import type {
     UnifiedTaskSource,
 } from '../apiTypes';
 import { apiRequest } from '../httpClient';
+import { tr } from '../../i18n/runtime';
 import { getApiHeaders } from './clientHeaders';
 
 export class TasksClient {
-    async createYtDlpTask(input: { url: string; format: 'best' | 'audio' }): Promise<CreateYtDlpTaskResult> {
-        const response = await apiRequest('/api/tasks/ytdlp', {
-            credentials: 'include',
-            method: 'POST',
-            headers: getApiHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify(input),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '创建 yt-dlp 任务失败');
-        return payload;
-    }
+
 
     async getTasks(filters: TaskFilters = {}): Promise<UnifiedTaskList> {
         const params = new URLSearchParams({ limit: String(filters.limit ?? 200) });
@@ -34,7 +25,7 @@ export class TasksClient {
         });
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
-            throw new Error(payload.error || '获取任务列表失败');
+            throw new Error(payload.error || tr('errors.services.tasks.getListFailed'));
         }
         return response.json();
     }
@@ -51,7 +42,7 @@ export class TasksClient {
             });
             const payload = await confirmation.json().catch(() => ({}));
             if (!confirmation.ok || !payload.confirmationToken) {
-                throw new Error(payload.error || '无法创建任务取消确认');
+                throw new Error(payload.error || tr('errors.services.tasks.cancelConfirmationFailed'));
             }
             confirmationToken = String(payload.confirmationToken);
         }
@@ -65,7 +56,7 @@ export class TasksClient {
         });
         if (!response.ok) {
             const payload = await response.json().catch(() => ({}));
-            throw new Error(payload.message || payload.error || '任务操作失败');
+            throw new Error(payload.message || payload.error || tr('errors.services.tasks.operationFailed'));
         }
     }
 
@@ -77,7 +68,7 @@ export class TasksClient {
             body: JSON.stringify(input),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '无法创建任务删除预览');
+        if (!response.ok) throw new Error(payload.error || tr('errors.services.tasks.dismissalPreviewFailed'));
         return payload;
     }
 
@@ -92,7 +83,7 @@ export class TasksClient {
             body: JSON.stringify({ snapshotId: preview.snapshotId, context: preview.context }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok && response.status !== 207) throw new Error(payload.error || '删除任务记录失败');
+        if (!response.ok && response.status !== 207) throw new Error(payload.error || tr('errors.services.tasks.deleteRecordFailed'));
         return payload;
     }
 }

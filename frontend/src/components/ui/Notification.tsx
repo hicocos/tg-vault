@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Cloud, CheckCircle, Info, X, XCircle } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { IndeterminateSpinner } from './IndeterminateSpinner';
+import { useTranslation } from 'react-i18next';
 
 export type NotificationType = 'info' | 'success' | 'error' | 'loading';
 
@@ -21,6 +22,7 @@ export const Notification: React.FC<NotificationProps> = ({
     duration = 4000,
     onClose
 }) => {
+    const { t } = useTranslation();
     useEffect(() => {
         if (show && duration > 0 && type !== 'loading') {
             const timer = setTimeout(() => {
@@ -34,7 +36,7 @@ export const Notification: React.FC<NotificationProps> = ({
         info: <Info className="h-5 w-5 text-blue-500" />,
         success: <CheckCircle className="h-5 w-5 text-green-500" />,
         error: <XCircle className="h-5 w-5 text-red-500" />,
-        loading: <IndeterminateSpinner label={message || "正在处理"} size="md" />
+        loading: <IndeterminateSpinner label={message || t('files.ui.notification.processing')} size="md" />
     };
 
     const bgColors = {
@@ -68,7 +70,7 @@ export const Notification: React.FC<NotificationProps> = ({
                             {message}
                         </p>
                         {type !== 'loading' && (
-                            <button type="button" onClick={onClose} className="-mr-2 rounded-md p-2 text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50" aria-label="关闭通知" title="关闭通知">
+                            <button type="button" onClick={onClose} className="-mr-2 rounded-md p-2 text-muted-foreground hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50" aria-label={t('files.ui.notification.close')} title={t('files.ui.notification.close')}>
                                 <X className="h-4 w-4" />
                             </button>
                         )}

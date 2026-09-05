@@ -1,3 +1,5 @@
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
+
 export type BotCommandCategory = 'main' | 'files' | 'channels' | 'settings' | 'security';
 
 export interface BotCommandDefinition {
@@ -25,8 +27,9 @@ export const BOT_COMMANDS: BotCommandDefinition[] = [
     { command: 'tg_sub', description: '管理频道自动同步', helpDescription: '打开频道订阅管理向导', category: 'channels', aliases: ['tg_subscribe'], menu: true, help: true },
     { command: 'storage_switch', description: '切换系统默认存储', helpDescription: '切换所有新任务使用的系统默认存储', category: 'settings', aliases: ['switch_storage', 'storage_source'], menu: true, help: true },
     { command: 'target', description: '设置当前聊天存储目标', helpDescription: '设置下一次或当前聊天持续使用的存储账户；不修改系统默认', category: 'files', menu: true, help: true },
-    { command: 'ytdlp', description: '下载视频链接', helpDescription: '解析并下载一个视频链接', category: 'files', menu: true, help: true },
+
     { command: 'help', description: '查看完整帮助', helpDescription: '显示此帮助', category: 'main', menu: true, help: true, requiresAuth: false },
+    { command: 'language', description: '更改 Bot 界面语言', helpDescription: '选择简体中文或 English', category: 'settings', aliases: ['lang'], menu: true, help: true, requiresAuth: false },
     { command: 'setup_2fa', description: '配置双重验证', helpDescription: '配置双重验证 (TOTP)', category: 'security', aliases: ['setup-2fa'], menu: false, help: true },
     { command: 'logout', description: '撤销本设备 Bot 认证', helpDescription: '立即退出并撤销当前 Telegram 用户的 Bot 认证', category: 'security', menu: false, help: true },
     { command: 'p', description: '设置下一次保存目录', helpDescription: '下一次下载保存到指定目录', category: 'files', usage: '<目录>', help: true },
@@ -56,8 +59,11 @@ for (const definition of BOT_COMMANDS) {
     definition.aliases?.forEach(alias => lookup.set(alias, definition));
 }
 
-export function buildBotCommandMenu(): Array<{ command: string; description: string }> {
-    return BOT_COMMANDS.filter(command => command.menu).map(({ command, description }) => ({ command, description }));
+export function buildBotCommandMenu(locale: TelegramLocale = DEFAULT_LOCALE): Array<{ command: string; description: string }> {
+    return BOT_COMMANDS.filter(command => command.menu).map(({ command, description }) => ({
+        command,
+        description: t(locale, `menu.${command}`, {}, { strict: false }) === `menu.${command}` ? description : t(locale, `menu.${command}`, {}, { strict: false }),
+    }));
 }
 
 export function findBotCommand(input: string): BotCommandDefinition | undefined {

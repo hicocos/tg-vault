@@ -16,13 +16,13 @@ test('wizard callbacks bind actor, chat, origin message and action and fail clos
     assert.match(bot, /callbackChatKey\(update, userId\)/);
     assert.match(bot, /messageId: Number\(update\.msgId\)/);
     assert.match(bot, /allowedActions: \['cancel', 'mode_date', 'mode_tag', 'comments_on', 'comments_off'\]/);
-    assert.match(bot, /向导已失效，请重新打开/);
+    assert.match(bot, /bot\.wizard\.callbackExpired/);
 });
 
 test('wizard interactions expose cancellation, restart replacement, expiry and bounded capacity', () => {
     assert.match(bot, /TELEGRAM_INTERACTION_TTL_MS/);
     assert.match(bot, /TELEGRAM_INTERACTION_MAX_ENTRIES/);
     assert.match(bot, /putTelegramWizardState\(senderId, chatKey, state/);
-    assert.match(bot, /当前向导已过期，请重新打开/);
-    assert.match(bot, /已取消 Telegram 频道操作向导/);
+    assert.match(bot, /bot\.wizard\.expired/);
+    assert.match(bot, /bot\.wizard\.cancelled/);
 });

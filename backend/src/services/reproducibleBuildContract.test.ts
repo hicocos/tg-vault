@@ -23,11 +23,13 @@ function assertBeginnerFriendlyInstall(source: string): void {
     assert.match(source, /RELEASE_REVISION=.*git rev-parse HEAD/);
     assert.match(source, /RELEASE_VERSION=.*python3[\s\S]*backend\/package\.json/);
     assert.match(source, /env IMAGE_VERSION="\$RELEASE_VERSION"/);
+    assert.match(source, /TG Vault 首次部署完成/);
+    assert.match(source, /TG Vault 升级完成/);
 }
 
-test('release images use locked dependencies, pinned bases, verified yt-dlp and source labels', () => {
-    assert.equal(backendPackage.version, '2.4.1');
-    assert.equal(frontendPackage.version, '2.4.1');
+test('release images use locked dependencies, pinned bases and source labels', () => {
+    assert.equal(backendPackage.version, '2.4.2');
+    assert.equal(frontendPackage.version, '2.4.2');
     assert.equal((backend.match(/npm ci/g) || []).length, 2);
     assert.doesNotMatch(backend, /npm install/);
     assert.match(backend, /node@sha256:/);
@@ -39,8 +41,6 @@ test('release images use locked dependencies, pinned bases, verified yt-dlp and 
     assert.doesNotMatch(compose, /IMAGE_VERSION:\?IMAGE_VERSION is required/);
     assert.match(compose, /OAUTH_CALLBACK_BASE_URL/);
     assert.match(compose, /OAUTH_FRONTEND_ORIGIN/);
-    assert.match(backend, /YTDLP_VERSION=2026\.06\.09/);
-    assert.match(backend, /sha256sum -c/);
     for (const dockerfile of [backend, frontend]) {
         assert.match(dockerfile, /org\.opencontainers\.image\.revision/);
         assert.match(dockerfile, /org\.opencontainers\.image\.source/);
@@ -63,10 +63,14 @@ test('installer keeps beginner input to two public origins and derives the rest'
     assert.doesNotMatch(compose, /SOURCE_VERSION:\?SOURCE_VERSION is required/);
     assert.doesNotMatch(compose, /DOMAIN=/);
     assertBeginnerFriendlyInstall(installScript);
-    assert.match(envExample, /自动生成：数据库密码/);
+    assert.match(envExample, /自动生成：不要手工改动已有部署的数据库密码/);
     assert.match(envExample, /高级覆盖：OAuth/);
+    assert.doesNotMatch(envExample, /^TELEGRAM_/m);
+    assert.match(envExample, /Telegram 不在这里配置/);
     assert.match(readme, /新手只需填写（2 项）/);
-    assert.match(deployGuide, /只需填写以下 2 项/);
+    assert.match(readme, /不要把这些内容写入 `.env`/);
+    assert.match(deployGuide, /首次运行只需要填写以下 2 项/);
+    assert.match(deployGuide, /Telegram 不属于首次部署的 `.env` 配置/);
     assert.match(deployGuide, /docker inspect/);
     assert.match(deployGuide, /assets\//);
     assert.match(deployGuide, /镜像名称会使用 `source`/);

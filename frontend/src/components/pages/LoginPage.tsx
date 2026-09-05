@@ -82,7 +82,6 @@ export const LoginPage = ({ onLogin, setupRequired = false, telegramPinRequired 
                 setStep('totp');
                 setLoading(false);
             }
-            // 如果成功且不需要 TOTP，App.tsx 会处理状态跳转
         } catch {
             setError(t('login.errors.loginRequestFailed'));
             setLoading(false);
@@ -107,8 +106,7 @@ export const LoginPage = ({ onLogin, setupRequired = false, telegramPinRequired 
                 setError(result.error || t('login.errors.totpFailed'));
                 setLoading(false);
             } else {
-                // 验证成功，页面会自动因为认证状态改变而卸载
-                window.location.reload(); // 简单处理，或者在 App.tsx 中通过状态流转
+                window.location.reload();
             }
         } catch {
             setError(t('login.errors.totpRequestFailed'));

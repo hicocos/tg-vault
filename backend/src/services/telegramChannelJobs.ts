@@ -5,7 +5,6 @@ import { getPeerId } from 'telegram/Utils.js';
 import { pool, query } from '../db/index.js';
 import { storageManager, isStorageQuotaCooldownError, type StorageTargetSnapshot } from './storage.js';
 import { resolveChannelJobTargetSnapshot } from './telegramChannelJobAdmission.js';
-import { formatStorageCooldownNotice } from './storageCooldownGuard.js';
 import {
     clearExpiredStorageCooldowns,
     getStorageAccountCooldown,
@@ -29,6 +28,8 @@ import { resolveSubscriptionTarget } from './telegramSubscriptionManagement.js';
 import { compactTelegramDownloadHistory } from './telegramDownloadHistoryPolicy.js';
 import { filterTelegramSubscriptionAdvertisements } from './telegramSubscriptionAdFilter.js';
 import type { TelegramAdFilterMode } from './telegramAdClassifier.js';
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
+import { getTelegramUserLocaleOrDefault } from './telegramLocalePreferences.js';
 
 const SUBSCRIPTION_INTERVAL_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_SUBSCRIPTION_INTERVAL_MS || '300000', 10) || 300_000);
 const SUBSCRIPTION_SCAN_LIMIT = Math.max(1, parseInt(process.env.TELEGRAM_SUBSCRIPTION_SCAN_LIMIT || '100', 10) || 100);
@@ -59,7 +60,7 @@ async function getTelegramSourceAllowlist(): Promise<string[]> {
     return parseTelegramSourceAllowlist(stored || '');
 }
 
-async function assertTelegramSourceAllowed(source: string, extraSources: string[] = []): Promise<void> {
+async function assertTelegramSourceAllowed(source: string, extraSources: string[] = [], locale: TelegramLocale = DEFAULT_LOCALE): Promise<void> {
     const normalized = normalizeSource(source).toLowerCase();
     const normalizedExtras = extraSources.map(item => normalizeSource(item).toLowerCase());
     const allowlist = await getTelegramSourceAllowlist();
@@ -67,12 +68,12 @@ async function assertTelegramSourceAllowed(source: string, extraSources: string[
         // Empty allowlist keeps compatibility for public @usernames/links. Private invite links are resolved
         // through CheckChatInvite first, so a numeric peer produced by that trusted flow is allowed.
         if (/^-?\d+$/.test(normalized) && extraSources.length === 0) {
-            throw new Error('未配置 Telegram 来源白名单，禁止使用数字 ID/私聊/私密群组来源。请配置 TELEGRAM_ALLOWED_SOURCES。');
+            throw new Error(t(locale, 'channels.errors.sourceAllowlistRequired'));
         }
         return;
     }
     if (!allowlist.includes(normalized) && !normalizedExtras.some(item => allowlist.includes(item))) {
-        throw new Error(`来源 ${source} 不在 Telegram 下载白名单中`);
+        throw new Error(t(locale, 'channels.errors.sourceNotAllowed', { source }));
     }
 }
 
@@ -90,17 +91,17 @@ export function contiguousProcessedMessageId(
 }
 
 
-function requireUserClient(): TelegramClient {
+function requireUserClient(locale: TelegramLocale = DEFAULT_LOCALE): TelegramClient {
     const userClient = getTelegramUserClient();
     if (!userClient || !isTelegramUserClientReady()) {
-        throw new Error('Telegram 用户账号下载器未就绪');
+        throw new Error(t(locale, 'channels.errors.downloaderNotReady'));
     }
     return userClient;
 }
 
-function normalizeSource(source: string): string {
+function normalizeSource(source: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const trimmed = source.trim();
-    if (!trimmed) throw new Error('频道不能为空');
+    if (!trimmed) throw new Error(t(locale, 'channels.errors.sourceRequired'));
     if (trimmed.startsWith('@') || /^-?\d+$/.test(trimmed) || /^https?:\/\//i.test(trimmed)) return trimmed;
     return `@${trimmed}`;
 }
@@ -120,33 +121,33 @@ interface ResolvedTelegramSource {
     title?: string;
 }
 
-function telegramInviteErrorMessage(error: unknown): string {
+function telegramInviteErrorMessage(error: unknown, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const anyErr = error as any;
     const text = `${anyErr?.errorMessage || ''} ${anyErr?.message || ''}`;
     if (/INVITE_HASH_EXPIRED/i.test(text)) {
-        return '私密频道/群邀请链接已过期，无法解析。请获取新的邀请链接，或先用生成用户 Session 的同一个 Telegram 账号加入后再重试。';
+        return t(locale, 'channels.errors.inviteExpired');
     }
     if (/INVITE_HASH_INVALID/i.test(text)) {
-        return '私密频道/群邀请链接无效，无法解析。请检查链接是否完整，或重新生成邀请链接。';
+        return t(locale, 'channels.errors.inviteInvalid');
     }
     if (/USER_ALREADY_PARTICIPANT/i.test(text)) {
-        return '当前账号已加入，但 Telegram 返回了异常状态，请重新尝试解析。';
+        return t(locale, 'channels.errors.inviteAlreadyJoined');
     }
-    return `私密频道/群邀请链接解析失败：${anyErr?.message || anyErr?.errorMessage || String(error)}`;
+    return t(locale, 'channels.errors.inviteResolutionFailed', { error: anyErr?.message || anyErr?.errorMessage || String(error) });
 }
 
-function assertJoinedPrivateInvite(invite: any): void {
+function assertJoinedPrivateInvite(invite: any, locale: TelegramLocale = DEFAULT_LOCALE): void {
     if (invite instanceof Api.ChatInviteAlready) return;
     if (invite instanceof Api.ChatInvite) {
-        throw new Error('当前 Telegram 用户账号尚未加入这个私密频道/群，无法读取消息。请先使用生成用户 Session 的同一个 Telegram 账号打开邀请链接并加入，然后重新执行订阅或下载命令。');
+        throw new Error(t(locale, 'channels.errors.inviteNotJoined'));
     }
 }
 
-async function resolveTelegramSource(userClient: TelegramClient, sourceInput: string): Promise<ResolvedTelegramSource> {
+async function resolveTelegramSource(userClient: TelegramClient, sourceInput: string, locale: TelegramLocale = DEFAULT_LOCALE): Promise<ResolvedTelegramSource> {
     const originalSource = sourceInput.trim();
     const inviteHash = parseTelegramPrivateInviteHash(originalSource);
     if (!inviteHash) {
-        const source = normalizeSource(originalSource);
+        const source = normalizeSource(originalSource, locale);
         const entity: any = await userClient.getEntity(source as any);
         return { source, originalSource, sourceType: 'public', entity, title: getEntityTitle(entity, source) };
     }
@@ -155,13 +156,13 @@ async function resolveTelegramSource(userClient: TelegramClient, sourceInput: st
     try {
         invite = await userClient.invoke(new Api.messages.CheckChatInvite({ hash: inviteHash }));
     } catch (error) {
-        throw new Error(telegramInviteErrorMessage(error));
+        throw new Error(telegramInviteErrorMessage(error, locale));
     }
 
-    assertJoinedPrivateInvite(invite);
+    assertJoinedPrivateInvite(invite, locale);
     const entity = invite.chat;
     if (!entity) {
-        throw new Error('私密频道/群邀请链接解析失败：Telegram 未返回可读取的频道实体。请检查账号是否仍在该频道/群内。');
+        throw new Error(t(locale, 'channels.errors.inviteMissingEntity'));
     }
     const source = getPeerId(entity, true);
     return { source, originalSource, sourceType: 'private_invite', entity, title: getEntityTitle(entity, source) };
@@ -176,11 +177,11 @@ function messageHasMedia(message: Api.Message | undefined): boolean {
     return Boolean(message.media || message.document || message.photo || message.video || message.audio || message.voice || message.sticker);
 }
 
-function normalizeHashtag(tagInput: string): string {
+function normalizeHashtag(tagInput: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const trimmed = tagInput.trim();
-    if (!trimmed) throw new Error('标签不能为空');
+    if (!trimmed) throw new Error(t(locale, 'channels.errors.hashtagRequired'));
     const withoutHash = trimmed.replace(/^#+/, '');
-    if (!withoutHash || /\s/.test(withoutHash)) throw new Error('标签格式应为 #xxx，不能包含空格');
+    if (!withoutHash || /\s/.test(withoutHash)) throw new Error(t(locale, 'channels.errors.hashtagInvalid'));
     return `#${withoutHash}`;
 }
 
@@ -314,6 +315,7 @@ interface TelegramDownloadScanSummary {
 }
 
 interface TelegramCommentScanOptions {
+    locale?: TelegramLocale;
     includeComments?: boolean;
     commentsMaxPerPost?: number;
     onScanComplete?: (summary: TelegramDownloadScanSummary) => Promise<void> | void;
@@ -702,6 +704,7 @@ export async function createSubscriptionDownloadJob(input: {
     source: string;
     folderOverride?: string | null;
     messageIds: number[];
+    locale?: TelegramLocale;
 }): Promise<string> {
     const subscriptionResult = await query(
         `SELECT id, enabled, target_mode, target_provider, target_account_id
@@ -710,20 +713,21 @@ export async function createSubscriptionDownloadJob(input: {
         [input.subscriptionId, input.userId],
     );
     const subscription = subscriptionResult.rows[0];
-    if (!subscription) throw new Error('订阅不存在');
-    if (!subscription.enabled) throw new Error('订阅已停用');
+    const locale = input.locale || DEFAULT_LOCALE;
+    if (!subscription) throw new Error(t(locale, 'channels.errors.subscriptionNotFound'));
+    if (!subscription.enabled) throw new Error(t(locale, 'channels.errors.subscriptionDisabled'));
     const ids = Array.from(new Set(input.messageIds.filter(id => Number.isSafeInteger(id) && id > 0))).sort((left, right) => left - right);
-    if (ids.length === 0) throw new Error('没有可下载的消息');
+    if (ids.length === 0) throw new Error(t(locale, 'channels.errors.noDownloadableMessages'));
     const target = resolveSubscriptionTarget(
         subscription,
         () => storageManager.getActiveTarget(),
         (provider, accountId) => storageManager.getTarget(provider, accountId),
     );
-    const userClient = requireUserClient();
+    const userClient = requireUserClient(locale);
     const messages = (await userClient.getMessages(input.source as any, { ids })).filter(Boolean) as Api.Message[];
     const downloadable = await filterConfiguredTelegramBatchMessages(await expandMessagesWithMediaGroups(userClient, input.source, messages));
     const refs = downloadable.map(message => toChannelDownloadRef(input.source, message)).filter((ref): ref is TelegramDownloadMessageRef => Boolean(ref));
-    if (refs.length === 0) throw new Error('原消息不存在或没有可下载媒体');
+    if (refs.length === 0) throw new Error(t(locale, 'channels.errors.sourceMessageUnavailable'));
 
     const existingJob = await query('SELECT id FROM telegram_background_jobs WHERE ad_decision_id = $1', [input.decisionId]);
     let jobId = existingJob.rows[0]?.id ? String(existingJob.rows[0].id) : '';
@@ -833,10 +837,10 @@ async function hydratePendingDownloadRefs(userClient: TelegramClient, jobId: str
     return hydrated;
 }
 
-export async function subscribeTelegramChannel(userId: number, chatId: string | undefined, sourceInput: string, folderOverride?: string | null) {
-    const userClient = requireUserClient();
-    const resolved = await resolveTelegramSource(userClient, sourceInput);
-    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource]);
+export async function subscribeTelegramChannel(userId: number, chatId: string | undefined, sourceInput: string, folderOverride?: string | null, locale: TelegramLocale = DEFAULT_LOCALE) {
+    const userClient = requireUserClient(locale);
+    const resolved = await resolveTelegramSource(userClient, sourceInput, locale);
+    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource], locale);
     const latestMessageId = await getLatestMessageId(userClient, resolved.source);
     const title = resolved.title || getEntityTitle(resolved.entity, resolved.source);
 
@@ -902,11 +906,12 @@ export async function updateTelegramSubscriptionTarget(
     userId: number,
     selector: string,
     input: { mode: 'follow_global' | 'fixed'; provider?: string | null; accountId?: string | null },
+    locale: TelegramLocale = DEFAULT_LOCALE,
 ) {
     const subscriptionId = await resolveUniqueTelegramSubscriptionId(userId, selector);
     if (!subscriptionId) return null;
     if (input.mode === 'fixed') {
-        if (!input.provider) throw new Error('固定订阅目标缺少 provider');
+        if (!input.provider) throw new Error(t(locale, 'channels.errors.fixedTargetProviderRequired'));
         storageManager.getTarget(input.provider, input.accountId || null);
     }
     const result = await query(
@@ -1013,14 +1018,24 @@ function isTelegramSourceInaccessibleError(error: unknown): boolean {
     return /INVITE_HASH_EXPIRED|INVITE_HASH_INVALID|CHANNEL_PRIVATE|USER_NOT_PARTICIPANT|CHAT_ADMIN_REQUIRED|Could not find the input entity|Cannot find any entity|not part of|forbidden|privacy/i.test(text);
 }
 
-function subscriptionDisabledReason(error: unknown): string {
+function subscriptionDisabledReason(error: unknown, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const anyErr = error as any;
     const text = `${anyErr?.errorMessage || ''} ${anyErr?.message || ''}`;
-    if (/INVITE_HASH_EXPIRED/i.test(text)) return '订阅已暂停：私密频道/群邀请链接已过期，无法继续解析或下载。请重新加入/更新链接后再订阅。';
-    if (/INVITE_HASH_INVALID/i.test(text)) return '订阅已暂停：私密频道/群邀请链接无效，无法继续解析或下载。请检查链接后重新订阅。';
-    if (/USER_NOT_PARTICIPANT|not part of/i.test(text)) return '订阅已暂停：当前 Telegram 用户账号已不在该私密频道/群内，无法继续下载。请先重新加入后再订阅。';
-    if (/CHANNEL_PRIVATE|forbidden|privacy/i.test(text)) return '订阅已暂停：当前 Telegram 用户账号无法访问该频道/群，可能已退出、被移除或频道变为私密。请检查账号权限后重新订阅。';
-    return `订阅已暂停：无法访问或下载该频道/群内容（${anyErr?.message || anyErr?.errorMessage || String(error)}）。请检查账号是否仍可访问后重新订阅。`;
+    if (/INVITE_HASH_EXPIRED/i.test(text)) return t(locale, 'subscriptions.disabled.inviteExpired');
+    if (/INVITE_HASH_INVALID/i.test(text)) return t(locale, 'subscriptions.disabled.inviteInvalid');
+    if (/USER_NOT_PARTICIPANT|not part of/i.test(text)) return t(locale, 'subscriptions.disabled.notParticipant');
+    if (/CHANNEL_PRIVATE|forbidden|privacy/i.test(text)) return t(locale, 'subscriptions.disabled.inaccessible');
+    return t(locale, 'subscriptions.disabled.unknown', { error: anyErr?.message || anyErr?.errorMessage || String(error) });
+}
+
+function subscriptionPausedNotification(error: unknown): { key: string; params: Record<string, string> } {
+    const anyErr = error as any;
+    const text = `${anyErr?.errorMessage || ''} ${anyErr?.message || ''}`;
+    if (/INVITE_HASH_EXPIRED/i.test(text)) return { key: 'subscriptions.paused.inviteExpired', params: {} };
+    if (/INVITE_HASH_INVALID/i.test(text)) return { key: 'subscriptions.paused.inviteInvalid', params: {} };
+    if (/USER_NOT_PARTICIPANT|not part of/i.test(text)) return { key: 'subscriptions.paused.notParticipant', params: {} };
+    if (/CHANNEL_PRIVATE|forbidden|privacy/i.test(text)) return { key: 'subscriptions.paused.inaccessible', params: {} };
+    return { key: 'subscriptions.paused.unknown', params: { error: anyErr?.message || anyErr?.errorMessage || String(error) } };
 }
 
 
@@ -1113,12 +1128,9 @@ async function notifyStorageCooldownOnce(botClient: TelegramClient, job: any, co
     const nextParams = { ...params, storageQuotaNoticeSentAt: new Date().toISOString(), storageQuotaCooldownUntil: cooldownUntil.toISOString() };
     await updateJob(job.id, { params: JSON.stringify(nextParams) });
     const targetChat = job.chat_id || job.user_id;
+    const locale = await getTelegramUserLocaleOrDefault(Number(job.user_id));
     await botClient.sendMessage(targetChat, {
-        message: [
-            formatStorageCooldownNotice(cooldownUntil),
-            '',
-            `任务：${String(job.id).slice(0, 12)}`,
-        ].join('\n'),
+        message: t(locale, 'channels.storageCooldown', { retryAt: cooldownUntil.toISOString(), jobId: String(job.id).slice(0, 12) }),
     }).catch(() => undefined);
 }
 
@@ -1629,9 +1641,10 @@ async function runSegmentedTelegramJob(botClient: TelegramClient, requestMessage
 }
 
 export async function enqueueTelegramDateDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, startDateText: string, endDateText: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
-    const userClient = requireUserClient();
-    const resolved = await resolveTelegramSource(userClient, sourceInput);
-    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource]);
+    const locale = options.locale || DEFAULT_LOCALE;
+    const userClient = requireUserClient(locale);
+    const resolved = await resolveTelegramSource(userClient, sourceInput, locale);
+    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource], locale);
     const source = resolved.source;
     const range = parseTelegramDateRange(startDateText, endDateText);
     const { startDate, endDate } = range;
@@ -1684,11 +1697,12 @@ async function getMessagesByHashtag(userClient: TelegramClient, source: string, 
 }
 
 export async function enqueueTelegramTagDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, tagInput: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
-    const userClient = requireUserClient();
-    const resolved = await resolveTelegramSource(userClient, sourceInput);
-    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource]);
+    const locale = options.locale || DEFAULT_LOCALE;
+    const userClient = requireUserClient(locale);
+    const resolved = await resolveTelegramSource(userClient, sourceInput, locale);
+    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource], locale);
     const source = resolved.source;
-    const tag = normalizeHashtag(tagInput);
+    const tag = normalizeHashtag(tagInput, locale);
 
     const target = resolveChannelJobTargetSnapshot(options.target, () => storageManager.getActiveTarget());
     const jobId = await createJob({
@@ -2028,7 +2042,8 @@ async function runSubscriptionScan(botClient: TelegramClient) {
 
     for (const row of result.rows) {
         try {
-            await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : (row.source_type === 'private_invite' ? ['private_invite'] : []));
+            const locale = await getTelegramUserLocaleOrDefault(Number(row.user_id));
+            await assertTelegramSourceAllowed(row.source, row.source_original ? [row.source_original] : (row.source_type === 'private_invite' ? ['private_invite'] : []), locale);
             const latestMessageId = await getLatestMessageId(userClient, row.source);
             const lastMessageId = Number(row.last_message_id || 0);
             await query(`UPDATE telegram_channel_subscriptions
@@ -2113,8 +2128,21 @@ async function runSubscriptionScan(botClient: TelegramClient) {
                              last_result = jsonb_build_object('status', $3::text, 'found', $4::int, 'skipped', $5::int, 'failed', $6::int)
                          WHERE id = $1`, [row.id, downloadResult.failed > 0 ? `${downloadResult.failed} 个文件下载失败` : null, downloadResult.failed > 0 ? 'partial_failure' : 'success', downloadResult.found, downloadResult.skipped, downloadResult.failed]);
             if (downloadResult.found > 0) {
-                const notificationMessage = `✅ 订阅 ${row.source} 已同步 ${downloadResult.found} 个新文件，跳过 ${downloadResult.skipped} 条${downloadResult.failed ? `，失败 ${downloadResult.failed} 条` : ''}${safeAdvanceId < latestMessageId ? '。本轮达到扫描上限或存在失败项，剩余将在后续继续处理。' : '。'}`;
-                await enqueueTelegramNotification({ userId: Number(row.user_id), chatId: String(targetChat), kind: 'subscription', message: notificationMessage }, {
+                const messageKey = safeAdvanceId < latestMessageId ? 'subscriptions.syncCompleteContinues' : 'subscriptions.syncComplete';
+                const messageParams = {
+                    source: row.source,
+                    found: downloadResult.found,
+                    skipped: downloadResult.skipped,
+                    failed: downloadResult.failed,
+                };
+                await enqueueTelegramNotification({
+                    userId: Number(row.user_id),
+                    chatId: String(targetChat),
+                    kind: 'subscription',
+                    message: t(DEFAULT_LOCALE, messageKey, messageParams),
+                    messageKey,
+                    messageParams,
+                }, {
                     send: async (chatId, message) => { await botClient.sendMessage(chatId, { message }); },
                 }).catch(() => undefined);
             }
@@ -2128,11 +2156,20 @@ async function runSubscriptionScan(botClient: TelegramClient) {
             if (isTelegramSourceInaccessibleError(error)) {
                 // Account-scoped permission failures are persisted by the selected download/probe account.
                 // Only pause here after the subscription worker cannot find any usable account.
-                const reason = subscriptionDisabledReason(error);
+                const locale = await getTelegramUserLocaleOrDefault(Number(row.user_id));
+                const reason = subscriptionDisabledReason(error, locale);
+                const paused = subscriptionPausedNotification(error);
                 await pauseTelegramSubscriptionForError(row.id, reason).catch(updateError => console.error('🤖 暂停不可访问的 Telegram 订阅失败:', updateError));
                 const targetChat = row.chat_id || row.user_id;
-                const pausedMessage = `⚠️ 已暂停订阅 ${row.source_original || row.source}\n${reason}\n\n你可以在 /tg_subs 或 /tg_sub 订阅列表中查看提醒；确认账号可访问后重新添加订阅即可。`;
-                await enqueueTelegramNotification({ userId: Number(row.user_id), chatId: String(targetChat), kind: 'failure', message: pausedMessage }, {
+                const messageParams = { source: row.source_original || row.source, ...paused.params };
+                await enqueueTelegramNotification({
+                    userId: Number(row.user_id),
+                    chatId: String(targetChat),
+                    kind: 'failure',
+                    message: t(DEFAULT_LOCALE, paused.key, messageParams),
+                    messageKey: paused.key,
+                    messageParams,
+                }, {
                     send: async (chatId, message) => { await botClient.sendMessage(chatId, { message }); },
                 }).catch(() => undefined);
             }
@@ -2237,8 +2274,14 @@ async function recoverTelegramJob(botClient: TelegramClient, job: any): Promise<
         }
         if (!finalized) return;
         await compactTelegramDownloadHistorySafely(String(job.id));
+        const locale = await getTelegramUserLocaleOrDefault(Number(job.user_id));
         await botClient.sendMessage(targetChat, {
-            message: `♻️ 已恢复并完成任务 ${String(job.id).slice(0, 12)}：成功 ${result.successful}，跳过 ${result.skipped}，失败 ${result.failed}`,
+            message: t(locale, 'channels.recoveryComplete', {
+                jobId: String(job.id).slice(0, 12),
+                successful: result.successful,
+                skipped: result.skipped,
+                failed: result.failed,
+            }),
         }).catch(() => undefined);
     } catch (error) {
         await updateJob(job.id, { status: 'failed', error: error instanceof Error ? error.message : String(error), finished_at: new Date() });

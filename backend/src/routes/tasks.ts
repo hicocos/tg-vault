@@ -5,7 +5,7 @@ import { query } from '../db/index.js';
 import { requireAuth, getAuthToken } from './auth.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
 import { listTransferTasks, getTransferTask, updateTransferTask } from '../services/transferTasks.js';
-import { cancelYtDlpTask, createYtDlpTask, retryYtDlpTask } from '../services/ytDlpDownload.js';
+
 import { cancelDownloadTaskGroup, retryFailedDownloadTasks, cancelChannelExecutionGroup } from '../services/telegramUpload.js';
 import { cancelTelegramBackgroundJob, retryTelegramBackgroundJob } from '../services/telegramChannelJobs.js';
 import { filterDismissedTasks, isTaskDismissible, loadTaskCenterDismissals, saveTaskCenterDismissals } from '../services/taskCenterDismissals.js';
@@ -180,23 +180,6 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     }
 });
 
-router.post('/ytdlp', requireAuth, async (req: Request, res: Response) => {
-    try {
-        const url = typeof req.body?.url === 'string' ? req.body.url.trim() : '';
-        if (!url) return res.status(400).json({ error: '请输入要下载的媒体链接' });
-        if (url.length > 2_000) return res.status(400).json({ error: '链接长度超过限制' });
-        const format = req.body?.format === 'audio' ? 'audio' : 'best';
-        const task = await createYtDlpTask({ url, format, folder: 'ytdlp' });
-        return res.status(202).json({
-            success: true,
-            task: mapTransferTask(task, new Map()),
-        });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : '创建 yt-dlp 任务失败';
-        const status = /链接|URL|地址|协议|公网|内网|本机|保留|播放列表|请输入/.test(message) ? 400 : /冷却|不可写|配额/.test(message) ? 409 : 500;
-        return res.status(status).json({ error: message });
-    }
-});
 
 router.post('/dismissals/prepare', requireAuth, async (req: Request, res: Response) => {
     try {
@@ -263,7 +246,7 @@ router.post('/dismissals/confirm', requireAuth, async (req: Request, res: Respon
 router.post('/:sourceType/:id/cancel-confirmation', requireAuth, async (req: Request, res: Response) => {
     const sourceType = String(req.params.sourceType);
     const id = String(req.params.id);
-    if (!['ytdlp', 'telegram_bot', 'telegram_channel', 'web_upload', 'telegram_target', 'subscription'].includes(sourceType)) {
+    if (!['telegram_bot', 'telegram_channel', 'web_upload', 'telegram_target', 'subscription'].includes(sourceType)) {
         return res.status(400).json({ error: '该任务类型暂不支持取消' });
     }
     const authToken = getAuthToken(req);
@@ -300,11 +283,7 @@ router.post('/:sourceType/:id/:action', requireAuth, async (req: Request, res: R
         }
     }
     try {
-        if (sourceType === 'ytdlp') {
-            const task = action === 'cancel' ? await cancelYtDlpTask(id) : await retryYtDlpTask(id);
-            if (!task) return res.status(409).json({ error: '任务当前不能执行该操作' });
-            return res.json({ success: true, task });
-        }
+
         if (sourceType === 'telegram_bot') {
             const task = await getTransferTask('telegram_bot', id);
             if (!task) return res.status(404).json({ error: '任务不存在' });

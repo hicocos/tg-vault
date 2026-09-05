@@ -1,3 +1,5 @@
+import { tr } from '../i18n/runtime';
+
 export interface BatchDeleteFailedFile {
     id: string;
     name: string;
@@ -25,7 +27,7 @@ export async function classifyBatchDeleteResponse(response: Response): Promise<B
             status: 'partial',
             deletedIds: Array.isArray(payload.deletedIds) ? payload.deletedIds : [],
             failedFiles: Array.isArray(payload.failedFiles) ? payload.failedFiles : [],
-            message: payload.message || '部分文件删除失败',
+            message: payload.message || tr('errors.services.files.partialDeleteFailed'),
         };
     }
     if (response.ok && payload.status === 'complete') {
@@ -33,8 +35,8 @@ export async function classifyBatchDeleteResponse(response: Response): Promise<B
             status: 'complete',
             deletedIds: Array.isArray(payload.deletedIds) ? payload.deletedIds : [],
             failedFiles: [],
-            message: payload.message || '删除完成',
+            message: payload.message || tr('errors.services.files.deleteComplete'),
         };
     }
-    throw new Error(payload.error || payload.message || '批量删除失败');
+    throw new Error(payload.error || payload.message || tr('errors.services.files.batchDeleteFailed'));
 }

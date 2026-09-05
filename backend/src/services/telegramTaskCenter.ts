@@ -1,9 +1,10 @@
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 import type { TransferTaskRecord } from './transferTasks.js';
 import { telegramChannelJobTaskState } from './unifiedTaskMapper.js';
+import { DEFAULT_LOCALE, TELEGRAM_LOCALES, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
 
-export type TaskCenterSourceType = 'memory' | 'channel' | 'ytdlp';
-export type TaskCenterKind = 'single' | 'album' | 'channel' | 'ytdlp';
+export type TaskCenterSourceType = 'memory' | 'channel';
+export type TaskCenterKind = 'single' | 'album' | 'channel';
 export type TaskCenterState = 'running' | 'waiting' | 'pausing' | 'paused' | 'cooling' | 'failed';
 
 export type TaskCenterProtection = {
@@ -72,8 +73,8 @@ const ACTION_CODES: Record<TaskCenterAction, string> = {
     cancel_confirm: 'k',
 };
 const CODE_ACTIONS = Object.fromEntries(Object.entries(ACTION_CODES).map(([action, code]) => [code, action])) as Record<string, TaskCenterAction>;
-const SOURCE_CODES: Record<TaskCenterSourceType, string> = { memory: 'm', channel: 'c', ytdlp: 'y' };
-const CODE_SOURCES: Record<string, TaskCenterSourceType> = { m: 'memory', c: 'channel', y: 'ytdlp' };
+const SOURCE_CODES: Record<TaskCenterSourceType, string> = { memory: 'm', channel: 'c' };
+const CODE_SOURCES: Record<string, TaskCenterSourceType> = { m: 'memory', c: 'channel' };
 
 function safeNumber(value: unknown): number {
     const parsed = Number(value || 0);
@@ -96,18 +97,18 @@ function shortText(value: string, max = 32): string {
     return `${normalized.slice(0, Math.max(1, max - 1))}…`;
 }
 
-function kindLabel(kind: TaskCenterKind): string {
-    return ({ single: '单文件', album: '相册', channel: '频道任务', ytdlp: 'yt-dlp' } as const)[kind];
+function kindLabel(kind: TaskCenterKind, locale: TelegramLocale): string {
+    return t(locale, `taskCenter.kind.${kind}`);
 }
 
-function stateMeta(state: TaskCenterState): { icon: string; label: string; bucket: 'running' | 'waiting' | 'paused' | 'cooling' } {
+function stateMeta(state: TaskCenterState, locale: TelegramLocale = DEFAULT_LOCALE): { icon: string; label: string; bucket: 'running' | 'waiting' | 'paused' | 'cooling' } {
     switch (state) {
-        case 'running': return { icon: '🟢', label: '正在运行', bucket: 'running' };
-        case 'waiting': return { icon: '⏳', label: '等待开始', bucket: 'waiting' };
-        case 'pausing': return { icon: '⏸', label: '正在完成当前文件', bucket: 'paused' };
-        case 'paused': return { icon: '⏸', label: '已暂停', bucket: 'paused' };
-        case 'cooling': return { icon: '🧊', label: '系统等待', bucket: 'cooling' };
-        case 'failed': return { icon: '🔴', label: '处理失败', bucket: 'waiting' };
+        case 'running': return { icon: '🟢', label: t(locale, 'taskCenter.state.running'), bucket: 'running' };
+        case 'waiting': return { icon: '⏳', label: t(locale, 'taskCenter.state.waiting'), bucket: 'waiting' };
+        case 'pausing': return { icon: '⏸', label: t(locale, 'taskCenter.state.pausing'), bucket: 'paused' };
+        case 'paused': return { icon: '⏸', label: t(locale, 'taskCenter.state.paused'), bucket: 'paused' };
+        case 'cooling': return { icon: '🧊', label: t(locale, 'taskCenter.state.cooling'), bucket: 'cooling' };
+        case 'failed': return { icon: '🔴', label: t(locale, 'taskCenter.state.failed'), bucket: 'waiting' };
     }
 }
 
@@ -131,26 +132,26 @@ function callbackAction(action: TaskCenterAction, item: TaskCenterItem, page: nu
     return `tc_a_${ACTION_CODES[action]}_${sourceCode(item.sourceType)}_${item.id}_${Math.max(0, Math.floor(page))}`;
 }
 
-function formatAge(timestamp: number, now: number): string {
+function formatAge(timestamp: number, now: number, locale: TelegramLocale): string {
     const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-    if (seconds < 60) return '刚刚';
+    if (seconds < 60) return t(locale, 'taskCenter.age.justNow');
     const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) return `${minutes} 分钟前`;
+    if (minutes < 60) return t(locale, 'taskCenter.age.minutes', { count: minutes });
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours} 小时前`;
-    return `${Math.floor(hours / 24)} 天前`;
+    if (hours < 24) return t(locale, 'taskCenter.age.hours', { count: hours });
+    return t(locale, 'taskCenter.age.days', { count: Math.floor(hours / 24) });
 }
 
-function progressLine(item: TaskCenterItem): string {
+function progressLine(item: TaskCenterItem, locale: TelegramLocale): string {
     if (item.progressPercent !== undefined) {
         return `${Math.round(Math.max(0, Math.min(100, item.progressPercent)))}%${item.currentFileName ? ` · ${item.currentFileName}` : ''}`;
     }
     const finished = Math.min(item.total, item.completed + item.failed + item.skipped);
     const parts = [`${finished}/${item.total}`];
-    if (item.active > 0) parts.push(`下载中 ${item.active}`);
-    if (item.pending > 0) parts.push(`待处理 ${item.pending}`);
-    if (item.failed > 0) parts.push(`失败 ${item.failed}`);
-    if (item.skipped > 0) parts.push(`跳过 ${item.skipped}`);
+    if (item.active > 0) parts.push(t(locale, 'taskCenter.progress.active', { count: item.active }));
+    if (item.pending > 0) parts.push(t(locale, 'taskCenter.progress.pending', { count: item.pending }));
+    if (item.failed > 0) parts.push(t(locale, 'taskCenter.progress.failed', { count: item.failed }));
+    if (item.skipped > 0) parts.push(t(locale, 'taskCenter.progress.skipped', { count: item.skipped }));
     return parts.join(' · ');
 }
 
@@ -163,44 +164,45 @@ export function sortTaskCenterItems(items: TaskCenterItem[]): TaskCenterItem[] {
 export function buildTaskCenterPage(
     sourceItems: TaskCenterItem[],
     requestedPage = 0,
-    options: { now?: number; pageSize?: number } = {},
+    options: { now?: number; pageSize?: number; locale?: TelegramLocale } = {},
 ): TaskCenterPage {
     const now = options.now || Date.now();
+    const locale = options.locale || DEFAULT_LOCALE;
     const pageSize = Math.max(1, Math.floor(options.pageSize || PAGE_SIZE));
     const items = sortTaskCenterItems(sourceItems);
     const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
     const page = Math.min(Math.max(0, Math.floor(requestedPage || 0)), totalPages - 1);
     const visibleItems = items.slice(page * pageSize, page * pageSize + pageSize);
     const counts = { running: 0, waiting: 0, paused: 0, cooling: 0 };
-    for (const item of items) counts[stateMeta(item.state).bucket] += 1;
+    for (const item of items) counts[stateMeta(item.state, locale).bucket] += 1;
 
     const lines = [
-        '📥 **下载任务**',
+        t(locale, 'taskCenter.title'),
         '',
-        `🟢 运行中 ${counts.running}　⏳ 等待 ${counts.waiting}　⏸ 已暂停 ${counts.paused}`,
-        ...(counts.cooling > 0 ? [`🧊 系统等待 ${counts.cooling}`] : []),
-        `共 ${items.length} 个进行中的任务${totalPages > 1 ? ` · 第 ${page + 1}/${totalPages} 页` : ''}`,
+        t(locale, 'taskCenter.summary', counts),
+        ...(counts.cooling > 0 ? [t(locale, 'taskCenter.summaryCooling', { count: counts.cooling })] : []),
+        t(locale, totalPages > 1 ? 'taskCenter.totalPaged' : 'taskCenter.total', { count: items.length, page: page + 1, totalPages }),
     ];
     if (visibleItems.length === 0) {
-        lines.push('', '📮 当前没有进行中的任务');
+        lines.push('', t(locale, 'common.emptyTasks'));
     }
     visibleItems.forEach((item, index) => {
-        const meta = stateMeta(item.state);
+        const meta = stateMeta(item.state, locale);
         const secondary = item.currentFileName
-            ? `${kindLabel(item.kind)} · ${progressLine(item)} · 当前：${shortText(item.currentFileName, 24)}`
-            : `${kindLabel(item.kind)} · ${progressLine(item)} · ${meta.label}`;
+            ? t(locale, 'taskCenter.item.current', { kind: kindLabel(item.kind, locale), progress: progressLine(item, locale), file: shortText(item.currentFileName, 24) })
+            : t(locale, 'taskCenter.item.state', { kind: kindLabel(item.kind, locale), progress: progressLine(item, locale), state: meta.label });
         lines.push('', `${page * pageSize + index + 1}. ${meta.icon} **${markdownText(shortText(item.title, 42))}**`, `   ${markdownText(secondary)}`);
     });
-    if (items.length > 0) lines.push('', '点击编号查看详情并控制选中的任务。');
+    if (items.length > 0) lines.push('', t(locale, 'taskCenter.openHint'));
 
     const rows: TaskCenterButton[][] = visibleItems.map((item, index) => [{
-        text: `${page * pageSize + index + 1}. ${stateMeta(item.state).icon} ${shortText(item.title, 22)}`,
+        text: `${page * pageSize + index + 1}. ${stateMeta(item.state, locale).icon} ${shortText(item.title, 22)}`,
         data: callbackDetail(item, page),
     }]);
     const navigation: TaskCenterButton[] = [];
-    if (page > 0) navigation.push({ text: '◀️ 上一页', data: callbackList(page - 1) });
-    navigation.push({ text: '🔄 刷新', data: callbackList(page) });
-    if (page + 1 < totalPages) navigation.push({ text: '下一页 ▶️', data: callbackList(page + 1) });
+    if (page > 0) navigation.push({ text: t(locale, 'taskCenter.button.previous'), data: callbackList(page - 1) });
+    navigation.push({ text: t(locale, 'taskCenter.button.refresh'), data: callbackList(page) });
+    if (page + 1 < totalPages) navigation.push({ text: t(locale, 'taskCenter.button.next'), data: callbackList(page + 1) });
     if (navigation.length > 0) rows.push(navigation);
 
     return { text: lines.join('\n'), rows, page, totalPages, visibleItems };
@@ -209,11 +211,12 @@ export function buildTaskCenterPage(
 export function buildTaskCenterDetail(
     item: TaskCenterItem,
     page = 0,
-    options: { now?: number } = {},
+    options: { now?: number; locale?: TelegramLocale } = {},
 ): TaskCenterView {
     const now = options.now || Date.now();
-    const meta = stateMeta(item.state);
-    const title = item.title.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() || '未命名任务';
+    const locale = options.locale || DEFAULT_LOCALE;
+    const meta = stateMeta(item.state, locale);
+    const title = item.title.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() || t(locale, 'taskCenter.untitled');
     const source = item.source?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const currentFileName = item.currentFileName?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const targetFolder = item.targetFolder?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
@@ -222,72 +225,71 @@ export function buildTaskCenterDetail(
         `${meta.icon} **${meta.label}**`,
         '',
         `📌 ${markdownText(title)}`,
-        `类型：${kindLabel(item.kind)}`,
-        ...(source ? [`来源：${markdownText(source)}`] : []),
-        `进度：${markdownText(progressLine(item))}`,
-        ...(currentFileName ? [`当前文件：${markdownText(currentFileName)}`] : []),
-        ...(targetFolder ? [`保存位置：${markdownText(targetFolder)}`] : []),
-        ...(reason ? [`原因：${markdownText(reason)}`] : []),
-        `创建：${formatAge(item.createdAt, now)}`,
-        `最近活动：${formatAge(item.updatedAt, now)}`,
-        `任务 ID：${item.id}`,
+        t(locale, 'taskCenter.detail.type', { value: kindLabel(item.kind, locale) }),
+        ...(source ? [t(locale, 'taskCenter.detail.source', { value: markdownText(source) })] : []),
+        t(locale, 'taskCenter.detail.progress', { value: markdownText(progressLine(item, locale)) }),
+        ...(currentFileName ? [t(locale, 'taskCenter.detail.currentFile', { value: markdownText(currentFileName) })] : []),
+        ...(targetFolder ? [t(locale, 'taskCenter.detail.targetFolder', { value: markdownText(targetFolder) })] : []),
+        ...(reason ? [t(locale, 'taskCenter.detail.reason', { value: markdownText(reason) })] : []),
+        t(locale, 'taskCenter.detail.created', { value: formatAge(item.createdAt, now, locale) }),
+        t(locale, 'taskCenter.detail.updated', { value: formatAge(item.updatedAt, now, locale) }),
+        t(locale, 'taskCenter.detail.id', { value: item.id }),
     ];
     const systemBlocked = Boolean(item.protection);
     if (systemBlocked) {
         const protection = item.protection!;
         const recovery = protection.autoResume
             ? protection.retryAt
-                ? `系统会在 ${protection.retryAt} 后重新检查并自动恢复。`
+                ? t(locale, 'taskCenter.protection.retryAt', { value: protection.retryAt })
                 : protection.recheckMs
-                    ? `系统每 ${Math.max(1, Math.round(protection.recheckMs / 1000))} 秒重新检查，条件满足后自动恢复。`
-                    : '系统会持续检查，条件满足后自动恢复。'
-            : '此状态不会自动恢复，请按原因处理后重试。';
-        lines.push('', `该任务由系统保护暂停；${recovery}`);
+                    ? t(locale, 'taskCenter.protection.recheck', { count: Math.max(1, Math.round(protection.recheckMs / 1000)) })
+                    : t(locale, 'taskCenter.protection.autoResume')
+            : t(locale, 'taskCenter.protection.manual');
+        lines.push('', t(locale, 'taskCenter.protection.paused', { recovery }));
     }
-    if (item.state === 'pausing') lines.push('', '当前文件完成后会自动进入已暂停状态。');
-    if (item.state === 'failed') lines.push('', '该任务没有继续运行；确认外部写结果已对账后，可以重新提交下载。');
-    if (item.state === 'waiting' && item.sourceType !== 'ytdlp') lines.push('', '“优先开始”会把该任务移到等待队列前面，不会中断正在下载的文件。');
-    if (item.state === 'running' && item.sourceType !== 'ytdlp') lines.push('', '暂停会先完成当前文件，再停止这个任务的后续文件。');
+    if (item.state === 'pausing') lines.push('', t(locale, 'taskCenter.note.pausing'));
+    if (item.state === 'failed') lines.push('', t(locale, 'taskCenter.note.failed'));
+    if (item.state === 'waiting') lines.push('', t(locale, 'taskCenter.note.start'));
+    if (item.state === 'running') lines.push('', t(locale, 'taskCenter.note.pause'));
 
     const actionRow: TaskCenterButton[] = [];
-    if (item.sourceType !== 'ytdlp' && item.state === 'waiting' && (item.sourceType === 'memory' || item.active + item.pending > 0)) actionRow.push({ text: '▶️ 优先开始', data: callbackAction('start', item, page) });
-    if (item.sourceType !== 'ytdlp' && item.state === 'running') actionRow.push({ text: '⏸ 暂停任务', data: callbackAction('pause', item, page) });
-    if (item.sourceType !== 'ytdlp' && item.state === 'paused' && !systemBlocked) actionRow.push({ text: '▶️ 继续', data: callbackAction('resume', item, page) });
-    if (item.sourceType !== 'ytdlp' && item.state === 'pausing') actionRow.push({ text: '▶️ 撤销暂停', data: callbackAction('resume', item, page) });
-    if (item.sourceType === 'ytdlp' && item.state === 'failed') actionRow.push({ text: '🔄 重试', data: callbackAction('retry', item, page) });
-    actionRow.push({ text: '🛑 取消', data: callbackAction('cancel_prompt', item, page) });
+    if (item.state === 'waiting' && (item.sourceType === 'memory' || item.active + item.pending > 0)) actionRow.push({ text: t(locale, 'taskCenter.button.start'), data: callbackAction('start', item, page) });
+    if (item.state === 'running') actionRow.push({ text: t(locale, 'taskCenter.button.pause'), data: callbackAction('pause', item, page) });
+    if (item.state === 'paused' && !systemBlocked) actionRow.push({ text: t(locale, 'taskCenter.button.resume'), data: callbackAction('resume', item, page) });
+    if (item.state === 'pausing') actionRow.push({ text: t(locale, 'taskCenter.button.undoPause'), data: callbackAction('resume', item, page) });
+    actionRow.push({ text: t(locale, 'taskCenter.button.cancel'), data: callbackAction('cancel_prompt', item, page) });
 
     return {
         text: lines.join('\n'),
         rows: [
             actionRow,
             [
-                { text: '↩️ 返回任务列表', data: callbackList(page) },
-                { text: '🔄 刷新', data: callbackDetail(item, page) },
+                { text: t(locale, 'taskCenter.button.backList'), data: callbackList(page) },
+                { text: t(locale, 'taskCenter.button.refresh'), data: callbackDetail(item, page) },
             ],
         ],
     };
 }
 
-export function buildTaskCancelConfirm(item: TaskCenterItem, page = 0): TaskCenterView {
-    const title = item.title.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() || '未命名任务';
+export function buildTaskCancelConfirm(item: TaskCenterItem, page = 0, locale: TelegramLocale = DEFAULT_LOCALE): TaskCenterView {
+    const title = item.title.replace(/[\u0000-\u001F\u007F]/g, ' ').trim() || t(locale, 'taskCenter.untitled');
     return {
         text: [
-            '⚠️ **确认取消这个任务？**',
+            t(locale, 'taskCenter.cancel.title'),
             '',
             `📌 ${markdownText(title)}`,
-            `类型：${kindLabel(item.kind)}`,
-            `进度：${markdownText(progressLine(item))}`,
+            t(locale, 'taskCenter.detail.type', { value: kindLabel(item.kind, locale) }),
+            t(locale, 'taskCenter.detail.progress', { value: markdownText(progressLine(item, locale)) }),
             '',
             item.active > 0
-                ? '正在下载的文件会被中止并清理临时文件，等待中的文件会立即移出队列。'
-                : '等待中的文件会立即移出队列。',
-            '其它任务不会受到影响。',
+                ? t(locale, 'taskCenter.cancel.activeWarning')
+                : t(locale, 'taskCenter.cancel.waitingWarning'),
+            t(locale, 'taskCenter.cancel.unaffected'),
         ].join('\n'),
         rows: [
             [
-                { text: '⚠️ 确认取消', data: callbackAction('cancel_confirm', item, page) },
-                { text: '返回详情', data: callbackDetail(item, page) },
+                { text: t(locale, 'taskCenter.button.confirmCancel'), data: callbackAction('cancel_confirm', item, page) },
+                { text: t(locale, 'taskCenter.button.backDetail'), data: callbackDetail(item, page) },
             ],
         ],
     };
@@ -297,14 +299,14 @@ export function parseTaskCenterCallback(data: string): ParsedTaskCenterCallback 
     let match = data.match(/^tc_l_(\d{1,6})$/);
     if (match) return { view: 'list', page: Number(match[1]) };
 
-    match = data.match(/^tc_d_([mcy])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
+    match = data.match(/^tc_d_([mc])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
     if (match) {
         const sourceType = CODE_SOURCES[match[1]];
         if (!sourceType || !VALID_ID.test(match[2])) return null;
         return { view: 'detail', sourceType, id: match[2], page: Number(match[3]) };
     }
 
-    match = data.match(/^tc_a_([sprtxk])_([mcy])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
+    match = data.match(/^tc_a_([sprtxk])_([mc])_([A-Za-z0-9-]{1,24})_(\d{1,6})$/);
     if (!match) return null;
     const action = CODE_ACTIONS[match[1]];
     const sourceType = CODE_SOURCES[match[2]];
@@ -342,59 +344,21 @@ export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot): TaskCe
     };
 }
 
-export function ytdlpTaskCenterItem(task: TransferTaskRecord): TaskCenterItem | null {
-    if (task.sourceType !== 'ytdlp' || !['pending', 'running', 'paused', 'failed', 'interrupted', 'retry_required'].includes(task.status)) return null;
-    const id = task.id.replace(/[^A-Za-z0-9-]/g, '').slice(0, 24);
-    if (!id) return null;
-    const state: TaskCenterState = ['failed', 'interrupted', 'retry_required'].includes(task.status)
-        ? 'failed'
-        : task.status === 'running' ? 'running' : task.status === 'paused' ? 'paused' : 'waiting';
-    const stageLabels: Record<string, string> = {
-        waiting: '等待开始',
-        recovering: '服务重启后恢复',
-        downloading: '下载源文件',
-        uploading: '上传到存储',
-        processing: '服务器处理中',
-    };
-    const accountName = typeof task.payload.targetAccountName === 'string' ? task.payload.targetAccountName : task.targetProvider;
-    return {
-        sourceType: 'ytdlp',
-        id,
-        kind: 'ytdlp',
-        title: task.title,
-        state,
-        total: 1,
-        active: state === 'running' ? 1 : 0,
-        pending: state === 'waiting' ? 1 : 0,
-        completed: 0,
-        failed: 0,
-        skipped: 0,
-        progressPercent: task.progress,
-        currentFileName: stageLabels[task.stage] || task.stage,
-        chatId: task.chatId || undefined,
-        userId: task.ownerUserId || undefined,
-        source: task.source || undefined,
-        targetFolder: `${accountName || '默认账户'} / ${task.targetFolder || 'ytdlp'}`,
-        reason: task.error || undefined,
-        createdAt: task.createdAt.getTime(),
-        updatedAt: task.updatedAt.getTime(),
-    };
-}
 
 function isChannelSystemPause(row: any, inCooldown: boolean): boolean {
     return inCooldown || row?.status === 'cooling';
 }
 
-function channelSystemPauseReason(row: any): string | undefined {
+function channelSystemPauseReason(row: any, locale: TelegramLocale): string | undefined {
     if (!isChannelSystemPause(row, Boolean(row?.cooldown_until && safeTime(row.cooldown_until, 0) > Date.now()))) return undefined;
     const until = row?.cooldown_until ? new Date(row.cooldown_until) : undefined;
     const providerLimit = /Google Drive|上传额度|daily_upload_limit/i.test(String(row?.error || ''));
-    const cause = providerLimit ? 'Google Drive 今日上传额度已达上限' : 'Telegram 请求频率受限（FloodWait）';
-    if (!until || Number.isNaN(until.getTime())) return `${cause}；系统会持续检查并自动恢复`;
-    return `${cause}；预计 ${until.toLocaleString('zh-CN', { hour12: false })} 后自动恢复`;
+    const cause = t(locale, providerLimit ? 'taskCenter.cooldown.storageLimit' : 'taskCenter.cooldown.floodWait');
+    if (!until || Number.isNaN(until.getTime())) return t(locale, 'taskCenter.cooldown.autoResume', { cause });
+    return t(locale, 'taskCenter.cooldown.autoResumeAt', { cause, time: formatDate(until, locale) });
 }
 
-export function channelTaskCenterItem(row: any): TaskCenterItem | null {
+export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT_LOCALE): TaskCenterItem | null {
     const rawId = String(row?.id || '').replace(/[^A-Za-z0-9-]/g, '');
     if (!rawId) return null;
     const id = rawId.slice(0, 12);
@@ -410,10 +374,10 @@ export function channelTaskCenterItem(row: any): TaskCenterItem | null {
     const protection: TaskCenterProtection | undefined = inCooldown
         ? {
             kind: /Google Drive|上传额度|daily_upload_limit/i.test(String(row.error || '')) ? 'storage_cooldown' : 'telegram_flood_wait',
-            reason: channelSystemPauseReason(row) || '系统冷却中',
+            reason: channelSystemPauseReason(row, locale) || t(locale, 'taskCenter.cooldown.system'),
             autoResume: true,
             retryAt: cooldownUntil && !Number.isNaN(cooldownUntil.getTime())
-                ? cooldownUntil.toLocaleString('zh-CN', { hour12: false })
+                ? formatDate(cooldownUntil, locale)
                 : undefined,
         }
         : undefined;
@@ -448,7 +412,7 @@ export function channelTaskCenterItem(row: any): TaskCenterItem | null {
             : {};
     }
     const qualifier = options.tag || (options.startDate && options.endDate ? `${options.startDate} → ${options.endDate}` : '');
-    const source = String(row.source || '频道任务');
+    const source = String(row.source || t(locale, 'taskCenter.kind.channel'));
     const chatId = row.chat_id !== undefined && row.chat_id !== null ? String(row.chat_id) : undefined;
     const userId = row.user_id !== undefined && row.user_id !== null ? safeNumber(row.user_id) : undefined;
     return {
@@ -468,7 +432,7 @@ export function channelTaskCenterItem(row: any): TaskCenterItem | null {
         userId,
         source,
         targetFolder: row.folder_override || options.folderOverride || null,
-        reason: protection?.reason ?? (row.status === 'paused' ? '用户请求暂停' : row.error || undefined),
+        reason: protection?.reason ?? (row.status === 'paused' ? t(locale, 'taskCenter.reason.userPaused') : row.error || undefined),
         protection,
         createdAt: safeTime(row.created_at),
         updatedAt: safeTime(row.queue_updated_at || row.updated_at),

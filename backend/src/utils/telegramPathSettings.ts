@@ -3,6 +3,7 @@ import { sanitizeFilename } from './telegramUtils.js';
 import { getSetting, setSetting } from './settings.js';
 import { clearTelegramPathStateRows, consumeTelegramOncePath, getTelegramSessionPath, previewTelegramPersistentPath, setTelegramPathStateRow } from './telegramPathStateStore.js';
 import { ScopedInteractionMap } from '../services/scopedInteractionMap.js';
+import { DEFAULT_LOCALE, type TelegramLocale, t } from '../i18n/telegram.js';
 
 interface ChatPathState {
     nextFolder?: string;
@@ -61,20 +62,20 @@ async function persistRecentTelegramPaths(chatId: string, paths: string[]): Prom
     await setSetting(recentPathSettingKey(chatId), JSON.stringify(paths));
 }
 
-export function sanitizeCustomStoragePath(input: string): string {
+export function sanitizeCustomStoragePath(input: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const raw = input.trim().replace(/\\+/g, '/').replace(/\/+/g, '/').replace(/^\/+|\/+$/g, '');
-    if (!raw) throw new Error('路径不能为空');
-    if (raw.startsWith('~') || raw.includes('\0')) throw new Error('路径包含非法字符');
+    if (!raw) throw new Error(t(locale, 'path.error.empty'));
+    if (raw.startsWith('~') || raw.includes('\0')) throw new Error(t(locale, 'path.error.illegalChars'));
 
     const segments = raw.split('/').map(segment => segment.trim()).filter(Boolean);
-    if (segments.length === 0) throw new Error('路径不能为空');
+    if (segments.length === 0) throw new Error(t(locale, 'path.error.empty'));
     if (segments.some(segment => segment === '.' || segment === '..' || segment.includes('..'))) {
-        throw new Error('路径不能包含 . 或 ..');
+        throw new Error(t(locale, 'path.error.dotSegments'));
     }
 
     const normalized = segments.map(segment => normalizePathSegment(segment)).filter(Boolean).join('/');
-    if (!normalized) throw new Error('路径无效');
-    if (normalized.length > 180) throw new Error('路径过长，请控制在 180 个字符内');
+    if (!normalized) throw new Error(t(locale, 'path.error.invalid'));
+    if (normalized.length > 180) throw new Error(t(locale, 'path.error.tooLong'));
     return normalized;
 }
 
@@ -86,8 +87,8 @@ export function rememberRecentTelegramPath(chatId: string, folder: string): stri
     return normalized;
 }
 
-export async function rememberRecentTelegramPathPersistent(chatId: string, folder: string): Promise<string> {
-    const normalized = sanitizeCustomStoragePath(folder);
+export async function rememberRecentTelegramPathPersistent(chatId: string, folder: string, locale: TelegramLocale = DEFAULT_LOCALE): Promise<string> {
+    const normalized = sanitizeCustomStoragePath(folder, locale);
     const current = await loadRecentTelegramPaths(chatId);
     const next = [normalized, ...current.filter(item => item !== normalized)].slice(0, MAX_RECENT_PATHS);
     await persistRecentTelegramPaths(chatId, next);
@@ -102,8 +103,8 @@ export async function getRecentTelegramPathsPersistent(chatId: string): Promise<
     return loadRecentTelegramPaths(chatId);
 }
 
-export function buildPathPreviewLine(folder: string): string {
-    return `保存到：${folder}/文件名（不会追加频道名或文件类型目录）`;
+export function buildPathPreviewLine(folder: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
+    return t(locale, 'path.preview', { folder });
 }
 
 export function getTelegramPathState(chatId: string): ChatPathState {
@@ -185,36 +186,28 @@ export async function applyPendingTelegramPathInputPersistent(chatId: string, us
     return { mode, folder: normalized };
 }
 
-export function buildPendingPathPrompt(mode: PendingPathInputMode, chatId?: string): string {
-    const recent = chatId ? getRecentTelegramPaths(chatId) : [];
+function renderPendingPathPrompt(mode: PendingPathInputMode, recent: string[], locale: TelegramLocale): string {
+    const once = mode === 'once';
     return [
-        mode === 'once' ? '📌 **设置下一次下载目录**' : '📍 **设置会话下载目录**',
+        t(locale, once ? 'path.prompt.onceTitle' : 'path.prompt.sessionTitle'),
         '',
-        '请直接发送目录名称：',
-        mode === 'once' ? '例如：`PIXIV/每日Top50`' : '例如：`相册/2026-07`',
-        ...(recent.length > 0 ? ['', '最近使用目录：', ...recent.slice(0, 4).map(item => `- ${item}`)] : []),
+        t(locale, 'path.prompt.sendFolder'),
+        t(locale, once ? 'path.prompt.onceExample' : 'path.prompt.sessionExample'),
+        ...(recent.length > 0 ? ['', t(locale, 'path.prompt.recent'), ...recent.slice(0, 4).map(item => `- ${item}`)] : []),
         '',
-        mode === 'once'
-            ? '说明：只影响下一次进入下载流程的文件。'
-            : '说明：会影响当前聊天后续下载，直到发送 `/pc` 或点击清除。',
-        '发送“取消”可退出本次设置。',
+        t(locale, once ? 'path.prompt.onceNote' : 'path.prompt.sessionNote'),
+        t(locale, 'path.prompt.cancel'),
     ].join('\n');
 }
 
-export async function buildPendingPathPromptPersistent(mode: PendingPathInputMode, chatId?: string): Promise<string> {
+export function buildPendingPathPrompt(mode: PendingPathInputMode, chatId?: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
+    const recent = chatId ? getRecentTelegramPaths(chatId) : [];
+    return renderPendingPathPrompt(mode, recent, locale);
+}
+
+export async function buildPendingPathPromptPersistent(mode: PendingPathInputMode, chatId?: string, locale: TelegramLocale = DEFAULT_LOCALE): Promise<string> {
     const recent = chatId ? await getRecentTelegramPathsPersistent(chatId) : [];
-    return [
-        mode === 'once' ? '📌 **设置下一次下载目录**' : '📍 **设置会话下载目录**',
-        '',
-        '请直接发送目录名称：',
-        mode === 'once' ? '例如：`PIXIV/每日Top50`' : '例如：`相册/2026-07`',
-        ...(recent.length > 0 ? ['', '最近使用目录：', ...recent.slice(0, 4).map(item => `- ${item}`)] : []),
-        '',
-        mode === 'once'
-            ? '说明：只影响下一次进入下载流程的文件。'
-            : '说明：会影响当前聊天后续下载，直到发送 `/pc` 或点击清除。',
-        '发送“取消”可退出本次设置。',
-    ].join('\n');
+    return renderPendingPathPrompt(mode, recent, locale);
 }
 
 export async function resolveTelegramStorageFolderPersistent(chatId: string, automaticFolder: string | null | undefined): Promise<string | null> {
@@ -276,32 +269,32 @@ export function previewTelegramStorageFolder(chatId: string, automaticFolder: st
     return state?.nextFolder || state?.sessionFolder || automaticFolder || null;
 }
 
-export function buildTelegramPathStateLines(chatId: string): string[] {
+export function buildTelegramPathStateLines(chatId: string, locale: TelegramLocale = DEFAULT_LOCALE): string[] {
     const state = getTelegramPathState(chatId);
     const active = state.nextFolder || state.sessionFolder;
     return [
-        `当前保存：${active ? `\`${active}\`（自定义目录）` : '默认自动分类'}`,
-        active ? buildPathPreviewLine(active) : '默认示例：`telegram/资源下载/images`',
-        `📌 下一次目录：${state.nextFolder ? `\`${state.nextFolder}\`` : '未设置'}`,
-        `📍 本会话目录：${state.sessionFolder ? `\`${state.sessionFolder}\`` : '未设置'}`,
+        t(locale, 'path.state.current', { value: active ? t(locale, 'path.state.custom', { folder: `\`${active}\`` }) : t(locale, 'path.state.automatic') }),
+        active ? buildPathPreviewLine(active, locale) : t(locale, 'path.state.defaultExample'),
+        t(locale, 'path.state.once', { value: state.nextFolder ? `\`${state.nextFolder}\`` : t(locale, 'path.state.unset') }),
+        t(locale, 'path.state.session', { value: state.sessionFolder ? `\`${state.sessionFolder}\`` : t(locale, 'path.state.unset') }),
     ];
 }
 
 export interface PathCenterState { automaticBySource: boolean; automaticByType: boolean; }
 
-export function buildPathSettingsKeyboard(_state: PathCenterState): Api.ReplyInlineMarkup {
+export function buildPathSettingsKeyboard(_state: PathCenterState, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({
                 buttons: [
-                    new Api.KeyboardButtonCallback({ text: '📌 设置下一次目录', data: Buffer.from('pr_help_once') }),
-                    new Api.KeyboardButtonCallback({ text: '📍 设置会话目录', data: Buffer.from('pr_help_session') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'path.button.setOnce'), data: Buffer.from('pr_help_once') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'path.button.setSession'), data: Buffer.from('pr_help_session') }),
                 ],
             }),
             new Api.KeyboardButtonRow({
                 buttons: [
-                    new Api.KeyboardButtonCallback({ text: '🕘 最近目录', data: Buffer.from('pr_recent') }),
-                    new Api.KeyboardButtonCallback({ text: '🧹 清除自定义目录', data: Buffer.from('pr_clear_custom') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'path.button.recent'), data: Buffer.from('pr_recent') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'path.button.clear'), data: Buffer.from('pr_clear_custom') }),
                 ],
             }),
         ],
@@ -311,18 +304,19 @@ export function buildPathSettingsKeyboard(_state: PathCenterState): Api.ReplyInl
 export function buildPathSettingsText(
     _state: PathCenterState,
     chatId: string,
+    locale: TelegramLocale = DEFAULT_LOCALE,
 ): string {
     return [
-        '📁 **保存位置**',
+        t(locale, 'path.settings.title'),
         '',
-        '**默认保存逻辑**',
-        '未设置自定义目录时：自动按来源/频道 + 文件类型保存。',
-        '例如：`telegram/资源下载/images`、`telegram/资源下载/videos`。',
-        '设置自定义目录后：文件会直接保存到该目录本身，不再追加频道名或文件类型目录。',
+        t(locale, 'path.settings.defaultLogicTitle'),
+        t(locale, 'path.settings.defaultLogic'),
+        t(locale, 'path.settings.examples'),
+        t(locale, 'path.settings.customLogic'),
         '',
-        '**当前路径状态**',
-        ...buildTelegramPathStateLines(chatId),
+        t(locale, 'path.settings.currentTitle'),
+        ...buildTelegramPathStateLines(chatId, locale),
         '',
-        '👇 点击按钮选择保存位置。',
+        t(locale, 'path.settings.choose'),
     ].join('\n');
 }

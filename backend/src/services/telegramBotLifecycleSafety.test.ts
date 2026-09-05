@@ -50,22 +50,29 @@ test('Bot replacement avoids stale saved sessions and requires full activation b
     assert.doesNotMatch(bot, /fs\.readFileSync\(SESSION_FILE/);
     assert.doesNotMatch(bot, /session\.save\(\)[\s\S]*writeFileSync\(SESSION_FILE/);
     const startupSection = bot.slice(bot.indexOf("console.log('🤖 Telegram Bot 正在启动...')"), bot.indexOf("console.log('🤖 Telegram Bot 已连接!')"));
-    assert.doesNotMatch(startupSection, /Promise\.race|withTelegramClientDeadline/);
+    assert.doesNotMatch(startupSection, /Promise\.race/);
     assert.match(bot, /new TelegramClient\(new StringSession\(''\)/);
-    assert.match(bot, /await client\.start[\s\S]*addEventHandler[\s\S]*markTelegramBotReady\(\)/);
+    assert.match(bot, /await withTelegramOperationDeadline\(client\.start/);
     const startup = bot.slice(bot.indexOf('export async function initTelegramBot'), bot.indexOf('async function withTelegramClientDeadline'));
     assert.doesNotMatch(startup, /startTelegramSubscriptionWorker|startTelegramJobRecoveryWorker|startPeriodicCleanup/);
     assert.match(bot, /markTelegramBotReady\(\)[\s\S]*Telegram Bot 启动成功/);
     assert.match(bot, /catch \(error\) \{[\s\S]*const failedClient = client;[\s\S]*client = null;[\s\S]*failedClient\.disconnect/);
 });
 
+test('Bot startup applies an application timeout and cleans up the failed client', () => {
+    assert.match(bot, /await withTelegramOperationDeadline\(client\.start/);
+    assert.match(bot, /client\.start\(\{ botAuthToken/);
+    assert.match(bot, /TELEGRAM_BOT_STARTUP_TIMEOUT_MS/);
+    assert.match(bot, /failedClient\.disconnect/);
+    assert.match(bot, /failedClient\.destroy/);
+});
+
 test('Bot startup defers global notifier and timer effects until ready and rolls them back on failure', () => {
     const startup = bot.slice(bot.indexOf('export async function initTelegramBot'), bot.indexOf('async function withTelegramClientDeadline'));
     const readyIndex = startup.indexOf('markTelegramBotReady()');
     assert.ok(readyIndex >= 0);
-    assert.ok(startup.indexOf('setYtDlpNotifier(', readyIndex) > readyIndex);
     assert.ok(startup.indexOf('digestTimer = setInterval(', readyIndex) > readyIndex);
-    assert.match(startup, /catch \(error\) \{[\s\S]*clearInterval\(digestTimer\)[\s\S]*setYtDlpNotifier\(null\)/);
+    assert.match(startup, /catch \(error\) \{[\s\S]*clearInterval\(digestTimer\)/);
 });
 
 test('Bot startup never performs orphan cleanup or sends cleanup notifications', () => {
@@ -81,11 +88,9 @@ test('credential test uses the HTTPS Bot API without creating another MTProto se
 
 test('application starts Bot first, then restores user accounts after an isolation delay before background workers', () => {
     const initialize = app.slice(app.indexOf('async function initializeApplication'), app.indexOf('async function startApplication'));
-    const startBot = initialize.indexOf('await initTelegramBot()');
-    const scheduleIsolation = initialize.indexOf('scheduleTelegramBotPostStartup');
-    assert.ok(startBot >= 0);
-    assert.ok(scheduleIsolation > startBot);
-    assert.doesNotMatch(initialize.slice(0, startBot), /restoreEnabledTelegramUserAccountsAfterRestart\(\)/);
+    assert.match(initialize, /void startTelegramRuntime\(telegramConfig\)/);
+    assert.doesNotMatch(initialize, /await initTelegramBot\(\)/);
+    assert.doesNotMatch(initialize, /await restoreEnabledTelegramUserAccountsAfterRestart\(\)/);
     assert.match(bot, /scheduleTelegramBotPostStartup[\s\S]*restoreUserAccounts[\s\S]*startTelegramSubscriptionWorker[\s\S]*startTelegramJobRecoveryWorker/);
 });
 

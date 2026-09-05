@@ -1,3 +1,5 @@
+import { tr } from '../i18n/runtime';
+
 export interface ChunkUploadInitContract {
     uploadId: string;
     maxChunkBytes: number;
@@ -5,7 +7,7 @@ export interface ChunkUploadInitContract {
 }
 
 export function parseChunkUploadInit(payload: unknown, totalSize: number): ChunkUploadInitContract {
-    if (!payload || typeof payload !== 'object') throw new Error('分块上传初始化响应无效');
+    if (!payload || typeof payload !== 'object') throw new Error(tr('errors.services.upload.initInvalid'));
     const value = payload as Record<string, unknown>;
     const uploadId = typeof value.uploadId === 'string' ? value.uploadId : '';
     const maxChunkBytes = Number(value.maxChunkBytes);
@@ -13,7 +15,7 @@ export function parseChunkUploadInit(payload: unknown, totalSize: number): Chunk
     if (!uploadId || !Number.isSafeInteger(maxChunkBytes) || maxChunkBytes < 1 ||
         !Number.isSafeInteger(totalChunks) || totalChunks < 1 ||
         totalChunks !== Math.ceil(totalSize / maxChunkBytes)) {
-        throw new Error('分块上传初始化响应无效');
+        throw new Error(tr('errors.services.upload.initInvalid'));
     }
     return { uploadId, maxChunkBytes, totalChunks };
 }

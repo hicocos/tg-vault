@@ -1,4 +1,5 @@
 import { API_BASE } from './config';
+import { tr } from '../i18n/runtime';
 
 export interface AuthStatus {
     setupRequired: boolean;
@@ -91,13 +92,13 @@ class AuthService {
 
             const data = await response.json();
             if (!response.ok) {
-                return { success: false, error: data.error || '初始化失败' };
+                return { success: false, error: data.error || tr('errors.services.auth.setupFailed') };
             }
 
             this.setToken();
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -114,7 +115,7 @@ class AuthService {
             const data = await response.json();
 
             if (!response.ok) {
-                return { success: false, error: data.error || '登录失败' };
+                return { success: false, error: data.error || tr('errors.services.auth.loginFailed') };
             }
 
             if (data.requiresTOTP) {
@@ -124,7 +125,7 @@ class AuthService {
             this.setToken();
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -141,13 +142,13 @@ class AuthService {
             const data = await response.json();
 
             if (!response.ok) {
-                return { success: false, error: data.error || '验证失败' };
+                return { success: false, error: data.error || tr('errors.services.auth.verificationFailed') };
             }
 
             this.setToken();
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -193,12 +194,12 @@ class AuthService {
                 body: JSON.stringify({ currentPassword, newPassword }),
             });
             const data = await response.json().catch(() => ({}));
-            if (this.invalidateForAuthStatus(response)) return { success: false, error: '登录会话已失效，请重新登录' };
-            if (!response.ok) return { success: false, error: data.error || '修改密码失败' };
+            if (this.invalidateForAuthStatus(response)) return { success: false, error: tr('errors.services.generic.sessionExpired') };
+            if (!response.ok) return { success: false, error: data.error || tr('errors.services.auth.changePasswordFailed') };
             this.clearToken();
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -210,12 +211,12 @@ class AuthService {
                 headers: this.getAuthHeaders(),
             });
             const data = await response.json().catch(() => ({}));
-            if (this.invalidateForAuthStatus(response)) return { success: false, error: '登录会话已失效，请重新登录' };
-            if (!response.ok) return { success: false, error: data.error || '退出所有设备失败' };
+            if (this.invalidateForAuthStatus(response)) return { success: false, error: tr('errors.services.generic.sessionExpired') };
+            if (!response.ok) return { success: false, error: data.error || tr('errors.services.auth.revokeSessionsFailed') };
             this.clearToken();
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -228,14 +229,14 @@ class AuthService {
             });
 
             if (!response.ok) {
-                if (this.invalidateForAuthStatus(response)) throw new Error('登录会话已失效，请重新登录');
+                if (this.invalidateForAuthStatus(response)) throw new Error(tr('errors.services.generic.sessionExpired'));
                 const data = await response.json();
-                throw new Error(data.error || '获取 2FA 信息失败');
+                throw new Error(data.error || tr('errors.services.auth.getTwoFactorInfoFailed'));
             }
 
             return await response.json();
         } catch (error: any) {
-            throw new Error(error.message || '网络错误');
+            throw new Error(error.message || tr('errors.services.generic.network'));
         }
     }
 
@@ -253,14 +254,14 @@ class AuthService {
             });
 
             const data = await response.json();
-            if (this.invalidateForAuthStatus(response)) return { success: false, error: '登录会话已失效，请重新登录' };
+            if (this.invalidateForAuthStatus(response)) return { success: false, error: tr('errors.services.generic.sessionExpired') };
             if (!response.ok) {
-                return { success: false, error: data.error || '激活失败' };
+                return { success: false, error: data.error || tr('errors.services.auth.activateTwoFactorFailed') };
             }
 
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 
@@ -278,14 +279,14 @@ class AuthService {
             });
 
             const data = await response.json();
-            if (this.invalidateForAuthStatus(response)) return { success: false, error: '登录会话已失效，请重新登录' };
+            if (this.invalidateForAuthStatus(response)) return { success: false, error: tr('errors.services.generic.sessionExpired') };
             if (!response.ok) {
-                return { success: false, error: data.error || '禁用失败' };
+                return { success: false, error: data.error || tr('errors.services.auth.disableTwoFactorFailed') };
             }
 
             return { success: true };
         } catch {
-            return { success: false, error: '网络错误' };
+            return { success: false, error: tr('errors.services.generic.network') };
         }
     }
 }

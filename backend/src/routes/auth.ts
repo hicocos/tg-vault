@@ -80,7 +80,7 @@ function setAuthCookie(res: Response, token: string, expiresAt: Date) {
 }
 
 function clearAuthCookie(res: Response) {
-    res.clearCookie('tg_vault_token', { path: '/' });
+    res.clearCookie('tg_vault_token', { path: '/', secure: shouldUseSecureCookie(), sameSite: 'lax' });
 }
 
 

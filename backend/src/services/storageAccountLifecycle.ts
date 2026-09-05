@@ -135,9 +135,6 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
          UNION ALL
          SELECT operation_id FROM chunk_upload_reconciliations
          WHERE account_id = $1 AND status = 'pending'
-         UNION ALL
-         SELECT operation_id FROM ytdlp_write_reconciliations
-         WHERE account_id = $1 AND status = 'pending'
          LIMIT 1`,
         [accountId],
     );

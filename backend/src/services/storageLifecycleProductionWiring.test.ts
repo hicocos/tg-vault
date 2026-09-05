@@ -4,17 +4,15 @@ import test from 'node:test';
 
 const read = (relative: string) => fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
 
-test('Telegram, yt-dlp, web and chunk permanent writes all hold account operation leases', () => {
+test('Telegram, web and chunk permanent writes all hold account operation leases', () => {
     const upload = read('../routes/upload.ts');
     const chunks = read('../routes/chunkedUpload.ts');
     const telegram = read('./telegramUpload.ts');
-    const ytdlp = read('./ytDlpDownload.ts');
     assert.match(upload, /acquireStorageAccountOperationLease\(pool, activeAccountId, 'web_upload'/);
     assert.match(upload, /await storageLease\?\.release\(\)/);
     assert.match(chunks, /acquireStorageAccountOperationLease\(pool, session\.targetAccountId, 'chunk_completion'/);
     assert.match(chunks, /await storageLease\?\.release\(\)/);
     assert.equal((telegram.match(/withStorageAccountOperationLease\(pool, activeAccountId, 'telegram_upload'/g) || []).length, 2);
-    assert.match(ytdlp, /const target = taskTarget\(task\)[\s\S]*withStorageAccountOperationLease\(pool, accountId, 'ytdlp_upload'/);
 });
 
 test('Telegram job target snapshot and storage switch participate in account row locking transactions', () => {

@@ -14,7 +14,7 @@ const cases = [
     ['/files/videos', 'video'],
     ['/files/audio', 'audio'],
     ['/files/documents', 'document'],
-    ['/files/ytdlp', 'ytdlp'],
+
     ['/files/favorites', 'favorites'],
 ] as const;
 

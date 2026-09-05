@@ -382,7 +382,7 @@ router.post('/config/telegram-bot/test', requireAuth, async (req: Request, res: 
     try {
         const credentials = normalizeTelegramBotCredentials(req.body);
         const bot = await testTelegramBotCredentials(credentials);
-        return res.json({ success: true, bot });
+        return res.json({ success: true, bot, runtimeStarted: false });
     } catch (error) {
         return res.status(400).json({ error: error instanceof Error ? error.message : 'Telegram Bot 凭证测试失败' });
     }
@@ -488,7 +488,8 @@ router.delete('/config/telegram-bot', requireAuth, async (req: Request, res: Res
         await withTelegramBotLifecycle(async controls => {
             await controls.stop();
             await deleteTelegramBotConfig();
-            const sessionPath = process.env.TELEGRAM_SESSION_FILE || './data/telegram_session.txt';
+            // Use the same resolved setting as the user-account migration path.
+            const sessionPath = getTelegramUserSessionFilePath();
             if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { force: true });
             const effective = await applyEffectiveTelegramBotConfig();
             if (effective.source === 'environment' && effective.enabled && effective.credentials) await controls.restart(effective.credentials);

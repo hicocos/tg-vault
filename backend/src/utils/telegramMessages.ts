@@ -9,6 +9,7 @@ import { Api } from 'telegram';
 import { formatBytes, getTypeEmoji } from './telegramUtils.js';
 export { getProviderDisplayName } from './providerMetadata.js';
 import { getProviderDisplayName } from './providerMetadata.js';
+import { DEFAULT_LOCALE, formatBytes as formatLocalizedBytes, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
 
 interface TaskSystemPauseView {
     kind: 'disk_pressure' | 'storage_cooldown' | 'telegram_flood_wait';
@@ -47,19 +48,19 @@ function buildTaskControlLines(taskId?: string, queuePaused = false, pauseReason
     return ['👇 使用下方按钮管理此任务。'];
 }
 
-export function buildTaskControlButtons(taskId?: string, queuePaused = false, systemPause?: TaskSystemPauseView, queuePausing = false, userPaused = queuePaused && !systemPause, failedCount = 0): Api.ReplyInlineMarkup | undefined {
+export function buildTaskControlButtons(taskId?: string, queuePaused = false, systemPause?: TaskSystemPauseView, queuePausing = false, userPaused = queuePaused && !systemPause, failedCount = 0, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup | undefined {
     if (!taskId) return undefined;
     const actionButtons: Api.TypeKeyboardButton[] = queuePaused || queuePausing
         ? systemPause && !userPaused
             ? []
-            : [new Api.KeyboardButtonCallback({ text: '▶️ 继续', data: Buffer.from(`tq_resume_${taskId}`) })]
-        : [new Api.KeyboardButtonCallback({ text: '⏸ 暂停', data: Buffer.from(`tq_pause_${taskId}`) })];
-    actionButtons.push(new Api.KeyboardButtonCallback({ text: '🛑 取消', data: Buffer.from(`tq_cancel_${taskId}`) }));
+            : [new Api.KeyboardButtonCallback({ text: t(locale, 'task.resume'), data: Buffer.from(`tq_resume_${taskId}`) })]
+        : [new Api.KeyboardButtonCallback({ text: t(locale, 'task.pause'), data: Buffer.from(`tq_pause_${taskId}`) })];
+    actionButtons.push(new Api.KeyboardButtonCallback({ text: t(locale, 'task.cancel'), data: Buffer.from(`tq_cancel_${taskId}`) }));
     const rows = [new Api.KeyboardButtonRow({ buttons: actionButtons })];
     if (failedCount > 0) {
         rows.push(new Api.KeyboardButtonRow({ buttons: [
-            new Api.KeyboardButtonCallback({ text: `🔄 重试失败 (${failedCount})`, data: Buffer.from(`receipt_retry_${taskId}`) }),
-            new Api.KeyboardButtonCallback({ text: '查看失败明细', data: Buffer.from(`receipt_failures_${taskId}`) }),
+            new Api.KeyboardButtonCallback({ text: t(locale, 'task.retryFailed', { count: failedCount }), data: Buffer.from(`receipt_retry_${taskId}`) }),
+            new Api.KeyboardButtonCallback({ text: t(locale, 'task.failureDetails'), data: Buffer.from(`receipt_failures_${taskId}`) }),
         ] }));
     }
     return new Api.ReplyInlineMarkup({ rows });
@@ -165,45 +166,23 @@ export const MSG = {
 // ─── 消息构建函数 ────────────────────────────────────────────
 
 /** 已认证用户的欢迎消息 */
-export function buildWelcomeBack(): string {
-    return [
-        `👋 **欢迎回来！**`,
-        ``,
-        `发送或转发文件即可上传。`,
-        ``,
-        `请从下方四个主入口开始；完整能力可使用 /help 查看。`,
-    ].join('\n');
+export function buildWelcomeBack(locale: TelegramLocale = DEFAULT_LOCALE): string {
+    return t(locale, 'auth.welcomeBack');
 }
 
 /** 首次认证成功的欢迎消息 */
-export function buildAuthSuccess(): string {
-    return [
-        `✅ **密码验证成功！**`,
-        ``,
-        `现在您可以：`,
-        `📤  发送/转发任意文件上传 (最大 2GB，账号级下载器不受此限制)`,
-        `📊  /storage — 查看存储空间`,
-    ].join('\n');
+export function buildAuthSuccess(locale: TelegramLocale = DEFAULT_LOCALE): string {
+    return t(locale, 'auth.successBody');
 }
 
 /** /start 未认证的欢迎 + 密码键盘提示 */
-export function buildStartPrompt(): string {
-    return `👋 **欢迎使用 TG Vault Bot！**\n\n🔐 请使用下方键盘输入密码：`;
+export function buildStartPrompt(locale: TelegramLocale = DEFAULT_LOCALE): string {
+    return t(locale, 'auth.startPrompt');
 }
 
 /** /help 简洁入口 */
-export function buildHelp(): string {
-    return [
-        '📖 **使用帮助**',
-        '',
-        '📤 发送或转发文件：直接上传',
-        '🔗 发送视频链接：解析后选择格式',
-        '📥 任务：查看进度、暂停或取消',
-        '📁 保存位置：设置目录和存储目标',
-        '📡 频道：按日期/标签下载或管理订阅',
-        '',
-        '👇 点击下方按钮选择功能。',
-    ].join('\n');
+export function buildHelp(locale: TelegramLocale = DEFAULT_LOCALE): string {
+    return t(locale, 'help.body');
 }
 
 /** 2FA 设置 QR 码的 caption */
@@ -232,31 +211,31 @@ interface StorageReportData {
     queuePending: number;
 }
 
-export function buildStorageReport(data: StorageReportData): string {
+export function buildStorageReport(data: StorageReportData, locale: TelegramLocale = DEFAULT_LOCALE): string {
     // 磁盘用量可视化条
     const usageBar = generateProgressBar(data.diskUsedPercent, 100, 12);
 
     return [
-        `📊 **存储空间统计**`,
+        t(locale, 'messages.storage.title'),
         LINE,
         ``,
-        `**💿 服务器磁盘**`,
-        `  总容量　${formatBytes(data.diskTotal)}`,
-        `  已使用　${formatBytes(data.diskTotal - data.diskFree)} (${data.diskUsedPercent}%)`,
-        `  可　用　${formatBytes(data.diskFree)}`,
+        t(locale, 'messages.storage.disk'),
+        t(locale, 'messages.storage.total', { value: formatLocalizedBytes(data.diskTotal, locale) }),
+        t(locale, 'messages.storage.used', { value: formatLocalizedBytes(data.diskTotal - data.diskFree, locale), percent: data.diskUsedPercent }),
+        t(locale, 'messages.storage.free', { value: formatLocalizedBytes(data.diskFree, locale) }),
         `  ${usageBar}`,
         ``,
-        `**📁 存储源文件**`,
-        `  文件数　${data.fileCount} 个`,
-        `  占　用　${formatBytes(data.totalFileSize)}`,
+        t(locale, 'messages.storage.indexed'),
+        t(locale, 'messages.storage.fileCount', { count: data.fileCount }),
+        t(locale, 'messages.storage.size', { value: formatLocalizedBytes(data.totalFileSize, locale) }),
         ``,
-        `**🖥️ 本地服务器下载文件**`,
-        `  文件数　${data.localFileCount} 个`,
-        `  占　用　${formatBytes(data.localTotalSize)}`,
-        `  位置　uploads 本地缓存/下载目录`,
+        t(locale, 'messages.storage.local'),
+        t(locale, 'messages.storage.fileCount', { count: data.localFileCount }),
+        t(locale, 'messages.storage.size', { value: formatLocalizedBytes(data.localTotalSize, locale) }),
+        t(locale, 'messages.storage.location'),
         ``,
-        `**📡 下载队列**`,
-        `  🔄 处理中 ${data.queueActive}　⏳ 等待中 ${data.queuePending}`,
+        t(locale, 'messages.storage.queue'),
+        t(locale, 'messages.storage.queueCounts', { active: data.queueActive, pending: data.queuePending }),
     ].join('\n');
 }
 
@@ -276,10 +255,10 @@ function compactTelegramText(value: unknown, maxLength: number): string {
     return text.length > maxLength ? `${text.slice(0, Math.max(1, maxLength - 1))}…` : text;
 }
 
-export function buildFileList(files: FileListItem[], total: number): string {
+export function buildFileList(files: FileListItem[], total: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const visibleFiles = files.slice(0, 12);
     const lines: string[] = [
-        `📋 **最近上传的文件**（本页 ${visibleFiles.length} 条）`,
+        t(locale, 'messages.files.title', { count: visibleFiles.length }),
         LINE,
     ];
 
@@ -300,13 +279,13 @@ export function buildFileList(files: FileListItem[], total: number): string {
         const displayName = compactTelegramText(file.name, 36);
         const folder = compactTelegramText(file.folder, 48);
 
-        lines.push(`${index + 1}. ${typeEmoji} **${displayName || '未命名文件'}**`);
+        lines.push(`${index + 1}. ${typeEmoji} **${displayName || t(locale, 'messages.files.unnamed')}**`);
         lines.push(`    ${size} · ${date}${folder ? ` · 📁 ${folder}` : ''}`);
         lines.push(`    ID: \`${file.id.substring(0, 8)}\``);
     });
 
     lines.push('');
-    lines.push('💡 需要搜索或操作文件，请打开“搜索和操作文件”。');
+    lines.push(t(locale, 'messages.files.hint'));
 
     return lines.join('\n');
 }
@@ -371,6 +350,7 @@ export function buildUploadSuccess(
     folder?: string | null,
     fileId?: string | null,
     duplicateOutcome?: 'copied' | 'skipped' | null,
+    locale: TelegramLocale = DEFAULT_LOCALE,
 ): string {
     const typeEmoji = getTypeEmoji(
         fileType === 'image' ? 'image/' :
@@ -379,42 +359,42 @@ export function buildUploadSuccess(
     );
     const bar = generateProgressBar(1, 1);
     return [
-        `✅ **上传成功！**`,
+        t(locale, 'upload.success'),
         `${bar}`,
         ``,
         `${typeEmoji} ${fileName}`,
-        `📦 ${formatBytes(size)}`,
+        `📦 ${formatLocalizedBytes(size, locale)}`,
         `📍 ${getProviderDisplayName(providerName)}`,
         ...(folder ? [`📁 ${folder}`] : []),
         ...(fileId ? [`🆔 ${fileId.slice(0, 13)}`] : []),
-        ...(duplicateOutcome === 'copied' ? ['♻️ 重复处理：已生成副本'] : duplicateOutcome === 'skipped' ? ['⏭️ 重复处理：已跳过'] : []),
+        ...(duplicateOutcome ? [t(locale, duplicateOutcome === 'copied' ? 'upload.duplicateCopiedOutcome' : 'upload.duplicateSkippedOutcome')] : []),
         ``,
-        ...(fileId ? ['👇 可在“搜索和操作文件”中继续管理。'] : []),
+        ...(fileId ? [t(locale, 'upload.manageHint')] : []),
     ].join('\n');
 }
 
 /** 单文件上传失败 */
-export function buildUploadFail(fileName: string, error: string): string {
+export function buildUploadFail(fileName: string, error: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `❌ **上传失败**`,
+        t(locale, 'upload.failed'),
         ``,
         `📄 ${fileName}`,
-        `原因: ${error}`,
+        t(locale, 'upload.reason', { error }),
         ``,
-        `🔄 大文件可能因网络波动、Telegram 限流或临时断流失败；Bot 已自动重试一次。`,
-        `💡 可重新发送该文件，或用 /download_workers 降低并发后再试。`,
+        t(locale, 'upload.failureRetryNote'),
+        t(locale, 'upload.failureAdvice'),
     ].join('\n');
 }
 
-export function buildDuplicateSkipped(fileName: string, folder: string | null | undefined, existingId?: string): string {
+export function buildDuplicateSkipped(fileName: string, folder: string | null | undefined, existingId?: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `⏭️ **已跳过重复文件**`,
+        t(locale, 'upload.duplicateSkipped'),
         ``,
         `📄 ${fileName}`,
         ...(folder ? [`📁 ${folder}`] : []),
-        ...(existingId ? [`🆔 已存在: ${existingId.substring(0, 8)}`] : []),
+        ...(existingId ? [t(locale, 'upload.existingId', { id: existingId.substring(0, 8) })] : []),
         ``,
-        `如需保留副本，请打开“重复文件处理”并选择“生成副本”。`,
+        t(locale, 'upload.duplicateCopyAdvice'),
     ].join('\n');
 }
 
@@ -424,25 +404,26 @@ export function buildDownloadProgress(
     downloaded: number,
     total: number,
     typeEmoji: string,
-    startTime?: number
+    startTime?: number,
+    locale: TelegramLocale = DEFAULT_LOCALE,
 ): string {
     const bar = startTime
         ? generateProgressBarWithSpeed(downloaded, total, startTime)
         : generateProgressBar(downloaded, total);
     return [
-        `⏳ **正在下载**`,
+        t(locale, 'upload.downloading'),
         `${bar}`,
         ``,
         `${typeEmoji} ${fileName}`,
-        `${formatBytes(downloaded)} / ${formatBytes(total)}`,
+        `${formatLocalizedBytes(downloaded, locale)} / ${formatLocalizedBytes(total, locale)}`,
     ].join('\n');
 }
 
 /** 文件保存中 */
-export function buildSavingFile(fileName: string, typeEmoji: string): string {
+export function buildSavingFile(fileName: string, typeEmoji: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const bar = generateProgressBar(1, 1);
     return [
-        `💾 **正在保存...**`,
+        t(locale, 'upload.saving'),
         `${bar}`,
         ``,
         `${typeEmoji} ${fileName}`,
@@ -450,21 +431,21 @@ export function buildSavingFile(fileName: string, typeEmoji: string): string {
 }
 
 /** 排队等待中 */
-export function buildQueuedMessage(fileName: string, pendingCount: number): string {
+export function buildQueuedMessage(fileName: string, pendingCount: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `⏳ **已加入下载队列**`,
+        t(locale, 'upload.queued'),
         ``,
         `📄 ${fileName}`,
-        `📊 当前排队: ${pendingCount} 个任务`,
-        `💡 Bot 将按顺序处理，请耐心等待`,
+        t(locale, 'upload.currentQueue', { count: pendingCount }),
+        t(locale, 'upload.wait'),
     ].join('\n');
 }
 
 /** 重试中 */
-export function buildRetryMessage(fileName: string, typeEmoji: string): string {
+export function buildRetryMessage(fileName: string, typeEmoji: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const bar = generateProgressBar(0, 1);
     return [
-        `🔄 **上传失败，正在重试...**`,
+        t(locale, 'upload.retrying'),
         `${bar}`,
         ``,
         `${typeEmoji} ${fileName}`,
@@ -472,9 +453,9 @@ export function buildRetryMessage(fileName: string, typeEmoji: string): string {
 }
 
 /** 删除成功 */
-export function buildDeleteSuccess(fileName: string, fileId: string): string {
+export function buildDeleteSuccess(fileName: string, fileId: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        `✅ **文件已删除**`,
+        t(locale, 'messages.delete.success'),
         ``,
         `📄 ${fileName}`,
         `🗑️ ID: ${fileId}`,

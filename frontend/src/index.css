@@ -75,13 +75,89 @@
 }
 
 @layer base {
+  :root {
+    /* Keep Latin and Cyrillic glyphs in one compatible UI font run. */
+    --font-sans: Inter, Roboto, "Open Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* Keep Cyrillic in one font run; never fall back per character. */
+    --font-sans-ru: "Noto Sans", "DejaVu Sans", Arial, sans-serif;
+  }
+
   * {
     @apply border-border;
+    font-feature-settings: normal;
+    font-kerning: normal;
+    font-variant-ligatures: normal;
+    font-variant-caps: normal;
   }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    font-family: var(--font-sans);
+    letter-spacing: normal;
+    word-spacing: normal;
+    font-feature-settings: normal;
+    font-kerning: normal;
+    font-variant-ligatures: normal;
+    font-variant-caps: normal;
     overflow-x: hidden;
     max-width: 100vw;
+  }
+
+  /*
+   * Tailwind tracking utilities are useful for Latin headings and labels,
+   * but they split the visual rhythm of Cyrillic words (for example
+   * `поиск` can appear as `поис к`).  Reset inherited and utility-level
+   * typography for the complete Russian subtree, not only the body.
+   */
+  html[lang="ru"],
+  html[lang^="ru-"] {
+    --font-sans: var(--font-sans-ru);
+  }
+
+  html[lang="ru"] body,
+  html[lang^="ru-"] body,
+  html[lang="ru"] body *,
+  html[lang^="ru-"] body * {
+    font-family: var(--font-sans-ru) !important;
+    letter-spacing: normal !important;
+    word-spacing: normal !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+    white-space: normal !important;
+    text-align: left !important;
+    text-align-last: left !important;
+    text-justify: none !important;
+    hyphens: none !important;
+    font-feature-settings: normal !important;
+    font-kerning: normal !important;
+    font-variant-ligatures: normal !important;
+    font-variant-caps: normal !important;
+  }
+
+  /* Russian labels are wider than English labels. On phones, stack action
+   * controls instead of squeezing translated copy beside a button. */
+  @media (max-width: 640px) {
+    html[lang="ru"] .ru-stack-on-mobile,
+    html[lang^="ru-"] .ru-stack-on-mobile {
+      flex-direction: column !important;
+      align-items: stretch !important;
+    }
+    html[lang="ru"] .ru-stack-on-mobile > *,
+    html[lang^="ru-"] .ru-stack-on-mobile > * {
+      min-width: 0 !important;
+      max-width: 100% !important;
+    }
+  }
+
+  /* Text must remain a single unbreakable run inside translated labels. */
+  html[lang="ru"] .ru-copy,
+  html[lang^="ru-"] .ru-copy {
+    display: inline-block;
+    max-width: 100%;
+    white-space: normal;
+    word-break: keep-all !important;
+    overflow-wrap: normal !important;
+    hyphens: none !important;
   }
 
   select {

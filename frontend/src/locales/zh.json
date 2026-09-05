@@ -3,8 +3,6 @@
     "title": "TG Vault",
     "subtitle": "管理和组织您的数字资产。",
     "filesSubtitle": "浏览和管理全部文件与文件夹。",
-    "ytdlpTitle": "YT-DLP",
-    "ytdlpSubtitle": "浏览和管理通过 yt-dlp 下载的文件。",
     "favoritesSubtitle": "集中查看和管理已收藏的文件与文件夹。",
     "allFiles": "全部文件",
     "fileTypes": {
@@ -92,6 +90,11 @@
     "trash": "回收站",
     "favorites": "收藏",
     "tasks": "任务",
+    "subscriptions": "订阅中心",
+    "collapse": "收起侧栏",
+    "expand": "展开侧栏",
+    "closeNavigation": "关闭导航菜单",
+    "openNavigation": "打开导航菜单",
     "logout": "退出当前设备",
     "categories": {
       "images": "图片",
@@ -286,7 +289,7 @@
   },
   "tasks": {
     "title": "任务中心",
-    "subtitle": "查看和管理 Web、Telegram、频道订阅及 yt-dlp 任务。",
+    "subtitle": "查看和管理 Web、Telegram 及频道订阅任务。",
     "subtitleScoped": "仅显示仍引用所选存储账户的任务或 Telegram 目标。",
     "showAll": "显示全部任务",
     "updated": "更新：{{time}}",
@@ -297,7 +300,6 @@
       "telegramFile": "Telegram 文件",
       "channelDownload": "频道下载",
       "telegramTarget": "Telegram 会话目标",
-      "ytdlp": "yt-dlp",
       "subscription": "频道订阅"
     },
     "statuses": {

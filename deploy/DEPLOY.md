@@ -11,20 +11,22 @@ TG Vault 当前采用 **Docker Compose + 宿主机 Nginx/面板反向代理**。
 
 ## 2. 创建环境变量
 
-推荐先运行一次安装脚本，它会创建 `.env`、生成数据库密码和应用密钥；当前源码版本只在构建命令中临时注入，不写入 `.env`：
+推荐先运行一次安装脚本。首次部署它会创建 `.env`、生成数据库密码和应用密钥；版本信息只在构建命令中临时注入，不写入 `.env`：
 
 ```bash
 ./deploy/install.sh
 ```
 
-首次运行会提示修改地址。新手只需填写以下 2 项：
+首次运行只需要填写以下 2 项：
 
 ```dotenv
 VITE_API_URL=https://api.example.com
 CORS_ORIGIN=https://cloud.example.com
 ```
 
-两项都应是完整的 HTTPS origin，不带路径、查询参数或末尾 `/`。修改后再次运行 `./deploy/install.sh` 即可构建并启动。
+两项都应是完整的 HTTPS origin，不带路径、查询参数或末尾 `/`。安装脚本会校验并在确认后构建启动。
+
+**Telegram 不属于首次部署的 `.env` 配置。** 服务启动并完成 Web 管理员初始化后，再进入 Web「设置 → Telegram」配置 Bot、允许用户、账号登录和下载并发。不要为了第一次部署手工填写 `TELEGRAM_*`、session 路径或并发变量；这些变量只为旧版本兼容和高级运维保留。
 
 新安装时，脚本会自动生成并保留：
 
@@ -79,6 +81,8 @@ git pull --ff-only origin main
 ```
 
 如果 `git status --short` 显示本地改动，先人工确认，不要强制覆盖。
+
+升级时重新运行 `./deploy/install.sh`：向导会显示已有 Web/API URL，直接按 Enter 保留即可；如果地址不是本次部署要使用的地址，输入 `e` 返回修改，确认后才会开始构建。脚本只重建并替换 `backend` 和 `frontend`，不会重建 PostgreSQL，也不会删除 Docker 持久化卷。
 
 可选验证：
 

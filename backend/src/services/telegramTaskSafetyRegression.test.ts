@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ensureJobCanRunForTest } from './telegramChannelJobs.js';
+import { resources } from '../i18n/telegram.js';
 
 const jobs = fs.readFileSync(new URL('./telegramChannelJobs.ts', import.meta.url), 'utf8');
 const upload = fs.readFileSync(new URL('./telegramUpload.ts', import.meta.url), 'utf8');
@@ -25,7 +26,8 @@ assert.match(jobs, /restoreUnfinishedClaimedRefs\(jobId, refs/);
 assert.match(jobs, /paused_at IS NULL AND status NOT IN \('cancelled', 'paused', 'cooling'\)/);
 assert.match(jobs, /j\.kind IN \('date_range', 'tag_download', 'subscription_sync'\)/);
 assert.match(commands, /if \(executionGroup\) pauseChannelExecutionGroup\(fullId\)/);
-assert.match(bot, /下载任务已取消/);
+assert.match(bot, /bot\.legacy\.cancelledResult/);
+assert.match(resources['zh-CN']['bot.legacy.cancelledResult'], /任务已取消/);
 assert.match(bot, /slice\(0, 12\)/);
 
 assert.match(bot, /callbackChatId !== canonicalControlChatId/);

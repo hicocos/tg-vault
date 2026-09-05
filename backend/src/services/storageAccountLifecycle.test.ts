@@ -48,7 +48,6 @@ test('delete locks account, rechecks every resumable task/upload reference, then
     assert.match(client.calls[5].text, /storage_account_leases/);
     assert.match(client.calls[6].text, /telegram_write_reconciliations/);
     assert.match(client.calls[6].text, /chunk_upload_reconciliations/);
-    assert.match(client.calls[6].text, /ytdlp_write_reconciliations/);
     assert.match(client.calls[7].text, /chunk_upload_sessions/);
     assert.match(client.calls[7].text, /status IN \('open', 'completing', 'failed'\)/);
     assert.match(client.calls[8].text, /target_account_id = NULL/);

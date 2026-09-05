@@ -1,4 +1,5 @@
 import type { StorageAccount, StorageConfig, UploadTargetSnapshot } from './api.js';
+import { tr } from '../i18n/runtime';
 
 export const STORAGE_PROVIDER_IDS = ['local', 'onedrive', 'google_drive', 'aliyun_oss', 's3', 'webdav', 'openlist'] as const;
 export type StorageProviderId = typeof STORAGE_PROVIDER_IDS[number];
@@ -17,7 +18,7 @@ export interface UploadTargetDisplaySnapshot extends UploadTargetSnapshot {
 function canonicalProviderId(provider: string | null | undefined): StorageProviderId {
     if (!provider) return 'local';
     if ((STORAGE_PROVIDER_IDS as readonly string[]).includes(provider)) return provider as StorageProviderId;
-    throw new Error(`不支持的上传存储类型：${provider}`);
+    throw new Error(tr('errors.services.storage.unsupportedProvider', { provider }));
 }
 
 export function createUploadTargetSnapshot(
@@ -36,6 +37,6 @@ export function createUploadTargetSnapshot(
         accountId: storageConfig?.activeAccountId || null,
         accountName,
         folder: normalizedFolder,
-        label: `${providerLabel || (provider === 'local' ? '本地存储' : provider)} / ${accountName || (provider === 'local' ? '服务器本地目录' : '当前账户')} / ${normalizedFolder || '根目录'}`,
+        label: `${providerLabel || (provider === 'local' ? tr('errors.services.storage.local') : provider)} / ${accountName || (provider === 'local' ? tr('errors.services.storage.localDirectory') : tr('errors.services.storage.currentAccount'))} / ${normalizedFolder || tr('errors.services.storage.root')}`,
     };
 }

@@ -1,6 +1,6 @@
 import type { TransferTaskRecord } from './transferTasks.js';
 
-export type UnifiedTaskSourceType = 'telegram_bot' | 'telegram_channel' | 'ytdlp' | 'web_upload' | 'subscription' | 'telegram_target';
+export type UnifiedTaskSourceType = 'telegram_bot' | 'telegram_channel' | 'web_upload' | 'subscription' | 'telegram_target';
 
 export interface UnifiedTask {
     id: string;

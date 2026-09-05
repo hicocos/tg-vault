@@ -3,8 +3,6 @@
     "title": "TG Vault",
     "subtitle": "Manage and organize your digital assets.",
     "filesSubtitle": "Browse and manage all files and folders.",
-    "ytdlpTitle": "YT-DLP",
-    "ytdlpSubtitle": "Browse and manage files downloaded with yt-dlp.",
     "favoritesSubtitle": "View and manage your favorite files and folders in one place.",
     "allFiles": "All files",
     "fileTypes": {
@@ -92,6 +90,11 @@
     "trash": "Trash",
     "favorites": "Favorites",
     "tasks": "Tasks",
+    "subscriptions": "Subscription center",
+    "collapse": "Collapse sidebar",
+    "expand": "Expand sidebar",
+    "closeNavigation": "Close navigation menu",
+    "openNavigation": "Open navigation menu",
     "logout": "Sign out on this device",
     "categories": {
       "images": "Images",
@@ -286,7 +289,7 @@
   },
   "tasks": {
     "title": "Task center",
-    "subtitle": "View and manage Web, Telegram, channel subscription, and yt-dlp tasks.",
+    "subtitle": "View and manage Web, Telegram, and channel subscription tasks.",
     "subtitleScoped": "Only tasks or Telegram targets that still reference the selected storage account are shown.",
     "showAll": "Show all tasks",
     "updated": "Updated: {{time}}",
@@ -297,7 +300,6 @@
       "telegramFile": "Telegram file",
       "channelDownload": "Channel download",
       "telegramTarget": "Telegram conversation target",
-      "ytdlp": "yt-dlp",
       "subscription": "Channel subscription"
     },
     "statuses": {

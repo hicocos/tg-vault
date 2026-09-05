@@ -45,6 +45,7 @@ installGlobal('IS_REACT_ACT_ENVIRONMENT', true);
 
 const { cleanup, render, screen, waitFor, within } = await import('@testing-library/react');
 const userEvent = (await import('@testing-library/user-event')).default;
+const { default: i18n } = await import('../../i18n');
 const { Dialog } = await import('./Dialog');
 const { Notification } = await import('./Notification');
 
@@ -100,6 +101,7 @@ test('Dialog moves focus inside, traps Tab, closes on Escape, and restores trigg
 });
 
 test('Notification exposes an assertive live region and its rendered close control works', async () => {
+    await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup({ document: dom.window.document });
     let closeCalls = 0;
     render(

@@ -30,10 +30,9 @@ test('storage connection test feedback stays beside the account that triggered i
     assert.match(settings, /interface ProbeFeedbackState \{ accountId: string; tone: 'success' \| 'error'; message: string; sequence: number; \}/);
     assert.match(settings, /probeFeedback\?\.accountId === account\.id \? probeFeedback : null/);
     assert.match(settings, /role="status" aria-live="polite"/);
-    assert.match(settings, /setProbeFeedback\(previous => \(\{ accountId: account\.id, tone: 'success', message: '连接测试成功', sequence: \(previous\?\.sequence \?\? 0\) \+ 1 \}\)\)/);
+    assert.match(settings, /setProbeFeedback\(previous => \(\{ accountId: account\.id, tone: 'success', message: t\('settings\.remaining\.copy\.177'\), sequence: \(previous\?\.sequence \?\? 0\) \+ 1 \}\)\)/);
     assert.match(settings, /tone: 'error'/);
-    assert.doesNotMatch(settings, /showNotice\(`“\$\{account\.name\}”连接测试成功`\)/);
-    assert.doesNotMatch(settings, /showNotice\(error\?\.message \|\| '存储账户连接测试失败', '连接测试失败'\)/);
+    assert.doesNotMatch(settings, /showNotice\([^)]*settings\.remaining\.copy\.177/);
 });
 
 test('settings uses non-modal transient feedback for notices but keeps confirmations and prompts modal', () => {

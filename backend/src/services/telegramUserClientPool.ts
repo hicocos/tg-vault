@@ -88,7 +88,7 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
             this.credentials = credentials;
             await this.deps.repository.migrateLegacySystemSettings();
             const accounts = await this.deps.repository.listEnabledAccounts();
-            for (const account of accounts) await this.connectAccount(account);
+            await Promise.allSettled(accounts.map(account => this.connectAccount(account)));
         });
         this.initializationTail = run.catch(() => undefined);
         await run;

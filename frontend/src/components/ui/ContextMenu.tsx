@@ -115,7 +115,7 @@ export const createFileMenuItems = (
 
     if (onRename) {
         items.push({
-            label: t("file.rename") || "重命名",
+            label: t('files.ui.actions.rename'),
             icon: <Pencil className="h-4 w-4" />,
             onClick: onRename,
         });
@@ -123,14 +123,14 @@ export const createFileMenuItems = (
 
     if (onMove) {
         items.push({
-            label: t("file.move") || "移动",
+            label: t('files.ui.actions.move'),
             icon: <FolderInput className="h-4 w-4" />,
             onClick: onMove,
         });
     }
     if (onDownload) {
         items.push({
-            label: t("file.download") || "下载",
+            label: t('files.ui.actions.download'),
             icon: <Download className="h-4 w-4" />,
             onClick: onDownload,
         });
@@ -138,7 +138,7 @@ export const createFileMenuItems = (
 
     if (onToggleFavorite) {
         items.push({
-            label: isFavorite ? (t("file.unfavorite") || "取消收藏") : (t("file.favorite") || "收藏"),
+            label: isFavorite ? t('files.ui.actions.unfavorite') : t('files.ui.actions.favorite'),
             icon: <Star className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />,
             onClick: onToggleFavorite,
         });
@@ -146,7 +146,7 @@ export const createFileMenuItems = (
 
     if (onDelete) {
         items.push({
-            label: t("file.delete") || "删除",
+            label: t('files.ui.actions.delete'),
             icon: <Trash2 className="h-4 w-4" />,
             onClick: onDelete,
             variant: "danger",
@@ -169,7 +169,7 @@ export const createFolderMenuItems = (
 
     if (onRename) {
         items.push({
-            label: t("file.rename") || "重命名",
+            label: t('files.ui.actions.rename'),
             icon: <Pencil className="h-4 w-4" />,
             onClick: onRename,
         });
@@ -177,14 +177,14 @@ export const createFolderMenuItems = (
 
     if (onMove) {
         items.push({
-            label: t("file.move") || "移动",
+            label: t('files.ui.actions.move'),
             icon: <FolderInput className="h-4 w-4" />,
             onClick: onMove,
         });
     }
     if (onDelete) {
         items.push({
-            label: t("file.delete") || "删除",
+            label: t('files.ui.actions.delete'),
             icon: <Trash2 className="h-4 w-4" />,
             onClick: onDelete,
             variant: "danger",
@@ -193,7 +193,7 @@ export const createFolderMenuItems = (
 
     if (onToggleFavorite) {
         items.splice(onDelete ? items.length - 1 : items.length, 0, {
-            label: isFavorite ? (t("file.unfavorite") || "取消收藏") : (t("file.favorite") || "收藏"),
+            label: isFavorite ? t('files.ui.actions.unfavorite') : t('files.ui.actions.favorite'),
             icon: <Star className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />,
             onClick: onToggleFavorite,
         });

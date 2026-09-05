@@ -53,7 +53,7 @@ export const FileTypeFilter = ({ value, onChange }: FileTypeFilterProps) => {
                             type="button"
                             aria-pressed={selected}
                             className={cn(
-                                "flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-0.5 py-2 text-[11px] font-medium leading-none transition-colors touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
+                                "flex min-w-0 flex-col items-center justify-center gap-1 rounded-lg px-0.5 py-2 text-center text-[11px] font-medium leading-tight break-words whitespace-normal transition-colors touch-manipulation focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/30",
                                 selected
                                     ? "bg-background text-foreground shadow-sm ring-1 ring-border/60"
                                     : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
@@ -61,7 +61,7 @@ export const FileTypeFilter = ({ value, onChange }: FileTypeFilterProps) => {
                             onClick={() => onChange(option.id)}
                         >
                             <Icon className={cn("h-4 w-4 shrink-0", selected && "text-primary")} />
-                            <span className="truncate">{option.shortLabel}</span>
+                            <span className="min-w-0 max-w-full break-words whitespace-normal">{option.shortLabel}</span>
                         </button>
                     );
                 })}

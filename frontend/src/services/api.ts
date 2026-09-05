@@ -1,9 +1,11 @@
 import { authService } from './auth';
+import { tr } from '../i18n/runtime';
 import { ApiActionError } from './apiActionError';
 import { apiRequest } from './httpClient';
 import { sha256Hex } from './chunkHash';
 
 import { API_BASE } from './config';
+import { normalizeApiBase } from './config';
 import { classifyBatchDeleteResponse } from './batchDeleteContract';
 import { chunkBounds, parseChunkUploadInit } from './chunkUploadProtocol';
 import { apiActionErrorFromResponse } from './apiActionError';
@@ -17,7 +19,7 @@ import type {
     BatchDeleteResult,
     ChunkUploadCancelStatus,
     ChunkUploadSession,
-    CreateYtDlpTaskResult,
+
     FileData,
     FileQueryOptions,
     FilesPage,
@@ -65,7 +67,7 @@ async function postStorageAccount<T>(path: string, body: unknown, providerLabel:
     const timeout = window.setTimeout(() => controller.abort(), 65_000);
     let response: Response;
     try {
-        response = await apiRequest(`${API_BASE}${path}`, {
+        response = await apiRequest(`${normalizeApiBase(API_BASE)}${path}`, {
             credentials: 'include',
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
@@ -74,15 +76,15 @@ async function postStorageAccount<T>(path: string, body: unknown, providerLabel:
         });
     } catch (error) {
         if (controller.signal.aborted) {
-            throw new Error(`${providerLabel} 连接测试超时，请检查服务器地址和网络`);
+            throw new Error(tr('errors.services.storage.connectionTimeout', { provider: providerLabel }));
         }
         throw error;
     } finally {
         window.clearTimeout(timeout);
     }
     if (!response.ok) {
-        const error = await response.json().catch(() => null);
-        throw new Error(error?.error || `添加 ${providerLabel} 账户失败`);
+        const error = await apiActionErrorFromResponse(response, tr('errors.services.storage.addAccountFailed', { provider: providerLabel }));
+        throw error;
     }
     return response.json();
 }
@@ -96,7 +98,7 @@ class FileAPI {
                 credentials: 'include',
                 headers: getHeaders(),
             }).then(async response => {
-                if (!response.ok) throw new Error('获取上传能力失败');
+                if (!response.ok) throw new Error(tr('errors.services.upload.capabilitiesFailed'));
                 return response.json();
             }).catch(error => {
                 this.uploadCapabilitiesPromise = null;
@@ -119,7 +121,7 @@ class FileAPI {
             headers: getHeaders(),
             signal: options.signal,
         });
-        if (!response.ok) throw new Error('获取文件列表失败');
+        if (!response.ok) throw new Error(tr('errors.services.files.getListFailed'));
         return response.json();
     }
 
@@ -135,7 +137,7 @@ class FileAPI {
             headers: getHeaders(),
             signal: options.signal,
         });
-        if (!response.ok) throw new Error('获取文件夹统计失败');
+        if (!response.ok) throw new Error(tr('errors.services.files.getFolderStatsFailed'));
         const payload = await response.json();
         return payload.folders;
     }
@@ -152,7 +154,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw new Error('获取文件信息失败');
+        if (!response.ok) throw new Error(tr('errors.services.files.getInfoFailed'));
         return response.json();
     }
 
@@ -176,7 +178,7 @@ class FileAPI {
     async uploadFile(file: File, folder?: string, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal, target?: UploadTargetSnapshot, onSession?: (session: ChunkUploadSession) => void): Promise<{ success: boolean; file: FileData }> {
         const capabilities = await this.getUploadCapabilities();
         if (file.size > capabilities.maxChunkUploadBytes) {
-            throw new Error(`文件超过服务端允许的最大上传大小 ${Math.round(capabilities.maxChunkUploadBytes / 1024 / 1024 / 1024)} GiB`);
+            throw new Error(tr('errors.services.upload.tooLarge', { size: Math.round(capabilities.maxChunkUploadBytes / 1024 / 1024 / 1024) }));
         }
         if (file.size > capabilities.simpleUploadThresholdBytes) {
             return this.chunkedUpload(file, folder, onProgress, signal, undefined, target, onSession);
@@ -189,22 +191,22 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw new Error('获取未完成上传失败');
+        if (!response.ok) throw new Error(tr('errors.services.upload.incompleteFailed'));
         const payload = await response.json();
         return payload.sessions || [];
     }
 
     async resumeChunkedUpload(file: File, session: ChunkUploadSession, onProgress?: (progress: UploadProgress) => void, signal?: AbortSignal): Promise<{ success: boolean; file: FileData }> {
         const liveSession = (await this.getIncompleteChunkUploads()).find(item => item.uploadId === session.uploadId);
-        if (!liveSession) throw new Error('该上传会话已完成、取消或过期，请刷新任务列表');
+        if (!liveSession) throw new Error(tr('errors.services.upload.sessionUnavailable'));
         if (file.name !== liveSession.filename || file.size !== liveSession.totalSize) {
-            throw new Error('所选文件的名称或大小与原上传任务不一致');
+            throw new Error(tr('errors.services.upload.resumeNameOrSizeMismatch'));
         }
         const mimeType = file.type || 'application/octet-stream';
         if (liveSession.mimeType !== mimeType && liveSession.mimeType !== 'application/octet-stream') {
-            throw new Error('所选文件的类型与原上传任务不一致');
+            throw new Error(tr('errors.services.upload.resumeTypeMismatch'));
         }
-        if (liveSession.status === 'completing') throw new Error('服务器正在完成该上传，请稍后刷新');
+        if (liveSession.status === 'completing') throw new Error(tr('errors.services.upload.completing'));
         const { verifyResumeFileIdentity } = await import('./chunkResumeIdentity.js');
         await verifyResumeFileIdentity(file, liveSession);
         return this.chunkedUpload(file, liveSession.folder || undefined, onProgress, signal, liveSession, {
@@ -226,14 +228,12 @@ class FileAPI {
         if (response.status === 409 && payload.status === 'busy') return 'busy';
         if (response.status === 404) return 'not_found';
         if (!response.ok) {
-            throw new Error(payload.error || '取消上传失败');
+            throw new Error(payload.error || tr('errors.services.upload.cancelFailed'));
         }
         return ['cancelled', 'terminal'].includes(payload.status) ? payload.status : 'terminal';
     }
 
-    async createYtDlpTask(input: { url: string; format: 'best' | 'audio' }): Promise<CreateYtDlpTaskResult> {
-        return tasksClient.createYtDlpTask(input);
-    }
+
 
     async getTasks(filters: TaskFilters = {}): Promise<UnifiedTaskList> {
         return tasksClient.getTasks(filters);
@@ -254,7 +254,7 @@ class FileAPI {
     async getSubscriptions(filters: { limit?: number; offset?: number } = {}): Promise<TelegramSubscriptionList> {
         const params = new URLSearchParams({ limit: String(filters.limit || 20), offset: String(filters.offset || 0) });
         const response = await apiRequest(`${API_BASE}/api/subscriptions?${params.toString()}`, { credentials: 'include', headers: getHeaders() });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取订阅列表失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.getSubscriptionsFailed'));
         return response.json();
     }
 
@@ -262,13 +262,13 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}`, {
             credentials: 'include', method: 'PATCH', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ adFilterMode }),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '更新广告过滤模式失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.updateAdFilterFailed'));
         return (await response.json()).subscription;
     }
 
     async getSubscriptionAdRules(subscriptionId: string): Promise<TelegramAdRule[]> {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules`, { credentials: 'include', headers: getHeaders() });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取过滤规则失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.getRulesFailed'));
         return (await response.json()).rules || [];
     }
 
@@ -276,7 +276,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules`, {
             credentials: 'include', method: 'POST', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(input),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '创建过滤规则失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.createRuleFailed'));
         return (await response.json()).rule;
     }
 
@@ -284,7 +284,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules/${encodeURIComponent(ruleId)}`, {
             credentials: 'include', method: 'PATCH', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ enabled }),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '更新过滤规则失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.updateRuleFailed'));
         return (await response.json()).rule;
     }
 
@@ -292,7 +292,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/rules/${encodeURIComponent(ruleId)}`, {
             credentials: 'include', method: 'DELETE', headers: getHeaders(),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '删除过滤规则失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.deleteRuleFailed'));
     }
 
     async getSubscriptionAdDecisions(filters: { subscriptionId?: string; decision?: 'blocked' | 'review' | 'allow'; limit?: number; offset?: number } = {}): Promise<TelegramAdDecisionList> {
@@ -302,7 +302,7 @@ class FileAPI {
         params.set('limit', String(filters.limit || 100));
         params.set('offset', String(filters.offset || 0));
         const response = await apiRequest(`${API_BASE}/api/subscriptions/decisions/list?${params.toString()}`, { credentials: 'include', headers: getHeaders() });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取过滤记录失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.getDecisionsFailed'));
         return response.json();
     }
 
@@ -310,7 +310,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions/decisions/${encodeURIComponent(decisionId)}/review`, {
             credentials: 'include', method: 'POST', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ label, learnTemplate }),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '修正过滤结果失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.reviewDecisionFailed'));
         return response.json();
     }
 
@@ -344,7 +344,7 @@ class FileAPI {
                     try {
                         resolve(JSON.parse(xhr.responseText));
                     } catch {
-                        reject(new Error('解析响应失败'));
+                        reject(new Error(tr('errors.services.generic.parseResponse')));
                     }
                 } else {
                     const error = parseXhrError(xhr.status, xhr.responseText);
@@ -354,7 +354,7 @@ class FileAPI {
             });
 
             xhr.addEventListener('error', () => {
-                reject(new Error('网络错误'));
+                reject(new Error(tr('errors.services.generic.network')));
             });
 
             xhr.addEventListener('abort', () => {
@@ -399,7 +399,7 @@ class FileAPI {
                 const retryResponse = await apiRequest(`${API_BASE}/api/chunked/${uploadId}/retry`, {
                     credentials: 'include', method: 'POST', headers: getHeaders(), signal,
                 });
-                if (!retryResponse.ok) throw new Error('服务器无法重新打开该上传会话');
+                if (!retryResponse.ok) throw new Error(tr('errors.services.upload.reopenFailed'));
             }
             onProgress?.({ loaded: uploadedBytes, total: file.size, percent: Math.round((uploadedBytes / file.size) * 100) });
         } else {
@@ -419,7 +419,7 @@ class FileAPI {
             });
             if (!initResponse.ok) {
                 const payload = await initResponse.json().catch(() => ({}));
-                throw new Error(payload.error || '初始化分块上传失败');
+                throw new Error(payload.error || tr('errors.services.upload.initFailed'));
             }
             const initPayload = await initResponse.json();
             ({ uploadId, maxChunkBytes, totalChunks } = parseChunkUploadInit(initPayload, file.size));
@@ -469,7 +469,7 @@ class FileAPI {
 
                 if (!chunkResponse.ok) {
                     const payload = await chunkResponse.json().catch(() => ({}));
-                    throw new Error(payload.error || `上传分块 ${chunkIndex + 1}/${totalChunks} 失败`);
+                    throw new Error(payload.error || tr('errors.services.upload.chunkFailed', { current: chunkIndex + 1, total: totalChunks }));
                 }
                 const chunkResult = await chunkResponse.json().catch(() => ({}));
                 uploadedBytes = Number(chunkResult.receivedBytes || (uploadedBytes + chunk.size));
@@ -493,7 +493,7 @@ class FileAPI {
 
             if (!completeResponse.ok) {
                 const payload = await completeResponse.json().catch(() => ({}));
-                throw new Error(payload.error || '完成分块上传失败');
+                throw new Error(payload.error || tr('errors.services.upload.completeFailed'));
             }
 
             return completeResponse.json();
@@ -503,10 +503,10 @@ class FileAPI {
                 try {
                     cancellation = await this.cancelChunkUpload(uploadId);
                 } catch {
-                    throw new Error('浏览器传输已停止，但无法确认服务器上传会话是否已取消，请刷新上传任务');
+                    throw new Error(tr('errors.services.upload.cancellationUnknown'));
                 }
                 if (cancellation === 'busy') {
-                    throw new Error('浏览器传输已停止，服务器正在完成上传，请稍后刷新确认结果');
+                    throw new Error(tr('errors.services.upload.cancellationBusy'));
                 }
                 throw new DOMException('Upload cancelled', 'AbortError');
             }
@@ -535,7 +535,7 @@ class FileAPI {
         const confirmationResponse = await apiRequest(`${API_BASE}/api/files/${id}/delete-confirmation`, {
             credentials: 'include', method: 'POST', headers: getHeaders(),
         });
-        if (!confirmationResponse.ok) throw new Error((await confirmationResponse.json().catch(() => ({}))).error || '无法创建删除确认');
+        if (!confirmationResponse.ok) throw new Error((await confirmationResponse.json().catch(() => ({}))).error || tr('errors.services.files.deleteConfirmationFailed'));
         const { confirmationToken } = await confirmationResponse.json();
         const response = await apiRequest(`${API_BASE}/api/files/${id}`, {
             credentials: 'include',
@@ -543,7 +543,7 @@ class FileAPI {
             headers: getHeaders({ 'X-Confirmation-Token': confirmationToken }),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || payload.details || '删除文件失败');
+        if (!response.ok) throw new Error(payload.error || payload.details || tr('errors.services.files.deleteFailed'));
         return payload;
     }
 
@@ -556,7 +556,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '获取删除影响范围失败');
+            throw new Error(error.error || tr('errors.services.files.deleteImpactFailed'));
         }
         return response.json();
     }
@@ -582,7 +582,7 @@ class FileAPI {
             body: JSON.stringify({ password, expiration }),
         });
 
-        if (!response.ok) throw await apiActionErrorFromResponse(response, '创建分享链接失败');
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('errors.services.files.shareLinkFailed'));
         return response.json();
     }
 
@@ -592,7 +592,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw await apiActionErrorFromResponse(response, '获取下载链接失败');
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('errors.services.files.downloadLinkFailed'));
 
         const data = await response.json();
         if (data.isRelative) {
@@ -603,7 +603,7 @@ class FileAPI {
 
     async getOriginalFileLink(id: string): Promise<string> {
         const response = await apiRequest(`${API_BASE}/api/files/${id}/original`, { credentials: 'include', headers: getHeaders(), redirect: 'manual', acceptedStatuses: [301, 302, 303, 307, 308] });
-        if (!response.ok && response.type !== 'opaqueredirect') throw await apiActionErrorFromResponse(response, '打开原文件失败');
+        if (!response.ok && response.type !== 'opaqueredirect') throw await apiActionErrorFromResponse(response, tr('errors.services.files.openOriginalFailed'));
         return response.headers.get('Location') || `${API_BASE}/api/files/${id}/original`;
     }
 
@@ -622,7 +622,7 @@ class FileAPI {
             link.click();
             document.body.removeChild(link);
         } catch (error) {
-            console.error('下载出错:', error);
+            console.error('Download failed:', error);
             throw error;
         }
     }
@@ -633,7 +633,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/storage/config/advanced-tasks`, {
             credentials: 'include', headers: getHeaders(),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '获取高级任务设置失败');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.tasks.getAdvancedSettingsFailed'));
         return response.json();
     }
 
@@ -645,7 +645,7 @@ class FileAPI {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-            const error = new Error(payload.error || '更新高级任务设置失败') as Error & { code?: string };
+            const error = new Error(payload.error || tr('errors.services.tasks.updateAdvancedSettingsFailed')) as Error & { code?: string };
             error.code = payload.code;
             throw error;
         }
@@ -657,7 +657,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw new Error('获取存储统计失败');
+        if (!response.ok) throw new Error(tr('errors.services.storage.getStatsFailed'));
         return response.json();
     }
 
@@ -667,7 +667,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw new Error('获取存储配置失败');
+        if (!response.ok) throw new Error(tr('errors.services.storage.getConfigFailed'));
         return response.json();
     }
 
@@ -680,7 +680,7 @@ class FileAPI {
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
-            const error = new Error(payload.error || '更新 WebDAV 安全设置失败') as Error & { code?: string };
+            const error = new Error(payload.error || tr('errors.services.storage.webdavSecurityUpdateFailed')) as Error & { code?: string };
             error.code = payload.code;
             throw error;
         }
@@ -689,7 +689,7 @@ class FileAPI {
 
     async getTelegramBotConfig(): Promise<TelegramBotPublicConfig> {
         const response = await apiRequest(`${API_BASE}/api/storage/config/telegram-bot`, { credentials: 'include', headers: getHeaders() });
-        if (!response.ok) throw new Error('获取 Telegram Bot 配置失败');
+        if (!response.ok) throw new Error(tr('errors.services.telegram.getBotConfigFailed'));
         return response.json();
     }
 
@@ -701,7 +701,7 @@ class FileAPI {
         return systemClient.checkForUpdates();
     }
 
-    async testTelegramBotConfig(input: { botToken: string; apiId: string; apiHash: string }): Promise<{ success: boolean; bot: { username: string | null; displayName: string | null } }> {
+    async testTelegramBotConfig(input: { botToken: string; apiId: string; apiHash: string }): Promise<{ success: boolean; bot: { username: string | null; displayName: string | null }; runtimeStarted: boolean }> {
         return this.telegramBotConfigRequest('/api/storage/config/telegram-bot/test', 'POST', input);
     }
 
@@ -732,7 +732,7 @@ class FileAPI {
             body: JSON.stringify(body),
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || 'Telegram Bot 配置操作失败');
+        if (!response.ok) throw new Error(payload.error || tr('errors.services.telegram.botConfigOperationFailed'));
         return payload;
     }
 
@@ -823,14 +823,14 @@ class FileAPI {
             ...(qrCode ? { qrCode, qrExpiresAt: String(payload?.qrExpiresAt || payload?.expiresAt || '') } : {}),
             ...(payload?.expiresAt ? { expiresAt: String(payload.expiresAt) } : {}),
             ...(payload?.account ? { account: payload.account } : {}),
-            ...(payload?.delivery ? { delivery: payload.delivery, message: payload.delivery === 'sms' ? '短信' : 'Telegram 应用' } : payload?.message ? { message: String(payload.message) } : {}),
+            ...(payload?.delivery ? { delivery: payload.delivery, message: payload.delivery === 'sms' ? tr('errors.services.telegram.deliverySms') : tr('errors.services.telegram.deliveryApp') } : payload?.message ? { message: String(payload.message) } : {}),
         } as TelegramUserLoginStatus;
     }
 
     private async telegramUserRequest(path: string, method: string, body?: unknown): Promise<any> {
         const response = await apiRequest(`${API_BASE}${path}`, { credentials: 'include', method, headers: getHeaders({ 'Content-Type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || 'Telegram 用户账号操作失败');
+        if (!response.ok) throw new Error(payload.error || tr('errors.services.telegram.userAccountOperationFailed'));
         return payload;
     }
 
@@ -843,7 +843,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '更新 Telegram 用户下载设置失败');
+            throw new Error(error.error || tr('errors.services.telegram.updateDownloadSettingFailed'));
         }
         return response.json();
     }
@@ -857,7 +857,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '更新 Telegram 允许用户列表失败');
+            throw new Error(error.error || tr('errors.services.telegram.updateAllowedUsersFailed'));
         }
         return response.json();
     }
@@ -871,7 +871,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '清理下载任务明细失败');
+            throw new Error(error.error || tr('errors.services.tasks.cleanupDownloadsFailed'));
         }
         return response.json();
     }
@@ -884,7 +884,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ clientId, clientSecret, refreshToken, tenantId, name }),
         });
-        if (!response.ok) throw new Error('更新配置失败');
+        if (!response.ok) throw new Error(tr('errors.services.storage.updateConfigFailed'));
         return response.json();
     }
 
@@ -918,7 +918,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '切换存储失败');
+            throw new Error(error.error || tr('errors.services.storage.switchFailed'));
         }
         return response.json();
     }
@@ -929,7 +929,7 @@ class FileAPI {
             credentials: 'include',
             headers: getHeaders(),
         });
-        if (!response.ok) throw new Error('获取账户列表失败');
+        if (!response.ok) throw new Error(tr('errors.services.storage.getAccountsFailed'));
         return response.json();
     }
 
@@ -941,7 +941,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
-            throw new Error(error.error || '存储账户连接测试失败');
+            throw new Error(error.error || tr('errors.services.storage.probeFailed'));
         }
         return response.json();
     }
@@ -951,7 +951,7 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/storage/accounts/${encodeURIComponent(accountId)}/delete-confirmation`, {
             credentials: 'include', method: 'POST', headers: getHeaders(),
         });
-        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || '无法创建删除确认');
+        if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.files.deleteConfirmationFailed'));
         return response.json();
     }
 
@@ -963,7 +963,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '删除账户失败');
+            throw new Error(error.error || tr('errors.services.storage.deleteAccountFailed'));
         }
         return response.json();
     }
@@ -981,7 +981,7 @@ class FileAPI {
 
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '创建文件夹失败');
+            throw new Error(error.error || tr('errors.services.files.createFolderFailed'));
         }
 
         return response.json();
@@ -997,7 +997,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '重命名失败');
+            throw new Error(error.error || tr('errors.services.files.renameFailed'));
         }
         return response.json();
     }
@@ -1012,7 +1012,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '重命名文件夹失败');
+            throw new Error(error.error || tr('errors.services.files.renameFolderFailed'));
         }
         return response.json();
     }
@@ -1027,7 +1027,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '移动失败');
+            throw new Error(error.error || tr('errors.services.files.moveFailed'));
         }
         return response.json();
     }
@@ -1042,7 +1042,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '移动文件夹失败');
+            throw new Error(error.error || tr('errors.services.files.moveFolderFailed'));
         }
         return response.json();
     }
@@ -1056,7 +1056,7 @@ class FileAPI {
             signal,
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.error || '获取移动影响范围失败');
+        if (!response.ok) throw new Error(payload.error || tr('errors.services.files.moveImpactFailed'));
         return payload;
     }
     // 获取收藏的文件
@@ -1072,7 +1072,7 @@ class FileAPI {
             method: 'POST',
             headers: getHeaders({ 'Content-Type': 'application/json' }),
         });
-        if (!response.ok) throw new Error('切换收藏状态失败');
+        if (!response.ok) throw new Error(tr('errors.services.files.toggleFavoriteFailed'));
         return response.json();
     }
 
@@ -1084,7 +1084,7 @@ class FileAPI {
             headers: getHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ folderName }),
         });
-        if (!response.ok) throw new Error('切换文件夹收藏状态失败');
+        if (!response.ok) throw new Error(tr('errors.services.files.toggleFolderFavoriteFailed'));
         return response.json();
     }
 
@@ -1102,7 +1102,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '获取授权地址失败');
+            throw new Error(error.error || tr('errors.services.storage.getAuthorizationUrlFailed'));
         }
         return response.json();
     }
@@ -1116,7 +1116,7 @@ class FileAPI {
         });
         if (!response.ok) {
             const error = await response.json();
-            throw new Error(error.error || '获取授权地址失败');
+            throw new Error(error.error || tr('errors.services.storage.getAuthorizationUrlFailed'));
         }
         return response.json();
     }

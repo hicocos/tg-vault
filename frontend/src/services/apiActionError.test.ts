@@ -20,3 +20,9 @@ test('410 and 503 provide source/request guidance', async () => {
     assert.equal(unavailable.message, '服务暂时不可用，请稍后重试（请求 ID：req-a）');
     assert.ok(unavailable instanceof ApiActionError);
 });
+
+test('502 HTML gateway errors expose a status-specific unavailable message', async () => {
+    const error = await apiActionErrorFromResponse(new Response('<html>Bad Gateway</html>', { status: 502 }), '网络错误');
+    assert.equal(error.kind, 'unavailable');
+    assert.equal(error.message, '服务暂时不可用（HTTP 502），请稍后重试');
+});

@@ -126,7 +126,7 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, capa
                 className="z-10 bg-background p-4 rounded-full shadow-sm mb-4 ring-1 ring-border group-hover:shadow-md transition-shadow"
             >
                 {uploading ? (
-                    <IndeterminateSpinner label="正在处理上传" size="lg" />
+                    <IndeterminateSpinner label={t('files.ui.uploadZone.processing')} size="lg" />
                 ) : (
                     <UploadCloud className={cn("h-8 w-8 transition-colors", isDragActive ? "text-primary" : "text-muted-foreground")} />
                 )}
@@ -145,12 +145,12 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, capa
                     {uploading
                         ? t("upload.keepUsing")
                         : capabilities
-                            ? `${t("upload.anyFile")} · 超过 ${Math.round(capabilities.simpleUploadThresholdBytes / 1024 / 1024)} MiB 自动分片 · 最大 ${formatGiB(capabilities.maxChunkUploadBytes)}`
-                            : `${t("upload.anyFile")} · 上传限制加载中…`
+                            ? t('files.ui.uploadZone.chunkPolicy', { base: t('upload.anyFile'), threshold: Math.round(capabilities.simpleUploadThresholdBytes / 1024 / 1024), maximum: formatGiB(capabilities.maxChunkUploadBytes) })
+                            : t('files.ui.uploadZone.limitsLoading', { base: t('upload.anyFile') })
                     }
                 </p>
                 {destinationLabel && !uploading && (
-                    <p className="mt-2 text-xs font-medium text-foreground/70">目标目录：{destinationLabel}</p>
+                    <p className="mt-2 text-xs font-medium text-foreground/70">{t('files.ui.uploadZone.destination', { destination: destinationLabel })}</p>
                 )}
             </div>
 
@@ -168,7 +168,7 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, capa
                             className="bg-background px-6 py-3 rounded-full shadow-lg font-medium text-primary flex items-center gap-2"
                         >
                             <FileIcon className="h-4 w-4" />
-                            {t("app.release") || "放开以上传"}
+                            {t('files.ui.uploadZone.release')}
                         </motion.div>
                     </motion.div>
                 )}

@@ -5,6 +5,7 @@ import { Button } from "./Button";
 import { errorMessage } from "../../services/unknownError";
 import { DatePicker } from "./DatePicker";
 import { IndeterminateSpinner } from "./IndeterminateSpinner";
+import { useTranslation } from "react-i18next";
 
 import type { StorageCapabilities } from "../../services/api";
 
@@ -31,6 +32,7 @@ export const BulkActionToolbar = ({
     canDelete = true,
     isVisible
 }: BulkActionToolbarProps) => {
+    const { t } = useTranslation();
     const [showShareSettings, setShowShareSettings] = useState(false);
     const [expiration, setExpiration] = useState("");
     const [password, setPassword] = useState("");
@@ -52,8 +54,8 @@ export const BulkActionToolbar = ({
     // Share is currently only available for exactly one file (not folders).
     const canShare = selectedFilesCount === 1 && selectedFoldersCount === 0 && shareCapabilities?.share === true;
     const shareUnavailableReason = selectedFilesCount !== 1 || selectedFoldersCount !== 0
-        ? '请选择单个文件进行分享'
-        : shareCapabilities?.share ? '分享' : '当前存储不支持分享，可改用下载';
+        ? t('files.ui.share.singleFileOnly')
+        : shareCapabilities?.share ? t('files.ui.share.action') : t('files.ui.share.unsupported');
 
     const handleShareClick = () => {
         if (showShareSettings) {
@@ -89,7 +91,7 @@ export const BulkActionToolbar = ({
                 setTimeout(() => setCopySuccess(false), 2000);
             } catch (err) {
                 console.error("Manual copy failed", err);
-                setErrorMsg("复制失败，请手动选中链接复制");
+                setErrorMsg(t('files.ui.share.copyFailed'));
             }
             return;
         }
@@ -122,7 +124,7 @@ export const BulkActionToolbar = ({
                 if (date && !isNaN(date.getTime())) {
                     formattedExpiration = date.toISOString();
                 } else {
-                    throw new Error("日期格式错误。请使用 YYYY/MM/DD 或 YYYYMMDD 格式 (例如: 2026/02/14)");
+                    throw new Error(t('files.ui.share.invalidDate'));
                 }
             }
 
@@ -140,7 +142,7 @@ export const BulkActionToolbar = ({
             }
         } catch (err: unknown) {
             console.error("Copy failed", err);
-            setErrorMsg(errorMessage(err, "创建链接失败"));
+            setErrorMsg(errorMessage(err, t('files.ui.share.createFailed')));
         } finally {
             setIsCopying(false);
         }
@@ -164,10 +166,10 @@ export const BulkActionToolbar = ({
                                 </div>
                                 <div className="flex flex-col">
                                     <span className="text-xs font-semibold">
-                                        选中 {selectedFilesCount + selectedFoldersCount} 项
+                                        {t('files.ui.share.selected', { count: selectedFilesCount + selectedFoldersCount })}
                                     </span>
                                     <span className="text-xs text-muted-foreground uppercase font-medium">
-                                        {selectedFoldersCount} 文件夹 · {selectedFilesCount} 文件
+                                        {t('files.ui.share.selectionBreakdown', { folders: selectedFoldersCount, files: selectedFilesCount })}
                                     </span>
                                 </div>
                             </div>
@@ -183,7 +185,7 @@ export const BulkActionToolbar = ({
                                     }}
                                 >
                                     <X className="h-3.5 w-3.5" />
-                                    <span>取消</span>
+                                    <span>{t('common.actions.cancel')}</span>
                                 </Button>
 
                                 <Button
@@ -195,7 +197,7 @@ export const BulkActionToolbar = ({
                                     title={shareUnavailableReason}
                                 >
                                     <Share2 className="h-3.5 w-3.5" />
-                                    <span>分享</span>
+                                    <span>{t('files.ui.share.action')}</span>
                                 </Button>
 
                                 {canDelete && <Button
@@ -206,7 +208,7 @@ export const BulkActionToolbar = ({
                                     disabled={selectedFilesCount + selectedFoldersCount === 0}
                                 >
                                     <Trash2 className="h-3.5 w-3.5" />
-                                    <span>删除</span>
+                                    <span>{t('common.actions.delete')}</span>
                                 </Button>}
                             </div>
                         </div>
@@ -235,7 +237,7 @@ export const BulkActionToolbar = ({
                                                             value={expiration}
                                                             readOnly
                                                             onClick={() => setShowDatePicker(!showDatePicker)}
-                                                            placeholder="选择过期时间 (可选)"
+                                                            placeholder={t('files.ui.share.expirationPlaceholder')}
                                                             className="w-full h-9 pl-9 pr-3 rounded-lg border border-border bg-background/50 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition-all hover:bg-background cursor-pointer"
                                                         />
                                                         <AnimatePresence>
@@ -261,7 +263,7 @@ export const BulkActionToolbar = ({
                                                         type="text"
                                                         value={password}
                                                         onChange={(e) => setPassword(e.target.value)}
-                                                        placeholder="设置访问密码 (可选)"
+                                                        placeholder={t('files.ui.share.passwordPlaceholder')}
                                                         className="w-full h-9 pl-9 pr-3 rounded-lg border border-border bg-background/50 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition-all hover:bg-background"
                                                     />
                                                 </div>}
@@ -275,13 +277,13 @@ export const BulkActionToolbar = ({
                                                 >
                                                     {isCopying ? (
                                                         <span className="flex items-center gap-2">
-                                                            <IndeterminateSpinner label="正在生成分享链接" size="sm" tone="current" />
-                                                            生成中...
+                                                            <IndeterminateSpinner label={t('files.ui.share.generatingLabel')} size="sm" tone="current" />
+                                                            {t('files.ui.share.generating')}
                                                         </span>
                                                     ) : (
                                                         <span className="flex items-center gap-2">
                                                             <Copy className="h-4 w-4" />
-                                                            生成链接
+                                                            {t('files.ui.share.generate')}
                                                         </span>
                                                     )}
                                                 </Button>
@@ -308,18 +310,18 @@ export const BulkActionToolbar = ({
                                                         {copySuccess ? (
                                                             <span className="flex items-center gap-2">
                                                                 <Check className="h-4 w-4" />
-                                                                已复制
+                                                                {t('files.ui.share.copied')}
                                                             </span>
                                                         ) : (
                                                             <span className="flex items-center gap-2">
                                                                 <Copy className="h-4 w-4" />
-                                                                复制
+                                                                {t('files.ui.share.copy')}
                                                             </span>
                                                         )}
                                                     </Button>
                                                 </div>
                                                 <div className="text-[10px] text-green-600 dark:text-green-400 px-1 font-medium">
-                                                    ✓ 分享链接已生成，请复制使用
+                                                    {t('files.ui.share.ready')}
                                                 </div>
                                             </div>
                                         )}
@@ -337,7 +339,7 @@ export const BulkActionToolbar = ({
 
                                         {!generatedLink && (
                                             <div className="text-[10px] text-muted-foreground/60 px-1">
-                                                * 部分云存储（如 Google Drive 或普通版 OneDrive）暂不支持通过 API 设置密码或过期时间，此时请留空直接生成。
+                                                {t('files.ui.share.providerHint')}
                                             </div>
                                         )}
                                     </div>

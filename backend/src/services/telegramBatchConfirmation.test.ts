@@ -7,13 +7,13 @@ const jobs = fs.readFileSync(new URL('./telegramChannelJobs.ts', import.meta.url
 
 test('date and tag wizards require a final scope and target confirmation', () => {
     assert.match(bot, /step === 'confirm'/);
-    assert.match(bot, /请确认任务范围/);
-    assert.match(bot, /固定存储/);
-    assert.match(bot, /扫描进度会实时更新/);
-    assert.match(bot, /共 \$\{state\.dayCount/);
-    assert.match(bot, /范围较大/);
+    assert.match(bot, /t\(locale, 'bot\.wizard\.confirmTitle'\)/);
+    assert.match(bot, /t\(locale, 'bot\.wizard\.confirmStorage'/);
+    assert.match(bot, /t\(locale, 'bot\.wizard\.confirmNote'/);
+    assert.match(bot, /state\.dayCount/);
+    assert.match(bot, /t\(locale, 'bot\.wizard\.confirmLargeRange'/);
     assert.match(bot, /parseTelegramDateRange\(state\.startDate!, input\)/);
-    assert.match(bot, /发送“确认”开始/);
+    assert.match(bot, /t\(locale, 'bot\.wizard\.confirmInput'\)/);
 });
 
 test('confirmed channel jobs pass an immutable target snapshot to admission', () => {

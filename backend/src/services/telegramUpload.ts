@@ -53,6 +53,8 @@ import {
     markTelegramWriteObjectPresent,
     updateTelegramWriteAfterCompensation,
 } from './telegramWriteReconciliation.js';
+import { getTelegramUserLocaleOrDefault } from './telegramLocalePreferences.js';
+import { DEFAULT_LOCALE, formatBytes as formatLocalizedBytes, t, type TelegramLocale } from '../i18n/telegram.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
@@ -1289,7 +1291,7 @@ export function cancelDownloadTask(selector?: string) {
     return downloadQueue.cancel(normalized, '用户通过 /task_cancel 取消任务');
 }
 
-export async function cancelSilentTask(client: TelegramClient, chatId: Api.TypeEntityLike, taskId: string, fallbackMessageId?: number, userId?: number) {
+export async function cancelSilentTask(client: TelegramClient, chatId: Api.TypeEntityLike, taskId: string, fallbackMessageId?: number, userId?: number, locale: TelegramLocale = DEFAULT_LOCALE) {
     const mappedChatId = resolveTaskChatId(taskId);
     const chatIdStr = mappedChatId || chatId.toString();
     const editChatId = mappedChatId || chatId;
@@ -1308,14 +1310,14 @@ export async function cancelSilentTask(client: TelegramClient, chatId: Api.TypeE
 
     if (silentMsgId) {
         const text = [
-            `🛑 **后台任务已取消**`,
+            t(locale, 'upload.taskCancelled.title'),
             ``,
-            `🆔 任务：\`${taskId}\``,
-            `✅ 已完成: ${completed} 个文件`,
-            ...(failed > 0 ? [`❌ 失败: ${failed} 个文件`] : []),
-            `🚫 已停止/清空: ${pendingOrActive} 个等待或进行中的任务`,
+            t(locale, 'upload.taskCancelled.id', { taskId }),
+            t(locale, 'upload.taskCancelled.completed', { count: completed }),
+            ...(failed > 0 ? [t(locale, 'upload.taskCancelled.failed', { count: failed })] : []),
+            t(locale, 'upload.taskCancelled.stopped', { count: pendingOrActive }),
             ``,
-            `已移除暂停 / 继续 / 取消按钮，此任务不会再响应旧按钮操作。`,
+            t(locale, 'upload.taskCancelled.controlsRemoved'),
         ].join('\n');
         await safeEditMessage(client, editChatId, { message: silentMsgId, text, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
     }
@@ -1331,14 +1333,14 @@ export async function cancelSilentTask(client: TelegramClient, chatId: Api.TypeE
     return result;
 }
 
-export function listFailedDownloadTaskDetails(taskId: string, chatId: string, userId: number): string[] {
+export function listFailedDownloadTaskDetails(taskId: string, chatId: string, userId: number, locale: TelegramLocale = DEFAULT_LOCALE): string[] {
     if (!canControlTask(taskId, chatId, userId)) return [];
     const files = getConsolidatedFiles(chatId)
         .filter(file => file.phase === 'failed')
-        .map(file => `${file.fileName}: ${file.error || '未知错误'}`);
+        .map(file => `${file.fileName}: ${file.error || t(locale, 'upload.error.unknown')}`);
     const batches = getConsolidatedBatches(chatId)
         .filter(batch => batch.failed > 0)
-        .map(batch => `${batch.folderPath || batch.folderName}: ${batch.failed} 项失败`);
+        .map(batch => t(locale, 'upload.failedDetail.batch', { name: batch.folderPath || batch.folderName, count: batch.failed }));
     return [...files, ...batches];
 }
 
@@ -2154,10 +2156,10 @@ interface PendingCleanupInfo {
 
 const pendingCleanups = new Map<string, PendingCleanupInfo>();
 
-export async function handleCleanupCallback(cleanupId: string): Promise<{ success: boolean; message: string }> {
+export async function handleCleanupCallback(cleanupId: string, locale: TelegramLocale = DEFAULT_LOCALE): Promise<{ success: boolean; message: string }> {
     const cleanupInfo = pendingCleanups.get(cleanupId);
     if (!cleanupInfo) {
-        return { success: false, message: '该清理任务已过期或不存在' };
+        return { success: false, message: t(locale, 'upload.cleanup.expired') };
     }
 
     try {
@@ -2167,11 +2169,11 @@ export async function handleCleanupCallback(cleanupId: string): Promise<{ succes
         pendingCleanups.delete(cleanupId);
         return {
             success: true,
-            message: `✅ 已清理 ${cleanupInfo.fileName} 的垃圾缓存 (${formatBytes(cleanupInfo.size)})`
+            message: t(locale, 'upload.cleanup.success', { fileName: cleanupInfo.fileName, size: formatLocalizedBytes(cleanupInfo.size, locale) })
         };
     } catch (error) {
         console.error('🤖 清理垃圾缓存失败:', error);
-        return { success: false, message: `清理失败: ${(error as Error).message}` };
+        return { success: false, message: t(locale, 'upload.cleanup.failed', { error: (error as Error).message }) };
     }
 }
 
@@ -2729,6 +2731,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         const chatId = message.chatId!;
         const chatIdStr = chatId.toString();
         const chatName = await getTelegramChatName(message);
+        const locale = await getTelegramUserLocaleOrDefault(senderId);
         const previewRules = await getStoragePathRules();
         const selectedTarget = await consumeOrGetTelegramTargetState(chatIdStr);
         const singleStorageTarget = selectedTarget
@@ -2780,7 +2783,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 } else {
                     await deleteLastStatusMessage(client, chatId);
                     statusMsg = await safeReply(message, {
-                        message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji)
+                        message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji, undefined, locale),
                     }) as Api.Message;
                     if (statusMsg) {
                         updateLastStatusMessageId(chatId, statusMsg.id, false);
@@ -2794,7 +2797,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             await runStatusAction(chatId, async () => {
                 await safeEditMessage(client, chatId, {
                     message: statusMsg!.id,
-                    text: buildQueuedMessage(finalFileName, stats.pending)
+                    text: buildQueuedMessage(finalFileName, stats.pending, locale)
                 });
             });
         }
@@ -2822,7 +2825,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 await runStatusAction(chatId, async () => {
                     await safeEditMessage(client, chatId, {
                         message: statusMsg!.id,
-                        text: buildDownloadProgress(finalFileName, downloaded, total, typeEmoji),
+                        text: buildDownloadProgress(finalFileName, downloaded, total, typeEmoji, undefined, locale),
                     });
                 });
             }
@@ -2887,7 +2890,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                             await runStatusAction(chatId, async () => {
                                 await client.editMessage(chatId, {
                                     message: statusMsg!.id,
-                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id),
+                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id, locale),
                                 });
                             });
                         }
@@ -2908,7 +2911,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await safeEditMessage(client, chatId, {
                             message: statusMsg!.id,
-                            text: buildSavingFile(finalFileName, typeEmoji),
+                            text: buildSavingFile(finalFileName, typeEmoji, locale),
                         });
                     });
                 }
@@ -2974,7 +2977,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
-                            text: buildUploadSuccess(finalFileName, actualSize, fileType, provider.name, storageFolder, indexedFileId, duplicateMode === 'copy' ? 'copied' : null),
+                            text: buildUploadSuccess(finalFileName, actualSize, fileType, provider.name, storageFolder, indexedFileId, duplicateMode === 'copy' ? 'copied' : null, locale),
                         });
                     });
                 }
@@ -3021,7 +3024,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
-                            text: buildRetryMessage(finalFileName, typeEmoji),
+                            text: buildRetryMessage(finalFileName, typeEmoji, locale),
                         });
                     });
                 }
@@ -3055,7 +3058,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
-                            text: buildUploadFail(finalFileName, lastError!)
+                            text: buildUploadFail(finalFileName, lastError!, locale)
                         }).catch(() => { });
                     });
                 }
@@ -3076,12 +3079,12 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await client.editMessage(chatId, {
                             message: statusMsg!.id,
-                            text: buildUploadFail(finalFileName, lastError || '未知错误')
+                            text: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale)
                         }).catch(() => { });
                     });
                 } else {
                     await safeReply(message, {
-                        message: buildUploadFail(finalFileName, lastError || '未知错误')
+                        message: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale)
                     });
                 }
             } else {
@@ -3115,7 +3118,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             } else if (statusMsg) {
                 await safeEditMessage(client, chatId, {
                     message: statusMsg.id,
-                    text: buildUploadFail(finalFileName, error),
+                    text: buildUploadFail(finalFileName, error, locale),
                 });
             }
             setTimeout(() => removeUpload(chatIdStr, uploadId), 8000);

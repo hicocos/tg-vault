@@ -33,10 +33,20 @@ test('first Web Bot configuration requires an exactly four-digit PIN without exp
     assert.match(configSource, /pinConfigured:/);
     assert.match(routeSource, /ensureTelegramPinConfigured\(req\.body\?\.telegramPin\)/);
     assert.ok((routeSource.match(/ensureTelegramPinConfigured\(req\.body\?\.telegramPin\)/g) || []).length >= 2);
-    assert.match(settingsPage, /Telegram Bot PIN（4 位数字）/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.029/);
     assert.match(settingsPage, /pattern="\[0-9\]\{4\}"/);
     assert.match(settingsPage, /maxLength=\{4\}/);
     assert.doesNotMatch(configSource, /telegramPin:\s*[^;]+;/);
+});
+
+test('Bot credential probe response explicitly states that runtime startup is separate', () => {
+    const route = fs.readFileSync(new URL('../routes/storage.ts', import.meta.url), 'utf8');
+    assert.match(route, /runtimeStarted: false/);
+});
+
+test('Bot public config separates credential probe and runtime readiness', () => {
+    assert.match(configSource, /runtimeReady: status.status === 'ready'/);
+    assert.match(configSource, /credentialProbeOnly: false/);
 });
 
 test('Telegram Bot web management supports test, replace, disable, delete, and environment migration', () => {
@@ -52,7 +62,7 @@ test('Telegram Bot web management supports test, replace, disable, delete, and e
     assert.match(frontendApi, /saveTelegramBotConfig/);
     assert.match(configSource, /getEnvironmentTelegramBotCredentials/);
     assert.match(configSource, /migrateEnvironmentTelegramBotConfig/);
-    assert.match(settingsPage, /凭证已安全保存/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.025/);
     assert.match(settingsPage, /autoComplete="new-password"/);
     assert.doesNotMatch(settingsPage, /value=\{config\?\.telegramBot[^}]*Token/);
 });
@@ -62,16 +72,16 @@ test('Telegram Bot PIN can be changed only after re-authentication and is rate l
     assert.match(routeSource, /changeTelegramPin\(req\.body\?\.verificationMethod,\s*req\.body\?\.verificationSecret,\s*req\.body\?\.newPin\)/);
     assert.match(routeSource, /修改 Telegram Bot PIN 请求过于频繁/);
     assert.match(frontendApi, /changeTelegramBotPin/);
-    assert.match(settingsPage, /修改 Bot PIN/);
-    assert.match(settingsPage, /当前 PIN/);
-    assert.match(settingsPage, /网页管理员密码/);
-    assert.match(settingsPage, /Telegram Bot PIN：已设置，本次更换不会修改/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.339/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.341/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.342/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.031/);
 });
 
 test('a legacy configured Bot without a PIN can create one after web-password verification', () => {
     assert.match(routeSource, /if \(!current\.configured\)/);
-    assert.match(settingsPage, /Telegram Bot PIN：未设置/);
-    assert.match(settingsPage, /设置 Bot PIN/);
-    assert.match(settingsPage, /未设置 PIN 时，需要使用网页管理员密码验证身份/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.028/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.340/);
+    assert.match(settingsPage, /settings\.remaining\.copy\.342/);
     assert.match(frontendApi, /changeTelegramBotPin/);
 });

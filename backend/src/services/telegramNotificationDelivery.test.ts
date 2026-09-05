@@ -34,6 +34,7 @@ test('failed digest send releases the claim without marking it delivered', async
     await assert.rejects(() => flushTelegramNotificationDigest(1, '1', {
         runQuery: async (sql: string) => { calls.push(sql); return { rows: /RETURNING d\./.test(sql) ? rows : [] } as any; },
         send: async () => { throw new Error('send failed'); },
+        getLocale: async () => 'zh-CN',
     }), /send failed/);
     assert.ok(calls.some(sql => /claimed_at = NULL/.test(sql)));
     assert.ok(calls.every(sql => !/delivered_at = NOW/.test(sql)));
@@ -46,9 +47,22 @@ test('digest flush claims pending events and marks them delivered after one summ
     const result = await flushTelegramNotificationDigest(1, '1', {
         runQuery: async (sql: string) => { calls.push(sql); return { rows: /RETURNING d\./.test(sql) ? rows : [] } as any; },
         send: async (_chat, text) => { sent.push(text); },
+        getLocale: async () => 'zh-CN',
     });
     assert.equal(result, 2);
     assert.equal(sent.length, 1);
     assert.match(sent[0], /完成 A/);
     assert.ok(calls.some(sql => /delivered_at = NOW/.test(sql)));
+});
+
+test('digest semantic events render using recipient locale at flush time', async () => {
+    const sent: string[] = [];
+    const rows = [{ id: 'a', kind: 'subscription', payload: { message: '旧中文', messageKey: 'channels.subscriptionComplete', messageParams: { source: '@news', successful: 1, failed: 0 } } }];
+    await flushTelegramNotificationDigest(1, '1', {
+        runQuery: async sql => ({ rows: /RETURNING d\./.test(sql) ? rows : [] } as any),
+        send: async (_chat, text) => { sent.push(text); },
+        getLocale: async () => 'en',
+    });
+    assert.match(sent[0], /Notification digest/);
+    assert.doesNotMatch(sent[0], /旧中文/);
 });

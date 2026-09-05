@@ -1,4 +1,6 @@
-export function errorMessage(error: unknown, fallback = '操作失败'): string {
+import { tr } from '../i18n/runtime';
+
+export function errorMessage(error: unknown, fallback = tr('errors.services.generic.operationFailed')): string {
     if (error instanceof Error && error.message) return error.message;
     if (typeof error === 'string' && error) return error;
     return fallback;

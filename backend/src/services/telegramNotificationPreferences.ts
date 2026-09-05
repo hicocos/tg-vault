@@ -1,4 +1,5 @@
 import { query } from '../db/index.js';
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
 
 export type TelegramSuccessNotificationMode = 'immediate' | 'digest' | 'off';
 export interface TelegramNotificationPreferences {
@@ -26,13 +27,16 @@ function validTime(value: unknown): string | null {
     return /^([01]\d|2[0-3]):[0-5]\d$/.test(text) ? text : null;
 }
 
-export function normalizeTelegramNotificationPreferences(input: Record<string, unknown>): TelegramNotificationPreferences {
+export function normalizeTelegramNotificationPreferences(
+    input: Record<string, unknown>,
+    locale: TelegramLocale = DEFAULT_LOCALE,
+): TelegramNotificationPreferences {
     const successMode = ['immediate', 'digest', 'off'].includes(String(input.successMode))
         ? String(input.successMode) as TelegramSuccessNotificationMode
         : DEFAULT_TELEGRAM_NOTIFICATION_PREFERENCES.successMode;
     const timezone = typeof input.timezone === 'string' && input.timezone.trim() ? input.timezone.trim() : 'UTC';
     try { new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date()); }
-    catch { throw new Error('无效时区'); }
+    catch { throw new Error(t(locale, 'notifications.invalidTimezone')); }
     return {
         failureImmediate: input.failureImmediate !== false,
         successMode,
@@ -77,13 +81,13 @@ export function evaluateTelegramNotification(
     return { deliver: 'immediate', reason: 'preference' };
 }
 
-export async function getTelegramNotificationPreferences(userId: number, chatId: string): Promise<TelegramNotificationPreferences> {
+export async function getTelegramNotificationPreferences(userId: number, chatId: string, locale: TelegramLocale = DEFAULT_LOCALE): Promise<TelegramNotificationPreferences> {
     const result = await query('SELECT preferences FROM telegram_notification_preferences WHERE user_id = $1 AND chat_id = $2', [userId, chatId]);
-    return normalizeTelegramNotificationPreferences(result.rows[0]?.preferences || {});
+    return normalizeTelegramNotificationPreferences(result.rows[0]?.preferences || {}, locale);
 }
 
-export async function setTelegramNotificationPreferences(userId: number, chatId: string, input: Record<string, unknown>): Promise<TelegramNotificationPreferences> {
-    const preferences = normalizeTelegramNotificationPreferences(input);
+export async function setTelegramNotificationPreferences(userId: number, chatId: string, input: Record<string, unknown>, locale: TelegramLocale = DEFAULT_LOCALE): Promise<TelegramNotificationPreferences> {
+    const preferences = normalizeTelegramNotificationPreferences(input, locale);
     await query(
         `INSERT INTO telegram_notification_preferences (user_id, chat_id, preferences)
          VALUES ($1, $2, $3::jsonb)

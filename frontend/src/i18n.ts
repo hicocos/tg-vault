@@ -1,31 +1,32 @@
-import i18n from "i18next";
-import { initReactI18next } from "react-i18next";
-import LanguageDetector from "i18next-browser-languagedetector";
-import enUtils from "./locales/en.json";
-import zhUtils from "./locales/zh.json";
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+import { DEFAULT_LOCALE, FALLBACK_LOCALE, localeRegistry, normalizeLocale, persistLocale, readInitialLocale } from './i18n/registry';
 
-i18n
-    .use(LanguageDetector)
-    .use(initReactI18next)
-    .init({
-        resources: {
-            en: { translation: enUtils },
-            zh: { translation: zhUtils },
-        },
-        fallbackLng: "en",
-        interpolation: {
-            escapeValue: false,
-        },
-        detection: {
-            order: ['localStorage', 'navigator'],
-            caches: ['localStorage'],
-        }
-    });
+const resources = Object.fromEntries(await Promise.all(localeRegistry.map(async locale => [locale.code, { translation: await locale.load() }])));
+
+await i18n.use(initReactI18next).init({
+  resources,
+  lng: readInitialLocale(),
+  fallbackLng: FALLBACK_LOCALE,
+  supportedLngs: localeRegistry.map(locale => locale.code),
+  nonExplicitSupportedLngs: false,
+  load: 'currentOnly',
+  interpolation: { escapeValue: false },
+  returnNull: false,
+  returnEmptyString: false,
+});
 
 const syncDocumentLanguage = (language?: string) => {
-    document.documentElement.lang = language?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en';
+  if (typeof document === 'undefined') return;
+  const locale = localeRegistry.find(item => item.code === normalizeLocale(language)) ?? localeRegistry.find(item => item.code === DEFAULT_LOCALE)!;
+  document.documentElement.lang = locale.code;
+  document.documentElement.dir = locale.direction;
 };
 syncDocumentLanguage(i18n.resolvedLanguage || i18n.language);
-i18n.on('languageChanged', syncDocumentLanguage);
+i18n.on('languageChanged', language => {
+  const locale = normalizeLocale(language);
+  syncDocumentLanguage(locale);
+  persistLocale(locale);
+});
 
 export default i18n;

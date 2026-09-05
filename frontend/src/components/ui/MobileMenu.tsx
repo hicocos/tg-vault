@@ -83,7 +83,7 @@ export const MobileMenu = ({
                                 }}
                             >
                                 <Star className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />
-                                {isFavorite ? (t("file.unfavorite") || "Unfavorite") : (t("file.favorite") || "Favorite")}
+                                {isFavorite ? t("file.unfavorite") : t("file.favorite")}
                             </button>
                         )}
                         
@@ -97,7 +97,7 @@ export const MobileMenu = ({
                                 }}
                             >
                                 <Download className="h-4 w-4" />
-                                {t("file.download") || "Download"}
+                                {t("file.download")}
                             </button>
                         )}
 
@@ -111,7 +111,7 @@ export const MobileMenu = ({
                                 }}
                             >
                                 <Share2 className="h-4 w-4" />
-                                {t("file.share") || "Share"}
+                                {t("file.share")}
                             </button>
                         )}
 
@@ -125,7 +125,7 @@ export const MobileMenu = ({
                                 }}
                             >
                                 <Trash2 className="h-4 w-4" />
-                                {t("file.delete") || "Delete"}
+                                {t("file.delete")}
                             </button>
                         )}
                     </motion.div>

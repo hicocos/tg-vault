@@ -63,10 +63,10 @@ export const DeleteAlert = ({
                         </div>
                         <div className="flex flex-col">
                             <h3 id="delete-alert-title" className="font-semibold text-lg leading-none tracking-tight">
-                                {isPartial ? "部分删除完成" : (t("delete.title") || "确认删除")}
+                                {isPartial ? t('files.ui.deleteDialog.partialTitle') : t('files.ui.deleteDialog.title')}
                             </h3>
                             <p className="text-sm text-muted-foreground mt-1.5">
-                                {isPartial ? "失败项目仍保留索引并保持选中" : (t("delete.subtitle") || "此操作无法撤销")}
+                                {isPartial ? t('files.ui.deleteDialog.partialSubtitle') : t('files.ui.deleteDialog.subtitle')}
                             </p>
                         </div>
                     </div>
@@ -75,8 +75,7 @@ export const DeleteAlert = ({
                         {isPartial ? (
                             <div className="space-y-3 text-sm">
                                 <p className="text-foreground/80">
-                                    已删除 <span className="font-semibold">{result.deletedIds.length}</span> 个项目；
-                                    <span className="font-semibold text-red-600"> {result.failedFiles.length}</span> 个项目删除失败。
+                                    {t('files.ui.deleteDialog.partialSummary', { deleted: result.deletedIds.length, failed: result.failedFiles.length })}
                                 </p>
                                 <ul className="max-h-48 space-y-2 overflow-auto rounded-lg border border-border bg-muted/20 p-3">
                                     {result.failedFiles.map(file => (
@@ -86,7 +85,7 @@ export const DeleteAlert = ({
                                         </li>
                                     ))}
                                 </ul>
-                                <p className="text-xs text-muted-foreground">请关闭后重新预览失败项目再重试；旧确认令牌已消费，不能重复使用。</p>
+                                <p className="text-xs text-muted-foreground">{t('files.ui.deleteDialog.partialRetryHint')}</p>
                             </div>
                         ) : (
                             <div className="flex items-start gap-4">
@@ -94,25 +93,25 @@ export const DeleteAlert = ({
                                     <p className="text-sm text-foreground/80 leading-relaxed">
                                         {itemCount > 0 ? (
                                             <>
-                                                即将永久删除 <span className="font-semibold text-foreground">{dataFileCount}</span> 个数据文件
-                                                {totalSizeBytes > 0 && <>，总大小约 <span className="font-semibold text-foreground">{formatDeleteSize(totalSizeBytes)}</span></>}。
+                                                {t('files.ui.deleteDialog.dataFiles', { count: dataFileCount })}
+                                                {totalSizeBytes > 0 && t('files.ui.deleteDialog.totalSize', { size: formatDeleteSize(totalSizeBytes) })}
                                                 {placeholderCount > 0 && (
-                                                    <><br />另有 <span className="font-semibold text-foreground">{placeholderCount}</span> 个空文件夹占位符（不计入数据文件和容量）。</>
+                                                    <><br />{t('files.ui.deleteDialog.placeholders', { count: placeholderCount })}</>
                                                 )}
                                                 {folderCount > 0 && (
-                                                    <><br />影响 <span className="font-semibold text-foreground">{folderCount}</span> 个当前存储范围内实际存在的文件夹。</>
+                                                    <><br />{t('files.ui.deleteDialog.affectedFolders', { count: folderCount })}</>
                                                 )}
                                                 <br className="mb-2" />
-                                                删除后将无法恢复，请确认是否继续？
+                                                {t('files.ui.deleteDialog.irreversibleQuestion')}
                                             </>
                                         ) : fileName ? (
                                             <>
-                                                即将删除文件 <span className="font-semibold text-foreground break-all">"{fileName}"</span>。
+                                                {t('files.ui.deleteDialog.deleteFile', { name: fileName })}
                                                 <br className="mb-2" />
-                                                删除后将无法恢复，请确认是否继续？
+                                                {t('files.ui.deleteDialog.irreversibleQuestion')}
                                             </>
                                         ) : (
-                                            t("delete.description") || "确定要永久删除此文件吗？删除后将无法恢复。"
+                                            t('files.ui.deleteDialog.description')
                                         )}
                                     </p>
                                 </div>
@@ -126,7 +125,7 @@ export const DeleteAlert = ({
                             className="h-10 px-5 text-sm font-medium border-border/80 hover:bg-muted"
                             onClick={isDeleting ? undefined : onClose}
                         >
-                            {isPartial ? "关闭" : (t("delete.cancel") || "取消")}
+                            {isPartial ? t('common.actions.close') : t('common.actions.cancel')}
                         </Button>
                         {!isPartial && (
                             <Button
@@ -134,7 +133,7 @@ export const DeleteAlert = ({
                                 onClick={handleConfirm}
                                 disabled={isDeleting}
                             >
-                                {isDeleting ? "删除中..." : (t("delete.confirm") || "确认删除")}
+                                {isDeleting ? t('files.ui.deleteDialog.deleting') : t('files.ui.deleteDialog.confirm')}
                             </Button>
                         )}
                     </div>

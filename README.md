@@ -27,7 +27,7 @@
     <a href="https://github.com/hicocos/tg-vault/network/members"><img src="https://img.shields.io/github/forks/hicocos/tg-vault?style=for-the-badge&logo=github&color=8e44ad" alt="Forks" /></a>
   </p>
   <p>
-    <img src="https://img.shields.io/badge/Release-v2.4.1-2ea44f?style=flat-square" alt="Release v2.4.1" />
+    <img src="https://img.shields.io/badge/Release-v2.4.2-2ea44f?style=flat-square" alt="Release v2.4.2" />
     <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
     <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose" />
     <img src="https://img.shields.io/badge/React-TypeScript-3178C6?style=flat-square&logo=react&logoColor=white" alt="React TypeScript" />
@@ -44,12 +44,10 @@
 
 - **Web 管理** — 文件上传、分片大文件上传、文件夹、预览、删除和存储源管理
 - **多存储源** — 本地、OneDrive、Google Drive、阿里云 OSS、S3 兼容存储和 WebDAV
-- **Telegram Bot** — 私聊发文件转存、任务队列、存储统计、删除文件和 yt-dlp 下载
 - **账号级下载器** — 频道/群组按日期或标签批量抓取、订阅同步和更稳定的大文件下载
 - **自动归档** — 默认按来源、频道和文件类型保存，例如 `telegram/channel/images/file.jpg`
 - **安全防护** — 首次初始化管理员、HttpOnly Cookie、Origin 校验、签名 URL 和 TOTP 双重验证
 
-> **账号级下载器不是 Bot 基础功能的前提。** 不生成用户账号 session 时，Bot 仍可收文件、管理任务、查看统计、删除文件和运行 `/ytdlp`；只有频道/群组批量抓取、订阅同步、以及突破 Bot 限制的大文件下载需要账号级下载器。
 
 ---
 
@@ -68,14 +66,14 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-安装向导会先检测 Docker Engine、Docker Compose 插件、Python 3 和 Git；缺少组件时，由你选择自动补全、查看手动提示或退出。环境通过后，依次输入 Web 前端 URL 和后端 API URL，确认后会在同一次运行中生成 `.env`、数据库密码和应用密钥；版本号从 `backend/package.json` 读取，并只在本次构建命令中临时注入，不写入 `.env`。升级时只重建并替换前后端，不重建 PostgreSQL。
+安装向导会先检测 Docker Engine、Docker Compose 插件、Python 3 和 Git；缺少组件时，由你选择自动补全、查看手动提示或退出。首次安装只需要输入 Web 前端 URL 和后端 API URL，确认后脚本会生成 `.env`、数据库密码和应用密钥，并构建启动服务。升级已有部署时，脚本会识别已有配置，直接按提示保留原地址，不会重建 PostgreSQL 或覆盖持久化数据。
 
 - **基础 Web 部署**
   只需输入 Web 前端 URL 与后端 API URL；地址必须是完整的 `http(s)` origin。
 - **启用 Telegram Bot 基础能力**
-  启动 Web 后进入 **设置 → Telegram → Telegram Bot 连接**，填写 Bot Token、API ID、API Hash 和 Bot PIN。凭证会加密保存且不回显。
+  首次打开 Web 并完成管理员初始化后，进入 **设置 → Telegram → Telegram Bot 连接**，填写 Bot Token、API ID、API Hash 和 Bot PIN。凭证会加密保存且不回显；不要把这些内容写入 `.env`。
 - **启用账号级 Telegram 下载器**
-  在 **设置 → Telegram → Telegram 账号下载器** 中使用手机号、验证码和可选的两步验证密码登录；session 加密保存在服务端。旧版 CLI 登录仅作为兼容方式保留。
+  只有需要频道/群组批量抓取、订阅同步或更稳定的大文件下载时，才在 **设置 → Telegram → Telegram 账号下载器** 中登录。session 加密保存在服务端。
 
 > [!IMPORTANT]
 > `VITE_API_URL` 会打包进前端静态文件。修改该地址后必须重新运行 `deploy/install.sh`；仅重启容器不会更新 API 地址。
@@ -115,14 +113,11 @@ cd tg-vault
 </details>
 
 <details>
-<summary><strong>Telegram 相关</strong></summary>
+<summary><strong>Telegram 配置原则</strong></summary>
 
-- **Bot Token / API ID / API Hash** — 推荐在 Web“设置 → Telegram”中配置；使用 AES-256-GCM 加密保存，查询接口和页面均不回显
-- **旧 `.env` 凭证** — 仍兼容，可在 Web 中显式迁移到加密管理；Web 配置优先于环境变量
-- **允许用户** — 在 Web 中维护 Telegram user id；`TELEGRAM_ALLOWED_USER_IDS` 仅作为兼容覆盖
-- **用户账号 session** — 推荐在 Web 中登录并加密保存；`TELEGRAM_USER_SESSION_FILE` 仅用于旧版明文 session 文件迁移和 CLI 兼容
-- **`TELEGRAM_DOWNLOAD_WORKERS`** — 单文件分片并发；默认 `4`，建议 `4` 或 `8`
-- **`TELEGRAM_FILE_DOWNLOAD_CONCURRENCY`** — 同时下载的文件数；默认 `2`，可选 `1/2/3/4`
+Telegram 凭证、允许用户、账号登录、来源白名单和下载并发均属于运行配置，统一在 Web **设置 → Telegram** 中管理。新部署不需要在 `.env` 中填写 Telegram 变量，也不需要手动生成 session 文件。
+
+旧版本 `.env` 变量仍会被兼容读取，但只用于升级和迁移；不要在新部署中同时维护两套配置。Web 中的设置优先于环境变量。
 
 </details>
 
@@ -133,7 +128,6 @@ cd tg-vault
 - **`UPLOAD_DIR`** `/data/uploads` · **`THUMBNAIL_DIR`** `/data/thumbnails` · **`CHUNK_DIR`** `/data/chunks`
 - **`DUPLICATE_FILE_MODE`** `copy` — `copy` 生成副本；`skip` 跳过同名、同目录且同大小的文件
 - **`AUTO_CLEANUP_ORPHANS`** `true` — 自动清理未登记到数据库的本地孤儿文件
-- **`YTDLP_BIN`** `yt-dlp` · **`YTDLP_WORK_DIR`** `/data/uploads/ytdlp` · **`YTDLP_MAX_CONCURRENT`** `1`
 
 </details>
 
@@ -159,7 +153,6 @@ cd tg-vault
 
 - ✅ 私聊发送文件给 Bot 转存
 - ✅ 任务管理、存储统计和删除文件
-- ✅ 使用 `/ytdlp` 下载视频链接
 
 **额外启用账号级下载器后增加：**
 
@@ -199,19 +192,9 @@ TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐进入 **�
 - 频道订阅同步：`/tg_sub` 后台扫描依赖用户账号读取频道/群组新消息。
 - 大文件下载：Bot 直接下载受 Telegram Bot 限制影响，账号级下载器通常更稳定。
 
-### Telegram 文件与分片并发调参
+### Telegram 下载设置
 
-<details>
-<summary><strong>展开并发参数与推荐组合</strong></summary>
-
-- **文件级并发** — `/file_concurrency` / `TELEGRAM_FILE_DOWNLOAD_CONCURRENCY`；可选 `1/2/3/4`
-- **单文件分片并发** — `/download_workers` / `TELEGRAM_DOWNLOAD_WORKERS`；可选 `4/8/12/16`
-
-推荐：稳定 `1 × 4` · 默认 `2 × 4` · 速度 `3 × 4/8`。文件级 `4` 或分片 `12/16` 属于激进模式，需要二次确认，且可能触发限流。
-
-> Telegram 单次 `upload.getFile` 请求最大约 512KB。前一个数字是同时下载的文件数，后一个数字是单文件内部的分片 worker 数。
-
-</details>
+下载并发等参数不属于首次部署配置。需要调整时，在 Web **设置 → 维护 → 高级任务设置** 中修改；页面会显示当前值、适用范围和高风险确认，不建议新手编辑 `.env` 或凭经验修改并发数。
 
 ---
 
@@ -221,7 +204,6 @@ TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐进入 **�
 <summary><strong>常用命令</strong></summary>
 
 - `/start` 认证 · `/help` 帮助 · `/list [数量] [页码]` 最近文件
-- `/storage` 存储状态 · `/tasks` 任务队列 · `/ytdlp <url>` 下载视频链接
 - `/delete <至少 8 位 ID 前缀>` 删除文件 · `/setup_2fa` 配置 TOTP
 
 </details>
@@ -261,21 +243,6 @@ TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐进入 **�
 兼容旧命令 `/tg_date`、`/tg_tag`。多文件达到 9 个及以上时自动静默排队，可用 `/tasks` 查看进度。
 
 </details>
-
----
-
-## 📥 yt-dlp 视频下载
-
-通过集成 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，可以从 Web 文件页或 Telegram Bot 创建任务，下载到提交任务时选定的存储源。
-
-- **Web**：在文件页的“添加下载任务”中粘贴单个媒体页面 URL，选择“视频（最佳质量）”或“仅音频（MP3）”，提交后到任务中心查看进度。
-- **Telegram Bot**：先通过 `/start` 验证身份，再发送：
-
-```text
-/ytdlp https://example.com/video
-```
-
-限制：每次只处理一个以 `http://` 或 `https://` 开头的媒体页面链接；播放列表默认不处理。
 
 ---
 
@@ -334,7 +301,7 @@ COOKIE_SECURE=true
 
 ## 🔄 维护与更新
 
-如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，请先进入你实际部署的项目目录（也就是包含 `docker-compose.yml` 的目录），然后执行下面命令。默认会同时更新前端和后端：
+如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，请先进入实际部署目录（包含 `docker-compose.yml` 的目录），然后执行下面命令：
 
 ```bash
 git fetch origin
@@ -345,9 +312,10 @@ git pull --ff-only origin main
 
 说明：
 
-- 安装向导会显示已有 Web/API URL；升级时直接按三次 Enter 即可保留地址、刷新构建版本信息并重建前后端。
-- PostgreSQL 数据、上传文件、内部密钥以及数据库中加密保存的 Telegram 配置都在持久化数据中，正常重建容器不会丢失。
-- 如果 `git status --short` 显示本地修改，先确认其用途，不要强制覆盖。
+- **首次部署**：运行 `./deploy/install.sh`，按提示填写两个公网地址；不要先复制一堆 Telegram 配置。
+- **后续升级**：先看 `git status --short`，确认没有未提交的本地修改，再 `git pull --ff-only origin main`；运行安装向导时已有地址会显示为当前值，按 Enter 保留即可。
+- 升级脚本只重建并替换 `backend`、`frontend`，不会重建 PostgreSQL；数据库、上传文件、内部密钥和 Web 中保存的 Telegram 配置位于持久化卷中。
+- 如果安装向导检测到地址变化，不要直接确认；输入 `e` 返回重新编辑，确认无误后再开始构建。
 
 清理无用 Docker 资源：
 

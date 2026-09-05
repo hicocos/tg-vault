@@ -1,4 +1,5 @@
 import { API_BASE } from './config';
+import { tr } from '../i18n/runtime';
 import { apiActionErrorFromResponse } from './apiActionError';
 import { authService } from './auth';
 
@@ -9,8 +10,11 @@ export interface HttpRequestOptions extends RequestInit {
 }
 
 function apiUrl(path: string): string {
-    if (/^https?:\/\//i.test(path) || (API_BASE && path.startsWith(API_BASE))) return path;
-    return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+    if (/^https?:\/\//i.test(path)) return path;
+    const normalizedBase = API_BASE.replace(/\/+$/, '');
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    if (normalizedBase && (normalizedPath === normalizedBase || normalizedPath.startsWith(`${normalizedBase}/`))) return normalizedPath;
+    return `${normalizedBase}${normalizedPath}`;
 }
 
 function mergeHeaders(headers?: HeadersInit): Headers {
@@ -20,7 +24,7 @@ function mergeHeaders(headers?: HeadersInit): Headers {
 }
 
 export async function apiRequest(path: string, options: HttpRequestOptions = {}): Promise<Response> {
-    const { acceptedStatuses = [], fallback = '请求失败', classifyErrors = true, ...init } = options;
+    const { acceptedStatuses = [], fallback = tr('errors.services.generic.requestFailed'), classifyErrors = true, ...init } = options;
     const response = await fetch(apiUrl(path), {
         ...init,
         credentials: init.credentials ?? 'include',

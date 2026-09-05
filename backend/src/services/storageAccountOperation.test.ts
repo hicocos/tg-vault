@@ -77,7 +77,7 @@ test('operation wrapper always releases the durable lease after success or failu
 
     const failedPool = new ScriptedPool();
     await assert.rejects(
-        () => withStorageAccountOperationLease(failedPool as any, 'account-1', 'ytdlp_upload', async () => { throw new Error('save failed'); }),
+        () => withStorageAccountOperationLease(failedPool as any, 'account-1', 'telegram_upload', async () => { throw new Error('save failed'); }),
         /save failed/,
     );
     assert.equal(failedPool.calls.filter(call => /SET released_at/.test(call.text)).length, 1);

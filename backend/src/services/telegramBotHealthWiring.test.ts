@@ -26,8 +26,8 @@ test('optional Bot failure remains visible as degraded in Web settings and readi
     assert.match(storage, /telegramBotStatus: getTelegramBotStatus\(\)/);
 });
 
-test('deployment contract exposes TELEGRAM_REQUIRED with safe defaults and Web override guidance', () => {
-    assert.match(compose, /TELEGRAM_REQUIRED=\$\{TELEGRAM_REQUIRED:-false\}/);
-    assert.match(envExample, /TELEGRAM_REQUIRED=false/);
-    assert.match(envExample, /网页管理的 Bot 配置会保存对应 required 状态/);
+test('deployment contract exposes Telegram startup timeout and uses separate Bot/user session settings', () => {
+    assert.match(compose, /TELEGRAM_BOT_STARTUP_TIMEOUT_MS=\$\{TELEGRAM_BOT_STARTUP_TIMEOUT_MS:-30000\}/);
+    assert.doesNotMatch(envExample, /^TELEGRAM_/m);
+    assert.match(envExample, /Telegram 不在这里配置/);
 });

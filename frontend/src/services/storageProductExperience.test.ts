@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
+import zh from '../locales/zh-CN/index';
+import en from '../locales/en/index';
 
 const app = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
 const toolbar = fs.readFileSync(new URL('../components/ui/BulkActionToolbar.tsx', import.meta.url), 'utf8');
@@ -22,14 +24,16 @@ test('storage account deletion previews every server-side task reference and ope
     assert.match(settings, /impact\.fileCount/);
     assert.match(settings, /impact\.folderCount/);
     assert.match(settings, /activeLeaseCount/);
-    assert.match(settings, /不会删除云端原文件/);
+    assert.match(settings, /settings\.remaining\.copy\.221/);
     assert.match(settings, /onOpenTasksForAccount\?\.\(accountId\)/);
-    assert.match(settings, /请到任务中心取消对应任务/);
+    assert.match(settings, /settings\.remaining\.copy\.223/);
 });
 
 test('cloud storage account creation cannot leave the settings form saving forever', () => {
     assert.match(api, /setTimeout\(\(\) => controller\.abort\(\), 65_000\)/);
-    assert.match(api, /providerLabel} 连接测试超时/);
+    assert.match(api, /tr\('errors\.services\.storage\.connectionTimeout', \{ provider: providerLabel \}\)/);
+    assert.match(zh.errors.services.storage.connectionTimeout, /连接测试超时/);
+    assert.match(en.errors.services.storage.connectionTimeout, /connection test timed out/i);
     assert.match(api, /postStorageAccount\('\/api\/storage\/config\/aliyun-oss'/);
     assert.match(api, /postStorageAccount\('\/api\/storage\/config\/s3'/);
     assert.match(api, /postStorageAccount\('\/api\/storage\/config\/webdav'/);

@@ -26,9 +26,7 @@ import { safeUnlink } from '../utils/localPath.js';
 import { getCurrentStorageScope, getScopedFileById, nextParam, removePhysicalFile, updateScopedFileById } from '../utils/fileScope.js';
 import { canonicalTelegramChatKey, telegramChatKeyFromPeerParts } from '../utils/telegramChatKey.js';
 import { clearTelegramTargetState, getTelegramTargetState, setTelegramTargetState, type TelegramTargetMode } from '../utils/telegramTargetStateStore.js';
-import { buildTaskCancelConfirm, buildTaskCenterDetail, buildTaskCenterPage, channelTaskCenterItem, ordinaryTaskCenterItem, parseTaskCenterCallback, ytdlpTaskCenterItem, type TaskCenterButton, type TaskCenterItem, type TaskCenterSourceType, type TaskCenterView } from './telegramTaskCenter.js';
-import { listTransferTasks } from './transferTasks.js';
-import { cancelYtDlpTask, retryYtDlpTask } from './ytDlpDownload.js';
+import { buildTaskCancelConfirm, buildTaskCenterDetail, buildTaskCenterPage, channelTaskCenterItem, ordinaryTaskCenterItem, parseTaskCenterCallback, type TaskCenterButton, type TaskCenterItem, type TaskCenterSourceType, type TaskCenterView } from './telegramTaskCenter.js';
 import { DestructiveConfirmationStore } from './destructiveConfirmation.js';
 import {
     buildPathSettingsKeyboard,
@@ -63,6 +61,8 @@ import crypto from 'crypto';
 import { buildStorageCapabilities } from '../utils/storageProductContract.js';
 import { getSignedUrl } from '../middleware/signedUrl.js';
 import { normalizeFolderPath } from '../utils/folderPath.js';
+import { getTelegramUserLocaleOrDefault } from './telegramLocalePreferences.js';
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
 
 // ESM compatibility
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
@@ -118,7 +118,6 @@ interface BulkTaskImpact {
     ordinaryActiveFiles: number;
     ordinaryPendingFiles: number;
     channelTasks: number;
-    ytdlpTasks: number;
 }
 
 const pendingDeleteConfirmations = new Map<string, PendingDeleteInfo>();
@@ -127,9 +126,9 @@ const pendingStorageClearSnapshots = new Map<string, PendingStorageClearSnapshot
 const pendingBulkTaskCancellations = new Map<string, PendingBulkTaskCancellation>();
 const destructiveConfirmations = new DestructiveConfirmationStore();
 
-function buildFileActionKeyboard(file: any): Api.ReplyInlineMarkup {
+function buildFileActionKeyboard(file: any, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
-        rows: buildTelegramFileActionRows(file).map(row => new Api.KeyboardButtonRow({
+        rows: buildTelegramFileActionRows(file, locale).map(row => new Api.KeyboardButtonRow({
             buttons: row.map(button => new Api.KeyboardButtonCallback({ text: button.text, data: Buffer.from(button.data) })),
         })),
     });
@@ -147,23 +146,23 @@ function buildFileSearchKeyboard(files: any[]): Api.ReplyInlineMarkup | undefine
     });
 }
 
-function buildDeleteConfirmKeyboard(confirmId: string): Api.ReplyInlineMarkup {
+function buildDeleteConfirmKeyboard(confirmId: string, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [new Api.KeyboardButtonRow({
             buttons: [
-                new Api.KeyboardButtonCallback({ text: '⚠️ 确认删除', data: Buffer.from(`del_confirm_${confirmId}`) }),
-                new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from(`del_cancel_${confirmId}`) }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'commands.deleteConfirm'), data: Buffer.from(`del_confirm_${confirmId}`) }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'common.cancel'), data: Buffer.from(`del_cancel_${confirmId}`) }),
             ],
         })],
     });
 }
 
-function buildBulkTaskCancelKeyboard(confirmId: string): Api.ReplyInlineMarkup {
+function buildBulkTaskCancelKeyboard(confirmId: string, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [new Api.KeyboardButtonRow({
             buttons: [
-                new Api.KeyboardButtonCallback({ text: '⚠️ 确认取消全部', data: Buffer.from(`bulk_task_confirm_${confirmId}`) }),
-                new Api.KeyboardButtonCallback({ text: '返回', data: Buffer.from(`bulk_task_cancel_${confirmId}`) }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'commands.bulkConfirm'), data: Buffer.from(`bulk_task_confirm_${confirmId}`) }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'common.back'), data: Buffer.from(`bulk_task_cancel_${confirmId}`) }),
             ],
         })],
     });
@@ -180,14 +179,14 @@ async function getCurrentDownloadWorkers(): Promise<number> {
     return normalizeDownloadWorkers(value);
 }
 
-function buildDownloadWorkersKeyboard(current: number, confirmValue?: number): Api.ReplyInlineMarkup {
+function buildDownloadWorkersKeyboard(current: number, confirmValue?: number, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     if (confirmValue) {
         return new Api.ReplyInlineMarkup({
             rows: [
                 new Api.KeyboardButtonRow({
                     buttons: [
-                        new Api.KeyboardButtonCallback({ text: `⚠️ 确认使用 ${confirmValue}`, data: Buffer.from(`dw_confirm_${confirmValue}`) }),
-                        new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from('dw_cancel') }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto135', { value0: `⚠️ ${confirmValue}` }), data: Buffer.from(`dw_confirm_${confirmValue}`) }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'common.cancel'), data: Buffer.from('dw_cancel') }),
                     ],
                 }),
             ],
@@ -212,18 +211,18 @@ function buildDownloadWorkersKeyboard(current: number, confirmValue?: number): A
     });
 }
 
-function buildStorageMaintenanceKeyboard(localFileCount: number, confirmationToken?: string): Api.ReplyInlineMarkup | undefined {
+function buildStorageMaintenanceKeyboard(localFileCount: number, confirmationToken?: string, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup | undefined {
     if (localFileCount <= 0) return undefined;
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({
                 buttons: confirmationToken
                     ? [
-                        new Api.KeyboardButtonCallback({ text: '⚠️ 确认删除本地全部下载文件', data: Buffer.from(`storage_clear_confirm_${confirmationToken}`) }),
-                        new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from(`storage_clear_cancel_${confirmationToken}`) }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'commands.clearLocalConfirm'), data: Buffer.from(`storage_clear_confirm_${confirmationToken}`) }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'common.cancel'), data: Buffer.from(`storage_clear_cancel_${confirmationToken}`) }),
                     ]
                     : [
-                        new Api.KeyboardButtonCallback({ text: `🧹 删除本地全部下载文件 (${localFileCount})`, data: Buffer.from('storage_clear_ask') }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'commands.clearLocalButton', { count: localFileCount }), data: Buffer.from('storage_clear_ask') }),
                     ],
             }),
         ],
@@ -242,11 +241,11 @@ function sortStorageAccounts(accounts: StorageAccountSummary[]): StorageAccountS
     });
 }
 
-function buildStorageAccountKeyboard(accounts: StorageAccountSummary[], activeAccountId: string | null): Api.ReplyInlineMarkup {
+function buildStorageAccountKeyboard(accounts: StorageAccountSummary[], activeAccountId: string | null, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     const accountButtons = sortStorageAccounts(accounts).map(account => {
         const isActive = account.is_active || account.id === activeAccountId;
         const providerLabel = getProviderDisplayName(account.type).replace(/^[^\p{L}\p{N}]+/u, '').trim();
-        const accountName = shortenStorageAccountName(account.name || '未命名账户');
+        const accountName = shortenStorageAccountName(account.name || t(locale, 'commands.accountUnnamed'));
         return new Api.KeyboardButtonRow({
             buttons: [new Api.KeyboardButtonCallback({
                 text: `${isActive ? '✅' : '⬜'} ${providerLabel} · ${accountName}`,
@@ -259,50 +258,50 @@ function buildStorageAccountKeyboard(accounts: StorageAccountSummary[], activeAc
         rows: [
             new Api.KeyboardButtonRow({
                 buttons: [new Api.KeyboardButtonCallback({
-                    text: `${!activeAccountId ? '✅' : '⬜'} 💾 本地存储`,
+                    text: `${!activeAccountId ? '✅' : '⬜'} 💾 ${t(locale, 'commands.localStorage')}`,
                     data: Buffer.from('storage_switch_local'),
                 })],
             }),
             ...accountButtons,
             new Api.KeyboardButtonRow({
-                buttons: [new Api.KeyboardButtonCallback({ text: '🔄 刷新列表', data: Buffer.from('storage_switch_refresh') })],
+                buttons: [new Api.KeyboardButtonCallback({ text: `🔄 ${t(locale, 'commands.refreshList')}`, data: Buffer.from('storage_switch_refresh') })],
             }),
         ],
     });
 }
 
-function buildStorageSwitchText(accounts: StorageAccountSummary[], activeAccountId: string | null): string {
+function buildStorageSwitchText(accounts: StorageAccountSummary[], activeAccountId: string | null, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const activeAccount = accounts.find(account => account.is_active || account.id === activeAccountId);
     const activeLine = activeAccount
-        ? `${getProviderDisplayName(activeAccount.type)} · ${activeAccount.name || '未命名账户'}`
+        ? `${getProviderDisplayName(activeAccount.type)} · ${activeAccount.name || t(locale, 'commands.accountUnnamed')}`
         : getProviderDisplayName('local');
 
     const accountLines = sortStorageAccounts(accounts).map(account => {
         const marker = account.id === activeAccountId || account.is_active ? '✅' : '⬜';
-        return `${marker} ${getProviderDisplayName(account.type)} · ${account.name || '未命名账户'}\n   ID: \`${String(account.id).slice(0, 8)}\``;
+        return `${marker} ${getProviderDisplayName(account.type)} · ${account.name || t(locale, 'commands.accountUnnamed')}\n   ID: \`${String(account.id).slice(0, 8)}\``;
     });
 
     return [
-        '🗄️ **存储源切换**',
+        t(locale, 'commands.storageSwitchTitle'),
         '',
-        `当前使用：${activeLine}`,
+        t(locale, 'commands.storageSwitchCurrent', { value: activeLine }),
         '',
-        '点击下面按钮即可切换到已在网页端配置好的存储账户；不需要打开前端页面。',
+        t(locale, 'commands.storageSwitchHint'),
         '',
-        '**可选存储：**',
+        t(locale, 'commands.storageSwitchOptions'),
         `✅/⬜ ${getProviderDisplayName('local')}`,
         ...accountLines,
         '',
-        '提示：这里只能切换已有账户；新增 OAuth/密钥配置仍需在网页端完成。',
+        t(locale, 'commands.storageSwitchNote'),
     ].join('\n');
 }
 
-async function buildStorageSwitchView(): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
+async function buildStorageSwitchView(locale: TelegramLocale = DEFAULT_LOCALE): Promise<{ text: string; buttons: Api.ReplyInlineMarkup }> {
     const accounts = await storageManager.getAccounts() as StorageAccountSummary[];
     const activeAccountId = storageManager.getActiveAccountId();
     return {
-        text: buildStorageSwitchText(accounts, activeAccountId),
-        buttons: buildStorageAccountKeyboard(accounts, activeAccountId),
+        text: buildStorageSwitchText(accounts, activeAccountId, locale),
+        buttons: buildStorageAccountKeyboard(accounts, activeAccountId, locale),
     };
 }
 
@@ -315,7 +314,8 @@ function isTelegramMessageNotModified(error: unknown): boolean {
 }
 
 async function editStorageSwitchMessage(client: TelegramClient, update: Api.UpdateBotCallbackQuery, toast: string): Promise<void> {
-    const view = await buildStorageSwitchView();
+    const locale = await getTelegramUserLocaleOrDefault(update.userId.toJSNumber());
+    const view = await buildStorageSwitchView(locale);
     try {
         await client.editMessage(update.peer, {
             message: Number(update.msgId),
@@ -366,15 +366,15 @@ async function pruneEmptyDirs(dir: string, baseDir = path.resolve(UPLOAD_DIR)): 
     }
 }
 
-function buildDownloadWorkersText(current: number): string {
+function buildDownloadWorkersText(current: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        '⚙️ **Telegram 分片并发设置**',
+        t(locale, 'commands.auto001'),
         '',
-        `当前分片数：**${current}**`,
+        t(locale, 'commands.auto002', { value0: current }),
         '',
-        '这里控制单个文件同时下载多少个分片；数值越高越快，也越容易触发限流。',
+        t(locale, 'commands.auto003'),
         '',
-        '建议：4 稳定优先，8 速度与稳定平衡；12 或 16 属于激进模式，需要二次确认。',
+        t(locale, 'commands.auto004'),
     ].join('\n');
 }
 
@@ -388,14 +388,14 @@ async function getCurrentFileConcurrency(): Promise<number> {
     return normalizeFileConcurrency(value);
 }
 
-function buildFileConcurrencyKeyboard(current: number, confirmValue?: number): Api.ReplyInlineMarkup {
+function buildFileConcurrencyKeyboard(current: number, confirmValue?: number, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     if (confirmValue) {
         return new Api.ReplyInlineMarkup({
             rows: [
                 new Api.KeyboardButtonRow({
                     buttons: [
-                        new Api.KeyboardButtonCallback({ text: `⚠️ 确认同时下载 ${confirmValue} 个文件`, data: Buffer.from(`fc_confirm_${confirmValue}`) }),
-                        new Api.KeyboardButtonCallback({ text: '取消', data: Buffer.from('fc_cancel') }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto145', { value0: `⚠️ ${confirmValue}` }), data: Buffer.from(`fc_confirm_${confirmValue}`) }),
+                        new Api.KeyboardButtonCallback({ text: t(locale, 'common.cancel'), data: Buffer.from('fc_cancel') }),
                     ],
                 }),
             ],
@@ -420,19 +420,19 @@ function buildFileConcurrencyKeyboard(current: number, confirmValue?: number): A
     });
 }
 
-function buildFileConcurrencyText(current: number): string {
+function buildFileConcurrencyText(current: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const stats = getDownloadQueueStats();
     return [
-        '📦 **Telegram 文件级并发设置**',
+        t(locale, 'commands.auto005'),
         '',
-        `当前同时下载文件数：**${current}**`,
-        `当前队列：进行中 ${stats.active}，等待中 ${stats.pending}`,
+        t(locale, 'commands.auto006', { value0: current }),
+        t(locale, 'commands.auto007', { value0: stats.active, value1: stats.pending }),
         '',
-        '这里控制一次同时下载多少个文件。',
+        t(locale, 'commands.auto008'),
         '',
-        '建议：1 最稳定，2 默认推荐，3 速度优先；4 属于激进模式，需要二次确认。',
+        t(locale, 'commands.auto009'),
         '',
-        '修改后只影响新开始的文件，正在下载的文件不会中断。',
+        t(locale, 'commands.auto010'),
     ].join('\n');
 }
 
@@ -445,29 +445,29 @@ async function getPathCenterState(): Promise<{ automaticBySource: boolean; autom
     return { automaticBySource: true, automaticByType: true };
 }
 
-function buildDuplicateModeKeyboard(mode: DuplicateMode): Api.ReplyInlineMarkup {
+function buildDuplicateModeKeyboard(mode: DuplicateMode, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({
                 buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${mode === 'skip' ? '✅' : '⬜'} 跳过重复`, data: Buffer.from('dm_set_skip') }),
-                    new Api.KeyboardButtonCallback({ text: `${mode === 'copy' ? '✅' : '⬜'} 生成副本`, data: Buffer.from('dm_set_copy') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto011', { value0: mode === 'skip' ? '✅' : '⬜' }), data: Buffer.from('dm_set_skip') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto012', { value0: mode === 'copy' ? '✅' : '⬜' }), data: Buffer.from('dm_set_copy') }),
                 ],
             }),
         ],
     });
 }
 
-function buildDuplicateModeText(mode: DuplicateMode): string {
+function buildDuplicateModeText(mode: DuplicateMode, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        '🧬 **重复文件处理**',
+        t(locale, 'commands.auto013'),
         '',
-        `当前模式：${mode === 'skip' ? '跳过重复' : '生成副本'}`,
+        t(locale, 'commands.auto014', { value0: mode === 'skip' ? t(locale, 'commands.auto011', { value0: '' }).trim() : t(locale, 'commands.auto012', { value0: '' }).trim() }),
         '',
-        '• 跳过重复：名称、目录和大小都相同时不再保存',
-        '• 生成副本：自动改名并保留一份副本',
+        t(locale, 'commands.auto015'),
+        t(locale, 'commands.auto016'),
         '',
-        '只影响之后保存的文件。',
+        t(locale, 'commands.auto017'),
     ].join('\n');
 }
 
@@ -476,29 +476,29 @@ async function getCleanupEnabledSetting(): Promise<boolean> {
     return isOn(value, true);
 }
 
-function buildCleanupSettingsKeyboard(enabled: boolean): Api.ReplyInlineMarkup {
+function buildCleanupSettingsKeyboard(enabled: boolean, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({
                 buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${!enabled ? '✅' : '⬜'} 关闭自动清理`, data: Buffer.from('cs_set_off') }),
-                    new Api.KeyboardButtonCallback({ text: `${enabled ? '✅' : '⬜'} 开启自动清理`, data: Buffer.from('cs_set_on') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto018', { value0: !enabled ? '✅' : '⬜' }), data: Buffer.from('cs_set_off') }),
+                    new Api.KeyboardButtonCallback({ text: t(locale, 'commands.auto019', { value0: enabled ? '✅' : '⬜' }), data: Buffer.from('cs_set_on') }),
                 ],
             }),
         ],
     });
 }
 
-function buildCleanupSettingsText(enabled: boolean): string {
+function buildCleanupSettingsText(enabled: boolean, locale: TelegramLocale = DEFAULT_LOCALE): string {
     return [
-        '🧹 **自动清理未索引临时文件**',
+        t(locale, 'commands.auto020'),
         '',
-        `当前状态：${enabled ? '✅ 开启' : '⬜ 关闭'}`,
+        t(locale, 'commands.auto021', { value0: enabled ? '✅ Enabled' : '⬜ Disabled' }),
         '',
-        '开启后每小时检查服务器下载目录，只删除超过 10 分钟且未出现在文件列表中的临时文件。',
-        '不会删除任务记录、已登记文件或云端文件。',
+        t(locale, 'commands.auto022'),
+        t(locale, 'commands.auto023'),
         '',
-        '如果你会绕过 TG Vault 直接写入服务器下载目录，请保持关闭。',
+        t(locale, 'commands.auto024'),
     ].join('\n');
 }
 
@@ -510,21 +510,21 @@ function getCallbackChatKey(update: Api.UpdateBotCallbackQuery): string {
     }
 }
 
-export async function handleStart(message: Api.Message, senderId: number, buttons?: Api.TypeReplyMarkup): Promise<void> {
+export async function handleStart(message: Api.Message, senderId: number, buttons?: Api.TypeReplyMarkup, locale?: TelegramLocale): Promise<void> {
     if (await isAuthenticatedAsync(senderId)) {
-        await message.reply({ message: buildWelcomeBack(), buttons });
+        await message.reply({ message: buildWelcomeBack(locale || await getTelegramUserLocaleOrDefault(senderId)), buttons });
     } else {
         passwordInputState.set(senderId, { password: '' });
     }
 }
 
-export async function handleHelp(message: Api.Message, buttons?: Api.TypeReplyMarkup): Promise<void> {
-    await message.reply({ message: buildHelp(), buttons });
+export async function handleHelp(message: Api.Message, buttons?: Api.TypeReplyMarkup, locale?: TelegramLocale): Promise<void> {
+    await message.reply({ message: buildHelp(locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0)), buttons });
 }
 
-function buildNotificationSettingsKeyboard(current: Awaited<ReturnType<typeof getTelegramNotificationPreferences>>): Api.ReplyInlineMarkup {
+function buildNotificationSettingsKeyboard(current: Awaited<ReturnType<typeof getTelegramNotificationPreferences>>, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
-        rows: buildNotificationSettingsButtonRows(current).map(row => new Api.KeyboardButtonRow({
+        rows: buildNotificationSettingsButtonRows(current, locale).map(row => new Api.KeyboardButtonRow({
             buttons: row.map(button => new Api.KeyboardButtonCallback({
                 text: button.text,
                 data: Buffer.from(button.data),
@@ -533,18 +533,19 @@ function buildNotificationSettingsKeyboard(current: Awaited<ReturnType<typeof ge
     });
 }
 
-export async function handleNotifications(message: Api.Message, args: string[] = []): Promise<void> {
+export async function handleNotifications(message: Api.Message, args: string[] = [], locale?: TelegramLocale): Promise<void> {
     const userId = message.senderId?.toJSNumber();
     if (!userId || !(await isAuthenticatedAsync(userId))) {
         await message.reply({ message: MSG.AUTH_REQUIRED });
         return;
     }
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(userId);
     const chatId = canonicalTelegramChatKey(message.chatId?.toString() || userId);
     const current = await getTelegramNotificationPreferences(userId, chatId);
     if (args.length === 0) {
         await message.reply({
-            message: buildNotificationSettingsText(current),
-            buttons: buildNotificationSettingsKeyboard(current),
+            message: buildNotificationSettingsText(current, resolvedLocale),
+            buttons: buildNotificationSettingsKeyboard(current, resolvedLocale),
         });
         return;
     }
@@ -553,15 +554,15 @@ export async function handleNotifications(message: Api.Message, args: string[] =
         const saved = await setTelegramNotificationPreferences(
             userId,
             chatId,
-            updateNotificationPreference(current, args),
+            updateNotificationPreference(current, args, resolvedLocale),
         );
         await message.reply({
-            message: `${buildNotificationSettingsText(saved)}\n\n✅ 设置已保存。`,
-            buttons: buildNotificationSettingsKeyboard(saved),
+            message: `${buildNotificationSettingsText(saved, resolvedLocale)}\n\n${t(resolvedLocale, 'commands.settingsSaved')}`,
+            buttons: buildNotificationSettingsKeyboard(saved, resolvedLocale),
         });
     } catch (error) {
         await message.reply({
-            message: `❌ ${(error as Error).message}\n\n发送 /notifications 可重新查看说明和快捷按钮。`,
+            message: `❌ ${t(resolvedLocale, 'commands.settingsFailed', { error: (error as Error).message })}\n\n${t(resolvedLocale, 'commands.notificationsHint')}`,
         });
     }
 }
@@ -581,16 +582,17 @@ export async function handleNotificationsCallback(
         return;
     }
 
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     try {
         const args = notificationCallbackArgs(data);
         if (!args) return;
         const chatId = getCallbackChatKey(update);
         const current = await getTelegramNotificationPreferences(userId, chatId);
-        const next = updateNotificationPreference(current, args);
+        const next = updateNotificationPreference(current, args, locale);
         if (JSON.stringify(next) === JSON.stringify(current)) {
             await client.invoke(new Api.messages.SetBotCallbackAnswer({
                 queryId: update.queryId,
-                message: '已是当前设置',
+                message: t(locale, 'commands.alreadyCurrent'),
             }));
             return;
         }
@@ -601,28 +603,29 @@ export async function handleNotificationsCallback(
         );
         await client.editMessage(update.peer, {
             message: Number(update.msgId),
-            text: buildNotificationSettingsText(saved),
-            buttons: buildNotificationSettingsKeyboard(saved),
+            text: buildNotificationSettingsText(saved, locale),
+            buttons: buildNotificationSettingsKeyboard(saved, locale),
         });
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: '通知设置已更新',
+            message: t(locale, 'commands.notificationsUpdated'),
         }));
     } catch (error) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: `设置失败：${(error as Error).message}`,
+            message: t(locale, 'commands.settingsFailed', { error: (error as Error).message }),
             alert: true,
         }));
     }
 }
 
-export async function handleStatus(message: Api.Message): Promise<void> {
+export async function handleStatus(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     const senderId = message.senderId?.toJSNumber();
     if (!senderId || !(await isAuthenticatedAsync(senderId))) {
         await message.reply({ message: MSG.AUTH_REQUIRED });
         return;
     }
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(senderId);
     const requestId = `tg-${crypto.randomBytes(6).toString('hex')}`;
     try {
         const target = storageManager.getActiveTarget();
@@ -639,8 +642,7 @@ export async function handleStatus(message: Api.Message): Promise<void> {
                    FROM (
                        SELECT status, resolution FROM telegram_write_reconciliations
                        UNION ALL SELECT status, resolution FROM chunk_upload_reconciliations
-                       UNION ALL SELECT status, resolution FROM ytdlp_write_reconciliations
-                   ) reconciliations`),
+                    ) reconciliations`),
         ]);
         const subscription = subscriptionRows.rows[0] || {};
         const reconcile = reconciliation.rows[0] || {};
@@ -650,7 +652,7 @@ export async function handleStatus(message: Api.Message): Promise<void> {
             userClient: getTelegramUserClientStatus(),
             target: {
                 provider: target.provider.name,
-                accountName: account?.name || (target.provider.name === 'local' ? '服务器本地目录' : target.accountId || '默认账户'),
+                accountName: account?.name || (target.provider.name === 'local' ? t(resolvedLocale, 'commands.localAccount') : target.accountId || t(resolvedLocale, 'commands.defaultAccount')),
                 probeStatus: account?.last_probe_status || (target.provider.name === 'local' ? 'available' : null),
                 cooldownUntil: null,
                 probeError: account?.last_probe_error || null,
@@ -659,14 +661,14 @@ export async function handleStatus(message: Api.Message): Promise<void> {
             queue: { active: queue.active, pending: queue.pending, failed: getTaskStatus().history.filter(task => task.status === 'failed').length, paused: queue.paused },
             subscriptions: { enabled: Number(subscription.enabled || 0), lastScanAt: subscription.last_scan_at || null, lastError: subscription.last_error || null },
             reconciliation: { pending: Number(reconcile.pending || 0), operatorRequired: Number(reconcile.operator_required || 0) },
-        }) });
+        }, resolvedLocale) });
     } catch (error) {
         console.error(`🤖 status panel failed request=${requestId}:`, error);
-        await message.reply({ message: `❌ 诊断状态读取失败。操作 ID：${requestId}` });
+        await message.reply({ message: t(resolvedLocale, 'commands.statusFailed', { requestId }) });
     }
 }
 
-export async function handleStorage(message: Api.Message): Promise<void> {
+export async function handleStorage(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     try {
         const scope = await getCurrentStorageScope();
         const diskPath = os.platform() === 'win32' ? 'C:' : '/';
@@ -696,11 +698,11 @@ export async function handleStorage(message: Api.Message): Promise<void> {
             localTotalSize: localStats.totalSize,
             queueActive: queueStats.active,
             queuePending: queueStats.pending,
-        });
+        }, locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0));
 
         await message.reply({
             message: reply,
-            buttons: buildStorageMaintenanceKeyboard(localStats.count),
+            buttons: buildStorageMaintenanceKeyboard(localStats.count, undefined, locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0)),
         });
     } catch (error) {
         console.error('🤖 获取存储统计失败:', error);
@@ -708,31 +710,32 @@ export async function handleStorage(message: Api.Message): Promise<void> {
     }
 }
 
-function buildTargetKeyboard(): Api.ReplyInlineMarkup {
+function buildTargetKeyboard(locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     return new Api.ReplyInlineMarkup({
         rows: [
             new Api.KeyboardButtonRow({ buttons: [
-                new Api.KeyboardButtonCallback({ text: '📌 下一次使用当前存储', data: Buffer.from('target_once_active') }),
-                new Api.KeyboardButtonCallback({ text: '📍 本聊天使用当前存储', data: Buffer.from('target_session_active') }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'commands.targetNextButton'), data: Buffer.from('target_once_active') }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'commands.targetSessionButton'), data: Buffer.from('target_session_active') }),
             ] }),
             new Api.KeyboardButtonRow({ buttons: [
-                new Api.KeyboardButtonCallback({ text: '🧹 恢复系统默认', data: Buffer.from('target_clear') }),
+                new Api.KeyboardButtonCallback({ text: t(locale, 'commands.targetClearButton'), data: Buffer.from('target_clear') }),
             ] }),
         ],
     });
 }
 
-export async function handleTarget(message: Api.Message, args: string[] = []): Promise<void> {
+export async function handleTarget(message: Api.Message, args: string[] = [], locale?: TelegramLocale): Promise<void> {
     const senderId = message.senderId?.toJSNumber();
     if (!senderId || !(await isAuthenticatedAsync(senderId))) {
         await message.reply({ message: MSG.AUTH_REQUIRED });
         return;
     }
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(senderId);
     const chatId = canonicalTelegramChatKey(message.chatId?.toString() || senderId);
     const modeInput = (args[0] || '').toLowerCase();
     if (modeInput === 'clear') {
         await clearTelegramTargetState(chatId);
-        await message.reply({ message: '✅ 已清除当前聊天的存储目标覆盖；后续任务使用系统默认。' });
+        await message.reply({ message: t(resolvedLocale, 'commands.targetCleared') });
         return;
     }
     if (!modeInput) {
@@ -741,21 +744,21 @@ export async function handleTarget(message: Api.Message, args: string[] = []): P
         const active = storageManager.getActiveTarget();
         await message.reply({
             message: [
-                '🎯 **当前聊天存储目标**',
-                `下一次：${once ? `${getProviderDisplayName(once.provider)}（已设置）` : '系统默认'}`,
-                `本聊天：${session ? `${getProviderDisplayName(session.provider)}（已设置）` : '系统默认'}`,
-                `系统默认：${getProviderDisplayName(active.provider.name)}`,
+                t(resolvedLocale, 'commands.targetTitle'),
+                t(resolvedLocale, 'commands.targetNext', { value: once ? t(resolvedLocale, 'commands.targetSet', { value: getProviderDisplayName(once.provider) }) : t(resolvedLocale, 'commands.targetDefault') }),
+                t(resolvedLocale, 'commands.targetSession', { value: session ? t(resolvedLocale, 'commands.targetSet', { value: getProviderDisplayName(session.provider) }) : t(resolvedLocale, 'commands.targetDefault') }),
+                t(resolvedLocale, 'commands.targetSystem', { value: getProviderDisplayName(active.provider.name) }),
                 '',
-                '👇 点击按钮，用当前系统存储设置临时目标。',
+                t(resolvedLocale, 'commands.targetHint'),
             ].join('\n'),
-            buttons: buildTargetKeyboard(),
+            buttons: buildTargetKeyboard(resolvedLocale),
         });
         return;
     }
     if (!['once', 'session'].includes(modeInput) || !args[1]) {
         await message.reply({
-            message: '❌ 无法识别这个存储目标。请使用下方按钮。',
-            buttons: buildTargetKeyboard(),
+            message: t(resolvedLocale, 'commands.targetInvalid'),
+            buttons: buildTargetKeyboard(resolvedLocale),
         });
         return;
     }
@@ -763,12 +766,12 @@ export async function handleTarget(message: Api.Message, args: string[] = []): P
     const selector = String(args[1]);
     let provider = 'local';
     let accountId: string | null = null;
-    let accountName = '服务器本地目录';
+    let accountName = t(resolvedLocale, 'commands.localAccount');
     if (selector !== 'local') {
         const accounts = await storageManager.getAccounts() as StorageAccountSummary[];
         const account = accounts.find(row => String(row.id) === selector || String(row.id).startsWith(selector));
         if (!account) {
-            await message.reply({ message: '❌ 未找到该存储账户；请从 /storage_switch 查看完整账户列表。' });
+            await message.reply({ message: t(resolvedLocale, 'commands.targetAccountMissing') });
             return;
         }
         provider = account.type;
@@ -778,7 +781,7 @@ export async function handleTarget(message: Api.Message, args: string[] = []): P
     }
     const expiresAt = new Date(Date.now() + (mode === 'once' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000));
     await setTelegramTargetState(undefined, chatId, mode, provider, accountId, expiresAt);
-    await message.reply({ message: `✅ 已设置${mode === 'once' ? '下一次' : '当前聊天会话'}目标：${provider} / ${accountName}\n不会修改系统全局默认。` });
+    await message.reply({ message: t(resolvedLocale, 'commands.targetSaved', { scope: t(resolvedLocale, mode === 'once' ? 'commands.targetScopeNext' : 'commands.targetScopeSession'), provider, account: accountName }) });
 }
 
 export async function handleTargetCallback(
@@ -787,6 +790,7 @@ export async function handleTargetCallback(
     data: string,
 ): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -794,7 +798,7 @@ export async function handleTargetCallback(
     const chatId = getCallbackChatKey(update);
     if (data === 'target_clear') {
         await clearTelegramTargetState(chatId);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已恢复系统默认' }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.targetRestored') }));
     } else {
         const mode: TelegramTargetMode = data === 'target_once_active' ? 'once' : 'session';
         const active = storageManager.getActiveTarget();
@@ -802,7 +806,7 @@ export async function handleTargetCallback(
         await setTelegramTargetState(undefined, chatId, mode, active.provider.name, active.accountId, expiresAt);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: mode === 'once' ? '已设置下一次存储' : '已设置本聊天存储',
+            message: t(locale, mode === 'once' ? 'commands.targetNextSet' : 'commands.targetSessionSet'),
         }));
     }
     const once = await getTelegramTargetState(undefined, chatId, 'once');
@@ -811,31 +815,33 @@ export async function handleTargetCallback(
     await client.editMessage(update.peer, {
         message: Number(update.msgId),
         text: [
-            '🎯 **当前聊天存储目标**',
-            `下一次：${once ? `${getProviderDisplayName(once.provider)}（已设置）` : '系统默认'}`,
-            `本聊天：${session ? `${getProviderDisplayName(session.provider)}（已设置）` : '系统默认'}`,
-            `系统默认：${getProviderDisplayName(active.provider.name)}`,
+            t(locale, 'commands.targetTitle'),
+            t(locale, 'commands.targetNext', { value: once ? t(locale, 'commands.targetSet', { value: getProviderDisplayName(once.provider) }) : t(locale, 'commands.targetDefault') }),
+            t(locale, 'commands.targetSession', { value: session ? t(locale, 'commands.targetSet', { value: getProviderDisplayName(session.provider) }) : t(locale, 'commands.targetDefault') }),
+            t(locale, 'commands.targetSystem', { value: getProviderDisplayName(active.provider.name) }),
             '',
-            '👇 点击按钮，用当前系统存储设置临时目标。',
+            t(locale, 'commands.targetHint'),
         ].join('\n'),
-        buttons: buildTargetKeyboard(),
+        buttons: buildTargetKeyboard(locale),
     }).catch(error => {
         if (!isTelegramMessageNotModified(error)) throw error;
     });
 }
 
-export async function handleStorageSwitch(message: Api.Message): Promise<void> {
+export async function handleStorageSwitch(message: Api.Message, locale?: TelegramLocale): Promise<void> {
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
     try {
-        const view = await buildStorageSwitchView();
+        const view = await buildStorageSwitchView(resolvedLocale);
         await message.reply({ message: view.text, buttons: view.buttons });
     } catch (error) {
         console.error('🤖 获取存储源切换菜单失败:', error);
-        await message.reply({ message: `❌ 获取存储源切换菜单失败: ${(error as Error).message}` });
+        await message.reply({ message: t(resolvedLocale, 'commands.storageSwitchFailed', { error: (error as Error).message }) });
     }
 }
 
 export async function handleStorageSwitchCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -843,42 +849,42 @@ export async function handleStorageSwitchCallback(client: TelegramClient, update
 
     try {
         if (data === 'storage_switch_refresh') {
-            await editStorageSwitchMessage(client, update, '已刷新');
+            await editStorageSwitchMessage(client, update, t(locale, 'commands.storageRefreshed'));
             return;
         }
 
         const accountId = data.replace(/^storage_switch_/, '');
         if (!accountId) {
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '无效的存储源选择', alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.storageInvalid'), alert: true }));
             return;
         }
 
         if (accountId === 'local') {
             if (!storageManager.getActiveAccountId()) {
-                await editStorageSwitchMessage(client, update, '当前已经是本地存储');
+                await editStorageSwitchMessage(client, update, t(locale, 'commands.storageAlreadyLocal'));
                 return;
             }
             await storageManager.switchAccount('local');
-            await editStorageSwitchMessage(client, update, '已切换到本地存储');
+            await editStorageSwitchMessage(client, update, t(locale, 'commands.storageSwitchedLocal'));
             return;
         }
 
         const accounts = await storageManager.getAccounts() as StorageAccountSummary[];
         const selected = accounts.find(account => account.id === accountId);
         if (!selected) {
-            await editStorageSwitchMessage(client, update, '该存储账户已不存在');
+            await editStorageSwitchMessage(client, update, t(locale, 'commands.storageMissing'));
             return;
         }
         if (selected.is_active || storageManager.getActiveAccountId() === accountId) {
-            await editStorageSwitchMessage(client, update, '当前已经在使用该账户');
+            await editStorageSwitchMessage(client, update, t(locale, 'commands.storageAlreadyAccount'));
             return;
         }
 
         await storageManager.switchAccount(accountId);
-        await editStorageSwitchMessage(client, update, `已切换到 ${selected.name || getProviderDisplayName(selected.type)}`);
+        await editStorageSwitchMessage(client, update, t(locale, 'commands.storageSwitched', { name: selected.name || getProviderDisplayName(selected.type) }));
     } catch (error) {
         console.error('🤖 切换存储源失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `切换失败: ${(error as Error).message}`, alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.storageSwitchError', { error: (error as Error).message }), alert: true }));
     }
 }
 
@@ -1008,12 +1014,13 @@ export async function handleStorageCleanupCallback(client: TelegramClient, updat
     }
 }
 
-export async function handleFind(message: Api.Message, args: string[] = []): Promise<void> {
+export async function handleFind(message: Api.Message, args: string[] = [], locale?: TelegramLocale): Promise<void> {
     const senderId = message.senderId?.toJSNumber();
     if (!senderId || !(await isAuthenticatedAsync(senderId))) {
         await message.reply({ message: MSG.AUTH_REQUIRED });
         return;
     }
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(senderId);
     const rawOptions: Record<string, string> = { limit: '8', sort: 'date', direction: 'desc' };
     const queryParts: string[] = [];
     for (const arg of args) {
@@ -1028,15 +1035,15 @@ export async function handleFind(message: Api.Message, args: string[] = []): Pro
     try {
         const page = await queryTelegramFiles(rawOptions);
         await message.reply({
-            message: buildTelegramFileBrowserText(page, rawOptions.q || ''),
+            message: buildTelegramFileBrowserText(page, rawOptions.q || '', resolvedLocale),
             buttons: buildFileSearchKeyboard(page.files),
         });
     } catch (error) {
-        await message.reply({ message: `❌ 搜索失败：${(error as Error).message}` });
+        await message.reply({ message: t(resolvedLocale, 'commands.fileSearchFailed', { error: (error as Error).message }) });
     }
 }
 
-export async function handleList(message: Api.Message, args: string[]): Promise<void> {
+export async function handleList(message: Api.Message, args: string[], locale?: TelegramLocale): Promise<void> {
     try {
         let limit = 10;
         let page = 1;
@@ -1068,7 +1075,7 @@ export async function handleList(message: Api.Message, args: string[]): Promise<
             return;
         }
 
-        const reply = buildFileList(result.rows, result.rows.length);
+        const reply = buildFileList(result.rows, result.rows.length, locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0));
         await message.reply({ message: reply });
     } catch (error) {
         console.error('🤖 获取文件列表失败:', error);
@@ -1078,6 +1085,7 @@ export async function handleList(message: Api.Message, args: string[]): Promise<
 
 export async function handleTelegramFileBrowserCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const actorId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(actorId);
     if (!(await isAuthenticatedAsync(actorId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -1086,14 +1094,14 @@ export async function handleTelegramFileBrowserCallback(client: TelegramClient, 
     if (!parsed) return;
     const file = await getScopedFileById(parsed.fileId);
     if (!file) {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '文件已不存在或不在当前存储范围内', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileUnavailable'), alert: true }));
         return;
     }
     const chatId = getCallbackChatKey(update);
     const messageId = Number(update.msgId);
     if (parsed.action === 'detail') {
-        await client.editMessage(update.peer, { message: messageId, text: buildTelegramFileDetail(file), buttons: buildFileActionKeyboard(file) });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '文件详情' }));
+        await client.editMessage(update.peer, { message: messageId, text: buildTelegramFileDetail(file, locale), buttons: buildFileActionKeyboard(file, locale) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileDetail') }));
         return;
     }
     if (parsed.action === 'copy') {
@@ -1103,79 +1111,81 @@ export async function handleTelegramFileBrowserCallback(client: TelegramClient, 
     if (parsed.action === 'favorite') {
         await updateScopedFileById(String(file.id), 'is_favorite = $1, updated_at = NOW()', [!file.is_favorite]);
         file.is_favorite = !file.is_favorite;
-        await client.editMessage(update.peer, { message: messageId, text: buildTelegramFileDetail(file), buttons: buildFileActionKeyboard(file) });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: file.is_favorite ? '已收藏' : '已取消收藏' }));
+        await client.editMessage(update.peer, { message: messageId, text: buildTelegramFileDetail(file, locale), buttons: buildFileActionKeyboard(file, locale) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, file.is_favorite ? 'commands.fileFavorited' : 'commands.fileUnfavorited') }));
         return;
     }
     if (parsed.action === 'link') {
         const capabilities = buildStorageCapabilities(String(file.source));
         if (!capabilities.share && String(file.source) !== 'local') {
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '当前 provider 不支持分享；可在 Web 中下载', alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileShareUnsupported'), alert: true }));
             return;
         }
         const relative = getSignedUrl(String(file.id), 'download', 3600);
         const base = (process.env.VITE_API_URL || process.env.OAUTH_CALLBACK_BASE_URL || '').replace(/\/$/, '');
         const link = base ? `${base}${relative}` : relative;
-        await client.sendMessage(update.peer, { message: `🔗 1 小时签名链接：\n${link}` });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已生成签名链接' }));
+        await client.sendMessage(update.peer, { message: t(locale, 'commands.fileSignedLink', { link }) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileLinkCreated') }));
         return;
     }
     if (parsed.action === 'move' || parsed.action === 'rename') {
         const key = `${actorId}:${chatId}`;
         pendingTelegramFileMutations.set(key, { actorId, chatId, messageId, fileId: String(file.id), action: parsed.action, expiresAt: Date.now() + 5 * 60 * 1000 });
-        await client.sendMessage(update.peer, { message: parsed.action === 'move' ? '请发送目标目录；发送“取消”退出。' : '请发送新文件名（必须保留原扩展名）；发送“取消”退出。' });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: parsed.action === 'move' ? '等待目标目录' : '等待新文件名' }));
+        await client.sendMessage(update.peer, { message: t(locale, parsed.action === 'move' ? 'commands.fileMovePrompt' : 'commands.fileRenamePrompt') });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, parsed.action === 'move' ? 'commands.fileAwaitFolder' : 'commands.fileAwaitName') }));
         return;
     }
     const sent = await client.sendMessage(update.peer, {
-        message: ['⚠️ **确认删除这个文件？**', '', `📄 ${file.name}`, `🆔 ${String(file.id).slice(0, 13)}`, '', '该操作会删除实体文件和索引。'].join('\n'),
+        message: [t(locale, 'commands.fileDeleteTitle'), '', `📄 ${file.name}`, `🆔 ${String(file.id).slice(0, 13)}`, '', t(locale, 'commands.fileDeleteImpact')].join('\n'),
     }) as Api.Message;
     const confirmId = destructiveConfirmations.issue({ actorId, chatId, messageId: sent.id, action: 'delete_file', objectId: String(file.id) });
     pendingDeleteConfirmations.set(confirmId, { fileId: String(file.id), name: String(file.name), size: Number(file.size || 0), selector: String(file.id), actorId, chatId, messageId: sent.id });
-    await sent.edit({ text: sent.message, buttons: buildDeleteConfirmKeyboard(confirmId) });
-    await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '需要二次确认' }));
+    await sent.edit({ text: sent.message, buttons: buildDeleteConfirmKeyboard(confirmId, locale) });
+    await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.confirmRequired') }));
 }
 
 export async function applyPendingTelegramFileMutation(message: Api.Message, actorId: number, input: string): Promise<boolean> {
+    const locale = await getTelegramUserLocaleOrDefault(actorId);
     const chatId = canonicalTelegramChatKey(message.chatId?.toString());
     const key = `${actorId}:${chatId}`;
     const pending = pendingTelegramFileMutations.get(key);
     if (!pending) return false;
     if (pending.expiresAt < Date.now()) {
         pendingTelegramFileMutations.delete(key);
-        await message.reply({ message: '操作已过期，请重新打开文件详情。' });
+        await message.reply({ message: t(locale, 'commands.fileMutationExpired') });
         return true;
     }
     if (input.trim() === '取消') {
         pendingTelegramFileMutations.delete(key);
-        await message.reply({ message: '已取消文件操作。' });
+        await message.reply({ message: t(locale, 'commands.fileMutationCancelled') });
         return true;
     }
     const file = await getScopedFileById(pending.fileId);
     if (!file) {
         pendingTelegramFileMutations.delete(key);
-        await message.reply({ message: '文件已不存在或不在当前存储范围内。' });
+        await message.reply({ message: t(locale, 'commands.fileUnavailable') });
         return true;
     }
     if (pending.action === 'move') {
         const folder = normalizeFolderPath(input);
         await updateScopedFileById(pending.fileId, 'folder = $1, updated_at = NOW()', [folder]);
-        await message.reply({ message: `✅ 已移动到：${folder}` });
+        await message.reply({ message: t(locale, 'commands.fileMoved', { folder }) });
     } else {
         const name = input.trim();
         if (!name || /[\/\\:*?"<>|]/.test(name)) throw new Error('文件名包含非法字符');
         const extension = (value: string) => path.extname(value).toLowerCase();
         if (extension(name) !== extension(String(file.name))) throw new Error('不允许修改文件后缀');
         await updateScopedFileById(pending.fileId, 'name = $1, updated_at = NOW()', [name]);
-        await message.reply({ message: `✅ 已重命名为：${name}` });
+        await message.reply({ message: t(locale, 'commands.fileRenamed', { name }) });
     }
     pendingTelegramFileMutations.delete(key);
     return true;
 }
 
-export async function handleDelete(message: Api.Message, args: string[]): Promise<void> {
+export async function handleDelete(message: Api.Message, args: string[], locale?: TelegramLocale): Promise<void> {
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
     if (args.length === 0) {
-        await message.reply({ message: '请从“搜索和操作文件”中选择文件，然后点击“删除”。' });
+        await message.reply({ message: t(resolvedLocale, 'commands.fileDeleteChoose') });
         return;
     }
 
@@ -1184,11 +1194,11 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
     try {
         const scope = await getCurrentStorageScope();
         if (/^\d+$/.test(selector)) {
-            await message.reply({ message: '❌ 为避免误删，Telegram Bot 不支持按列表序号删除。请发送 /list 并复制至少 8 位文件 ID 前缀。' });
+            await message.reply({ message: t(resolvedLocale, 'commands.fileDeleteNoIndex') });
             return;
         }
         if (selector.length < 8) {
-            await message.reply({ message: '❌ ID 前缀至少需要 8 位。请从网页端文件列表复制更长的文件 ID。' });
+            await message.reply({ message: t(resolvedLocale, 'commands.fileIdTooShort') });
             return;
         }
         const result = await query(`
@@ -1200,29 +1210,29 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
         `, [...scope.params, selector + '%']);
 
         if (result.rows.length === 0) {
-            await message.reply({ message: `❌ 未找到 ID 以 "${selector}" 开头的文件` });
+            await message.reply({ message: t(resolvedLocale, 'commands.fileNotFound', { selector }) });
             return;
         }
         if (result.rows.length > 1) {
-            await message.reply({ message: `❌ ID 前缀 "${selector}" 匹配到多个文件，请复制更长的 ID 前缀后重试。` });
+            await message.reply({ message: t(resolvedLocale, 'commands.fileAmbiguous', { selector }) });
             return;
         }
 
         const file = result.rows[0];
         if (file.source === 'openlist') {
-            await message.reply({ message: 'OpenList 存储不提供用户删除功能。' });
+            await message.reply({ message: t(resolvedLocale, 'commands.fileOpenListDeleteUnsupported') });
             return;
         }
         const sent = await message.reply({
             message: [
-                '⚠️ **确认删除这个文件？**',
+                t(resolvedLocale, 'commands.fileDeleteTitle'),
                 '',
                 `📄 ${file.name}`,
                 `🆔 ${String(file.id).slice(0, 12)}`,
-                `📦 ${formatBytes(Number(file.size || 0))}`,
+                `📦 ${formatBytes(Number(file.size || 0), false)}`,
                 file.folder ? `📁 ${file.folder}` : '',
                 '',
-                '删除会移除数据库记录并尝试删除实际文件。请确认无误后点击按钮。',
+                t(resolvedLocale, 'commands.fileDeleteHint'),
             ].filter(Boolean).join('\n'),
         }) as Api.Message;
         const chatId = canonicalTelegramChatKey(message.chatId?.toString());
@@ -1255,6 +1265,7 @@ export async function handleDelete(message: Api.Message, args: string[]): Promis
 
 export async function handleDeleteConfirmCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -1264,7 +1275,7 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
     const [, action, confirmId] = match;
     const pending = pendingDeleteConfirmations.get(confirmId);
     if (!pending) {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认无效或已过期', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.deleteExpired'), alert: true }));
         return;
     }
     const binding = {
@@ -1276,17 +1287,17 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
     };
     if (action === 'cancel') {
         if (!destructiveConfirmations.cancel(confirmId, binding)) {
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认不属于你或已过期', alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.deleteNotOwner'), alert: true }));
             return;
         }
         pendingDeleteConfirmations.delete(confirmId);
-        await client.editMessage(update.peer, { message: Number(update.msgId), text: `已取消删除：${pending.name}`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
+        await client.editMessage(update.peer, { message: Number(update.msgId), text: t(locale, 'commands.deleteCancelled', { name: pending.name }), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.cancelled') }));
         return;
     }
     const consumed = destructiveConfirmations.consume(confirmId, binding);
     if (consumed.status !== 'ok') {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '删除确认不属于你、已过期或已使用', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.deleteInvalid'), alert: true }));
         return;
     }
     pendingDeleteConfirmations.delete(confirmId);
@@ -1296,22 +1307,22 @@ export async function handleDeleteConfirmCallback(client: TelegramClient, update
         const file = result.rows[0];
         if (!file) {
             pendingDeleteConfirmations.delete(confirmId);
-            await client.editMessage(update.peer, { message: Number(update.msgId), text: '❌ 文件已不存在或不在当前存储范围内。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '文件不存在', alert: true }));
+            await client.editMessage(update.peer, { message: Number(update.msgId), text: `❌ ${t(locale, 'commands.fileUnavailable')}.`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileMissingShort'), alert: true }));
             return;
         }
         if (file.source === 'openlist') {
-            await client.editMessage(update.peer, { message: Number(update.msgId), text: '❌ OpenList 存储不提供用户删除功能。', buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '当前存储不支持用户删除', alert: true }));
+            await client.editMessage(update.peer, { message: Number(update.msgId), text: `❌ ${t(locale, 'commands.fileOpenListDeleteUnsupported')}`, buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.fileDeleteUnsupportedShort'), alert: true }));
             return;
         }
         await removePhysicalFile(file);
         await query('DELETE FROM files WHERE id = $1', [file.id]);
-        await client.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已删除' }));
+        await client.editMessage(update.peer, { message: Number(update.msgId), text: buildDeleteSuccess(file.name, file.id, locale), buttons: new Api.ReplyInlineMarkup({ rows: [] }) });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.deleted') }));
     } catch (error) {
         console.error('🤖 确认删除文件失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `删除失败: ${(error as Error).message}`, alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.deleteFailed', { error: (error as Error).message }), alert: true }));
     }
 }
 
@@ -1341,10 +1352,7 @@ async function loadTaskCenterItems(chatId: string, userId: number): Promise<Task
     const ordinaryItems = listDownloadTaskGroups(chatId, userId)
         .map(ordinaryTaskCenterItem)
         .filter((item): item is TaskCenterItem => Boolean(item));
-    const [channelRows, ytdlpRows] = await Promise.all([
-        listTelegramActiveTaskQueues(userId, 1000),
-        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
-    ]);
+    const channelRows = await listTelegramActiveTaskQueues(userId, 1000);
     const channelItems = channelRows
         .filter(row => String(row.chat_id || '') === chatId)
         .map(row => {
@@ -1356,11 +1364,7 @@ async function loadTaskCenterItems(chatId: string, userId: number): Promise<Task
             return mergeChannelExecutionState(channelTaskCenterItem({ ...row, folder_override: folder }), row);
         })
         .filter((item): item is TaskCenterItem => Boolean(item));
-    const ytdlpItems = ytdlpRows
-        .filter(task => String(task.chatId || '') === chatId)
-        .map(ytdlpTaskCenterItem)
-        .filter((item): item is TaskCenterItem => Boolean(item));
-    return [...ordinaryItems, ...channelItems, ...ytdlpItems];
+    return [...ordinaryItems, ...channelItems];
 }
 
 async function findTaskCenterItem(
@@ -1372,11 +1376,6 @@ async function findTaskCenterItem(
     if (sourceType === 'memory') {
         const group = getDownloadTaskGroup(id, chatId, userId);
         return group ? ordinaryTaskCenterItem(group) : null;
-    }
-    if (sourceType === 'ytdlp') {
-        const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
-        const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
-        return matches.length === 1 ? ytdlpTaskCenterItem(matches[0]) : null;
     }
     const rows = await listTelegramActiveTaskQueues(userId, 1000);
     const matches = rows.filter(job => String(job.chat_id || '') === chatId && String(job.id).toLowerCase().startsWith(id.toLowerCase()));
@@ -1415,10 +1414,11 @@ async function renderTaskCenterList(
     page: number,
 ): Promise<void> {
     const items = await loadTaskCenterItems(chatId, userId);
-    await editTaskCenterView(client, update, buildTaskCenterPage(items, page));
+    const locale = await getTelegramUserLocaleOrDefault(userId);
+    await editTaskCenterView(client, update, buildTaskCenterPage(items, page, { locale }));
 }
 
-export async function handleTasks(message: Api.Message): Promise<void> {
+export async function handleTasks(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     try {
         const senderId = message.senderId?.toJSNumber();
         const chatId = message.chatId?.toString();
@@ -1427,7 +1427,8 @@ export async function handleTasks(message: Api.Message): Promise<void> {
             return;
         }
         const items = await loadTaskCenterItems(chatId, senderId);
-        const view = buildTaskCenterPage(items, 0);
+        const resolvedLocale: TelegramLocale = locale || await getTelegramUserLocaleOrDefault(senderId);
+        const view = buildTaskCenterPage(items, 0, { locale: resolvedLocale });
         const sent = await message.reply({ message: view.text, buttons: buildTaskCenterMarkup(view.rows) }) as Api.Message;
         if (sent?.id) taskCenterCardOwners.set(taskCenterCardKey(chatId, sent.id), { userId: senderId, expiresAt: Date.now() + TASK_CENTER_CARD_TTL_MS });
     } catch (error) {
@@ -1474,26 +1475,6 @@ async function operateChannelTaskCenterItem(
     return { ok: true, toast: '任务已取消' };
 }
 
-async function cancelYtDlpTaskCenterItem(userId: number, chatId: string, id: string): Promise<{ ok: boolean; toast: string }> {
-    const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
-    const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
-    if (matches.length !== 1) return { ok: false, toast: matches.length > 1 ? '任务 ID 前缀不唯一，请刷新任务列表' : '任务已结束或已失效' };
-    const cancelled = await cancelYtDlpTask(matches[0].id);
-    return cancelled?.status === 'cancelled'
-        ? { ok: true, toast: 'yt-dlp 任务已取消' }
-        : { ok: false, toast: '任务已结束或无法取消' };
-}
-
-async function retryYtDlpTaskCenterItem(userId: number, chatId: string, id: string): Promise<{ ok: boolean; toast: string }> {
-    const tasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 });
-    const matches = tasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(id.toLowerCase()));
-    if (matches.length !== 1) return { ok: false, toast: matches.length > 1 ? '任务 ID 前缀不唯一，请刷新任务列表' : '任务已结束或已失效' };
-    const retried = await retryYtDlpTask(matches[0].id);
-    return retried?.status === 'pending' || retried?.status === 'running'
-        ? { ok: true, toast: 'yt-dlp 任务已重新排队' }
-        : { ok: false, toast: '任务存在未完成对账或当前无法重试' };
-}
-
 const pendingTaskCenterCancels = new Map<string, { userId: number; chatId: string; messageId: number; sourceType: TaskCenterSourceType; taskId: string; expiresAt: number }>();
 const taskCenterCardOwners = new Map<string, { userId: number; expiresAt: number }>();
 const TASK_CENTER_CONFIRM_TTL_MS = 2 * 60 * 1000;
@@ -1513,44 +1494,45 @@ export async function handleTaskCenterCallback(
     data: string,
 ): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
     }
     const parsed = parseTaskCenterCallback(data);
     if (!parsed) {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '任务按钮无效或已过期', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskInvalidButton'), alert: true }));
         return;
     }
     const chatId = getCallbackChatKey(update);
     const ownerKey = taskCenterCardKey(chatId, Number(update.msgId));
     const owner = taskCenterCardOwners.get(ownerKey);
     if (!owner) {
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '旧任务卡已失效，请重新发送 /tasks', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskOldCard'), alert: true }));
         return;
     }
     if (owner.expiresAt < Date.now() || owner.userId !== userId) {
         if (owner.expiresAt < Date.now()) taskCenterCardOwners.delete(ownerKey);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该任务卡不属于你或已过期', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskWrongOwner'), alert: true }));
         return;
     }
     owner.expiresAt = Date.now() + TASK_CENTER_CARD_TTL_MS;
     try {
         if (parsed.view === 'list') {
             await renderTaskCenterList(client, update, userId, chatId, parsed.page);
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '任务列表已刷新' }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskRefreshed') }));
             return;
         }
 
         const item = await findTaskCenterItem(parsed.sourceType, parsed.id, chatId, userId);
         if (!item) {
             await renderTaskCenterList(client, update, userId, chatId, parsed.page);
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '任务已结束或已失效', alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskEnded'), alert: true }));
             return;
         }
 
         if (parsed.view === 'detail') {
-            await editTaskCenterView(client, update, buildTaskCenterDetail(item, parsed.page));
+            await editTaskCenterView(client, update, buildTaskCenterDetail(item, parsed.page, { locale }));
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
             return;
         }
@@ -1563,8 +1545,8 @@ export async function handleTaskCenterCallback(
                 taskId: parsed.id,
                 expiresAt: Date.now() + TASK_CENTER_CONFIRM_TTL_MS,
             });
-            await editTaskCenterView(client, update, buildTaskCancelConfirm(item, parsed.page));
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请确认是否取消' }));
+            await editTaskCenterView(client, update, buildTaskCancelConfirm(item, parsed.page, locale));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskConfirmCancel') }));
             return;
         }
         if (parsed.action === 'cancel_confirm') {
@@ -1572,12 +1554,12 @@ export async function handleTaskCenterCallback(
             const pending = pendingTaskCenterCancels.get(confirmationKey);
             pendingTaskCenterCancels.delete(confirmationKey);
             if (!pending || pending.expiresAt < Date.now() || pending.sourceType !== parsed.sourceType || pending.taskId !== parsed.id) {
-                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '取消确认已过期，请重新进入任务详情', alert: true }));
+                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskCancelExpired'), alert: true }));
                 return;
             }
         }
-        if (parsed.action === 'retry' && parsed.sourceType !== 'ytdlp') {
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '该任务类型不支持此重试按钮', alert: true }));
+        if (parsed.action === 'retry') {
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.taskRetryUnsupported'), alert: true }));
             return;
         }
 
@@ -1612,31 +1594,21 @@ export async function handleTaskCenterCallback(
             }
             toast = ok
                 ? parsed.action === 'start'
-                    ? '已提升到等待队列前面'
+                    ? t(locale, 'commands.taskPrioritized')
                     : parsed.action === 'pause'
-                        ? (result.group?.state === 'pausing' ? '将在完成当前文件后暂停' : '任务已暂停')
+                        ? (result.group?.state === 'pausing' ? t(locale, 'commands.taskPausing') : t(locale, 'commands.taskPaused'))
                         : parsed.action === 'resume'
-                            ? '任务已继续'
-                            : '任务已取消'
+                            ? t(locale, 'commands.taskResumed')
+                            : t(locale, 'commands.taskCancelled')
                 : result.status === 'blocked'
-                    ? '任务由系统保护暂停，需等待系统条件恢复'
+                    ? t(locale, 'commands.taskProtected')
                     : result.status === 'forbidden'
-                        ? '任务不属于当前聊天'
-                        : '任务已结束或已失效';
+                        ? t(locale, 'commands.taskForbidden')
+                        : t(locale, 'commands.taskEnded');
         } else if (parsed.sourceType === 'channel') {
             const result = await operateChannelTaskCenterItem(parsed.action, userId, chatId, parsed.id);
             ok = result.ok;
             toast = result.toast;
-        } else if (parsed.action === 'cancel_confirm') {
-            const result = await cancelYtDlpTaskCenterItem(userId, chatId, parsed.id);
-            ok = result.ok;
-            toast = result.toast;
-        } else if (parsed.action === 'retry') {
-            const result = await retryYtDlpTaskCenterItem(userId, chatId, parsed.id);
-            ok = result.ok;
-            toast = result.toast;
-        } else {
-            toast = 'yt-dlp 任务不支持该操作';
         }
 
         if (parsed.action === 'cancel_confirm' || !ok) {
@@ -1644,7 +1616,7 @@ export async function handleTaskCenterCallback(
         } else {
             const refreshed = await findTaskCenterItem(parsed.sourceType, parsed.id, chatId, userId);
             if (refreshed) {
-                await editTaskCenterView(client, update, buildTaskCenterDetail(refreshed, parsed.page));
+                await editTaskCenterView(client, update, buildTaskCenterDetail(refreshed, parsed.page, { locale }));
             } else {
                 await renderTaskCenterList(client, update, userId, chatId, parsed.page);
             }
@@ -1654,7 +1626,7 @@ export async function handleTaskCenterCallback(
         console.error('🤖 任务中心按钮操作失败:', error);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: `操作失败: ${(error as Error).message}`,
+            message: t(locale, 'commands.taskOperationFailed', { error: (error as Error).message }),
             alert: true,
         }));
     }
@@ -1664,21 +1636,17 @@ async function getBulkTaskImpact(userId: number, chatId: string): Promise<BulkTa
     const ordinaryGroups = listDownloadTaskGroups(chatId, userId)
         .map(ordinaryTaskCenterItem)
         .filter((item): item is TaskCenterItem => Boolean(item));
-    const [channelRows, ytdlpRows] = await Promise.all([
-        listTelegramActiveTaskQueues(userId, 1000),
-        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
-    ]);
+    const channelRows = await listTelegramActiveTaskQueues(userId, 1000);
     return {
         ordinaryTasks: ordinaryGroups.length,
         ordinaryActiveFiles: ordinaryGroups.reduce((sum, item) => sum + item.active, 0),
         ordinaryPendingFiles: ordinaryGroups.reduce((sum, item) => sum + item.pending, 0),
         channelTasks: channelRows.filter(row => String(row.chat_id || '') === chatId).length,
-        ytdlpTasks: ytdlpRows.filter(task => String(task.chatId || '') === chatId && ['pending', 'running', 'paused'].includes(task.status)).length,
     };
 }
 
 function bulkImpactTotal(impact: BulkTaskImpact): number {
-    return impact.ordinaryTasks + impact.channelTasks + impact.ytdlpTasks;
+    return impact.ordinaryTasks + impact.channelTasks;
 }
 
 async function requestBulkTaskCancellation(message: Api.Message): Promise<void> {
@@ -1699,7 +1667,6 @@ async function requestBulkTaskCancellation(message: Api.Message): Promise<void> 
             '',
             `普通下载：${impact.ordinaryTasks} 个任务（处理中 ${impact.ordinaryActiveFiles} 个文件，等待 ${impact.ordinaryPendingFiles} 个文件）`,
             `频道任务：${impact.channelTasks} 个`,
-            `yt-dlp：${impact.ytdlpTasks} 个`,
             '',
             '确认后会中止正在运行的任务并清理对应临时文件。其它聊天和其它用户的任务不受影响。',
         ].join('\n'),
@@ -1712,25 +1679,18 @@ async function requestBulkTaskCancellation(message: Api.Message): Promise<void> 
         action: 'cancel_task_scope',
     });
     pendingBulkTaskCancellations.set(confirmId, { actorId, chatId, messageId: sent.id });
-    await sent.edit({ text: sent.message, buttons: buildBulkTaskCancelKeyboard(confirmId) });
+    const locale = await getTelegramUserLocaleOrDefault(actorId);
+    await sent.edit({ text: sent.message, buttons: buildBulkTaskCancelKeyboard(confirmId, locale) });
 }
 
 async function cancelTasksForScope(userId: number, chatId: string): Promise<BulkTaskImpact> {
-    const [channelRows, ytdlpRows] = await Promise.all([
-        listTelegramActiveTaskQueues(userId, 1000),
-        listTransferTasks({ sourceType: 'ytdlp', ownerUserId: userId, limit: 500 }),
-    ]);
+    const channelRows = await listTelegramActiveTaskQueues(userId, 1000);
     let channelTasks = 0;
     for (const row of channelRows.filter(item => String(item.chat_id || '') === chatId)) {
         const cancelled = await cancelTelegramBackgroundJob(userId, String(row.id), chatId);
         if (!cancelled) continue;
         channelTasks += 1;
         cancelChannelExecutionGroup(String(row.id));
-    }
-    let ytdlpTasks = 0;
-    for (const task of ytdlpRows.filter(item => String(item.chatId || '') === chatId && ['pending', 'running', 'paused'].includes(item.status))) {
-        const cancelled = await cancelYtDlpTask(task.id);
-        if (cancelled?.status === 'cancelled') ytdlpTasks += 1;
     }
     const ordinaryTasks = listDownloadTaskGroups(chatId, userId)
         .map(ordinaryTaskCenterItem)
@@ -1741,7 +1701,6 @@ async function cancelTasksForScope(userId: number, chatId: string): Promise<Bulk
         ordinaryActiveFiles: ordinary.active,
         ordinaryPendingFiles: ordinary.pending,
         channelTasks,
-        ytdlpTasks,
     };
 }
 
@@ -1790,7 +1749,6 @@ export async function handleBulkTaskCancelCallback(client: TelegramClient, updat
                 '',
                 `普通下载：${result.ordinaryTasks} 个任务（处理中 ${result.ordinaryActiveFiles} / 等待 ${result.ordinaryPendingFiles} 个文件）`,
                 `频道任务：${result.channelTasks} 个`,
-                `yt-dlp：${result.ytdlpTasks} 个`,
             ].join('\n'),
             buttons: new Api.ReplyInlineMarkup({ rows: [] }),
         });
@@ -1908,20 +1866,6 @@ export async function handleCancelTask(message: Api.Message, args: string[]): Pr
                 await message.reply({ message: `🛑 已取消频道任务 ${String(job.id).slice(0, 12)}\n来源：${job.source}` });
                 return;
             }
-            if (chatId) {
-                const ytdlpTasks = await listTransferTasks({ sourceType: 'ytdlp', ownerUserId: senderId, limit: 500 });
-                const matches = ytdlpTasks.filter(task => String(task.chatId || '') === chatId && task.id.toLowerCase().startsWith(selector.toLowerCase()));
-                if (matches.length === 1) {
-                    const cancelled = await cancelYtDlpTask(matches[0].id);
-                    if (cancelled?.status === 'cancelled') {
-                        await message.reply({ message: `🛑 已取消 yt-dlp 任务 ${matches[0].id}` });
-                        return;
-                    }
-                } else if (matches.length > 1) {
-                    await message.reply({ message: '📮 yt-dlp 任务 ID 前缀不唯一，请提供更长的 ID。' });
-                    return;
-                }
-            }
         }
     }
     await message.reply({ message: `📮 没有找到当前聊天中的匹配任务：${selector}` });
@@ -1993,12 +1937,13 @@ export async function handleRetryFailedTasks(message: Api.Message, args: string[
     await message.reply({ message: result.retried > 0 ? `🔄 已重新加入 ${result.retried} 个失败任务${taskId ? `\n任务: ${taskId}` : ''}` : '📮 最近没有可重试的失败任务' });
 }
 
-export async function handleDownloadWorkers(message: Api.Message): Promise<void> {
+export async function handleDownloadWorkers(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     try {
         const current = await getCurrentDownloadWorkers();
+        const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
         await message.reply({
-            message: buildDownloadWorkersText(current),
-            buttons: buildDownloadWorkersKeyboard(current),
+            message: buildDownloadWorkersText(current, resolvedLocale),
+            buttons: buildDownloadWorkersKeyboard(current, undefined, resolvedLocale),
         });
     } catch (error) {
         console.error('🤖 获取分片并发设置失败:', error);
@@ -2006,12 +1951,13 @@ export async function handleDownloadWorkers(message: Api.Message): Promise<void>
     }
 }
 
-export async function handleFileConcurrency(message: Api.Message): Promise<void> {
+export async function handleFileConcurrency(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     try {
         const current = await getCurrentFileConcurrency();
+        const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
         setFileDownloadConcurrency(current);
         await message.reply({
-            message: buildFileConcurrencyText(current),
+            message: buildFileConcurrencyText(current, resolvedLocale),
             buttons: buildFileConcurrencyKeyboard(current),
         });
     } catch (error) {
@@ -2020,11 +1966,12 @@ export async function handleFileConcurrency(message: Api.Message): Promise<void>
     }
 }
 
-export async function handlePathRules(message: Api.Message): Promise<void> {
+export async function handlePathRules(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     const pathCenterState = await getPathCenterState();
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
     await message.reply({
-        message: buildPathSettingsText(pathCenterState, message.chatId?.toString() || 'unknown'),
-        buttons: buildPathSettingsKeyboard(pathCenterState),
+        message: buildPathSettingsText(pathCenterState, message.chatId?.toString() || 'unknown', resolvedLocale),
+        buttons: buildPathSettingsKeyboard(pathCenterState, resolvedLocale),
     });
 }
 
@@ -2063,6 +2010,7 @@ export async function handlePathClear(message: Api.Message): Promise<void> {
 
 export async function handlePathRulesCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -2077,41 +2025,43 @@ export async function handlePathRulesCallback(client: TelegramClient, update: Ap
             const recent = await getRecentTelegramPathsPersistent(chatKey);
             await client.sendMessage(update.peer, {
                 message: recent.length > 0
-                    ? ['🕘 **最近使用目录**', '', ...recent.map((item, index) => `${index + 1}. ${item}`), '', '如需使用某个目录，请在“保存位置”中选择下一次或本聊天目录，然后发送目录名称。'].join('\n')
-                    : '🕘 暂无最近使用目录。设置目录后会自动记录。'
+                    ? [t(locale, 'path.recent.title'), '', ...recent.map((item, index) => `${index + 1}. ${item}`), '', t(locale, 'path.recent.hint')].join('\n')
+                    : t(locale, 'path.recent.empty')
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已发送最近目录' }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'path.toast.recentSent') }));
             return;
         } else if (data === 'pr_help_once' || data === 'pr_help_session') {
             const mode = data === 'pr_help_once' ? 'once' : 'session';
             setPendingTelegramPathInput(chatKey, userId, mode);
-            await client.sendMessage(update.peer, { message: await buildPendingPathPromptPersistent(mode, chatKey) });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '请直接发送目录，或发送“取消”退出' }));
+            await client.sendMessage(update.peer, { message: await buildPendingPathPromptPersistent(mode, chatKey, locale) });
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'path.toast.sendFolder') }));
             return;
         }
 
         await client.editMessage(update.peer, {
             message: Number(update.msgId),
-            text: buildPathSettingsText(pathCenterState, chatKey),
-            buttons: buildPathSettingsKeyboard(pathCenterState),
+            text: buildPathSettingsText(pathCenterState, chatKey, locale),
+            buttons: buildPathSettingsKeyboard(pathCenterState, locale),
         });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '保存位置已更新' }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'path.toast.updated') }));
     } catch (error) {
         console.error('🤖 设置保存位置失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '设置失败，请稍后重试', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.settingFailedRetry'), alert: true }));
     }
 }
 
-export async function handleDuplicateMode(message: Api.Message): Promise<void> {
+export async function handleDuplicateMode(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     const mode = await getDuplicateMode();
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
     await message.reply({
-        message: buildDuplicateModeText(mode),
-        buttons: buildDuplicateModeKeyboard(mode),
+        message: buildDuplicateModeText(mode, resolvedLocale),
+        buttons: buildDuplicateModeKeyboard(mode, resolvedLocale),
     });
 }
 
 export async function handleDuplicateModeCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -2124,26 +2074,28 @@ export async function handleDuplicateModeCallback(client: TelegramClient, update
         await setSetting('duplicate_file_mode', mode);
         await client.editMessage(update.peer, {
             message: Number(update.msgId),
-            text: buildDuplicateModeText(mode),
-            buttons: buildDuplicateModeKeyboard(mode),
+            text: buildDuplicateModeText(mode, locale),
+            buttons: buildDuplicateModeKeyboard(mode, locale),
         });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已设置为${mode === 'skip' ? '跳过重复' : '生成副本'}` }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto125', { value0: mode === 'skip' ? t(locale, 'commands.auto011', { value0: '' }).trim() : t(locale, 'commands.auto012', { value0: '' }).trim() }) }));
     } catch (error) {
         console.error('🤖 设置重复文件处理失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '设置失败，请稍后重试', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.settingFailedRetry'), alert: true }));
     }
 }
 
-export async function handleCleanupSettings(message: Api.Message): Promise<void> {
+export async function handleCleanupSettings(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     const enabled = await getCleanupEnabledSetting();
+    const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
     await message.reply({
-        message: buildCleanupSettingsText(enabled),
-        buttons: buildCleanupSettingsKeyboard(enabled),
+        message: buildCleanupSettingsText(enabled, resolvedLocale),
+        buttons: buildCleanupSettingsKeyboard(enabled, resolvedLocale),
     });
 }
 
 export async function handleCleanupSettingsCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: MSG.AUTH_REQUIRED, alert: true }));
         return;
@@ -2160,18 +2112,19 @@ export async function handleCleanupSettingsCallback(client: TelegramClient, upda
         }
         await client.editMessage(update.peer, {
             message: Number(update.msgId),
-            text: buildCleanupSettingsText(enabled),
-            buttons: buildCleanupSettingsKeyboard(enabled),
+            text: buildCleanupSettingsText(enabled, locale),
+            buttons: buildCleanupSettingsKeyboard(enabled, locale),
         });
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: enabled ? '已开启自动清理' : '已关闭自动清理' }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, enabled ? 'commands.auto127' : 'commands.auto126') }));
     } catch (error) {
         console.error('🤖 设置自动清理失败:', error);
-        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '设置失败，请稍后重试', alert: true }));
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.settingFailedRetry'), alert: true }));
     }
 }
 
 export async function handleDownloadWorkersCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
@@ -2186,10 +2139,10 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             const current = await getCurrentDownloadWorkers();
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: buildDownloadWorkersText(current),
-                buttons: buildDownloadWorkersKeyboard(current),
+                text: buildDownloadWorkersText(current, locale),
+                buttons: buildDownloadWorkersKeyboard(current, undefined, locale),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.cancelled') }));
             return;
         }
 
@@ -2200,28 +2153,28 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
                 await client.editMessage(update.peer, {
                     message: Number(update.msgId),
                     text: [
-                        `⚠️ **确认使用 ${workers} 个分片？**`,
+                        t(locale, 'commands.auto128', { value0: workers }),
                         '',
-                        '这是激进分片并发模式，可能出现：',
-                        '- Telegram 风控或限流',
-                        '- 下载断流 / 重试增多',
+                        t(locale, 'commands.auto129'),
+                        t(locale, 'commands.auto130'),
+                        t(locale, 'commands.auto131'),
                         '- Telegram 用户账号可能被限流，极端情况下会影响账号',
                         '',
-                        '如果只是日常下载，建议使用 4 或 8。',
+                        t(locale, 'commands.auto133'),
                     ].join('\n'),
-                    buttons: buildDownloadWorkersKeyboard(workers, workers),
+                    buttons: buildDownloadWorkersKeyboard(workers, workers, locale),
                 });
-                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '需要二次确认' }));
+                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.secondConfirm') }));
                 return;
             }
 
             await setSetting('telegram_download_workers', String(workers));
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: `${buildDownloadWorkersText(workers)}\n\n✅ 已切换为 ${workers} 个分片，后续新下载任务立即生效。`,
-                buttons: buildDownloadWorkersKeyboard(workers),
+                text: `${buildDownloadWorkersText(workers, locale)}\n\n${t(locale, 'commands.auto134', { value0: '', value1: workers })}`,
+                buttons: buildDownloadWorkersKeyboard(workers, undefined, locale),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已设置为 ${workers}` }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto135', { value0: workers }) }));
             return;
         }
 
@@ -2231,16 +2184,16 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             await setSetting('telegram_download_workers', String(workers));
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: `${buildDownloadWorkersText(workers)}\n\n⚠️ 已确认并切换为 ${workers} 个分片。若出现断流、限速、风控提示，请立即降回 4 或 8。`,
-                buttons: buildDownloadWorkersKeyboard(workers),
+                text: `${buildDownloadWorkersText(workers, locale)}\n\n${t(locale, 'commands.auto136', { value0: '', value1: workers })}`,
+                buttons: buildDownloadWorkersKeyboard(workers, undefined, locale),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已确认 ${workers} workers`, alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto137', { value0: workers }), alert: true }));
         }
     } catch (error) {
         console.error('🤖 设置并发下载 worker 失败:', error);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: '设置失败，请稍后重试',
+            message: t(locale, 'commands.settingFailedRetry'),
             alert: true,
         }));
     }
@@ -2248,6 +2201,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
 
 export async function handleFileConcurrencyCallback(client: TelegramClient, update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
     if (!(await isAuthenticatedAsync(userId))) {
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
@@ -2263,10 +2217,10 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             setFileDownloadConcurrency(current);
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: buildFileConcurrencyText(current),
+                text: buildFileConcurrencyText(current, locale),
                 buttons: buildFileConcurrencyKeyboard(current),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已取消' }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.cancelled') }));
             return;
         }
 
@@ -2288,7 +2242,7 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
                     ].join('\n'),
                     buttons: buildFileConcurrencyKeyboard(concurrency, concurrency),
                 });
-                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '需要二次确认' }));
+                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.secondConfirm') }));
                 return;
             }
 
@@ -2296,10 +2250,10 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             const normalized = setFileDownloadConcurrency(concurrency);
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: `${buildFileConcurrencyText(normalized)}\n\n✅ 已切换为同时下载 ${normalized} 个文件。`,
+                text: `${buildFileConcurrencyText(normalized, locale)}\n\n${t(locale, 'commands.auto144', { value0: '', value1: normalized })}`,
                 buttons: buildFileConcurrencyKeyboard(normalized),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: `已设置为 ${normalized}` }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto145', { value0: normalized }) }));
             return;
         }
 
@@ -2309,16 +2263,16 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
             const normalized = setFileDownloadConcurrency(4);
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: `${buildFileConcurrencyText(normalized)}\n\n⚠️ 已确认并切换为同时下载 4 个文件。若出现限流、断流或上传失败，请立即降回 2 或 3。`,
+                text: `${buildFileConcurrencyText(normalized, locale)}\n\n${t(locale, 'commands.auto146', { value0: '', value1: normalized })}`,
                 buttons: buildFileConcurrencyKeyboard(normalized),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: '已确认 4 个文件并发', alert: true }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto147'), alert: true }));
         }
     } catch (error) {
         console.error('🤖 设置文件级并发失败:', error);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: '设置失败，请稍后重试',
+            message: t(locale, 'commands.settingFailedRetry'),
             alert: true,
         }));
     }

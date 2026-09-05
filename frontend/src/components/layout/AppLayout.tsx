@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Folder, Settings, Menu, X, Star, Download, LogOut, ListChecks, ListFilter, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles } from "lucide-react";
+import { Folder, Settings, Menu, X, Star, LogOut, ListChecks, ListFilter, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles } from "lucide-react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
@@ -11,13 +11,14 @@ import { useTheme } from "../../hooks/useTheme";
 
 const HeaderThemeSwitch = () => {
     const { theme, setTheme } = useTheme();
+    const { t } = useTranslation();
     const options = [
-        { value: "light" as const, label: "浅色主题", icon: Sun },
-        { value: "dark" as const, label: "深色主题", icon: Moon },
-        { value: "system" as const, label: "跟随系统主题", icon: Monitor },
+        { value: "light" as const, label: t('settings.general.themeLight'), icon: Sun },
+        { value: "dark" as const, label: t('settings.general.themeDark'), icon: Moon },
+        { value: "system" as const, label: t('settings.general.themeSystem'), icon: Monitor },
     ];
     return (
-        <div data-testid="header-theme-switch" className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/50 p-1" role="group" aria-label="主题模式">
+        <div data-testid="header-theme-switch" className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/50 p-1" role="group" aria-label={t('settings.general.theme')}>
             {options.map(option => {
                 const Icon = option.icon;
                 const selected = theme === option.value;
@@ -125,10 +126,10 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
     const categories = [
         { id: "upload", href: "/", icon: UploadCloud, label: t("sidebar.uploadCenter") },
         { id: "all", href: "/files", icon: Folder, label: t("sidebar.files") },
-        { id: "ytdlp", href: "/files/ytdlp", icon: Download, label: "YT-DLP" },
+
         { id: "favorites", href: "/files/favorites", icon: Star, label: t("sidebar.favorites") },
         { id: "tasks", href: "/tasks", icon: ListChecks, label: t("sidebar.tasks") },
-        { id: "subscriptions", href: "/subscriptions", icon: ListFilter, label: "订阅中心" },
+        { id: "subscriptions", href: "/subscriptions", icon: ListFilter, label: t('sidebar.subscriptions') },
         { id: "settings", href: "/settings/general", icon: Settings, label: t("sidebar.settings") },
     ];
 
@@ -157,7 +158,7 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
                         <div className="flex items-center justify-between">
                             <LanguageToggle />
                             {!mobile && (
-                                <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto text-muted-foreground" onClick={() => setIsSidebarOpen(false)} aria-label="收起侧栏" title="收起侧栏">
+                                <Button variant="ghost" size="icon" className="h-8 w-8 ml-auto text-muted-foreground" onClick={() => setIsSidebarOpen(false)} aria-label={t('sidebar.collapse')} title={t('sidebar.collapse')}>
                                     <Menu className="h-4 w-4" />
                                 </Button>
                             )}
@@ -203,7 +204,8 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
 
                 {!isSidebarOpen && (
                     <div className="flex flex-col items-center py-4 gap-4 border-t border-border/40">
-                        <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(true)} aria-label="展开侧栏" title="展开侧栏">
+                        <LanguageToggle compact className="w-14 px-1 [&_svg]:hidden [&_select]:w-full" />
+                        <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(true)} aria-label={t('sidebar.expand')} title={t('sidebar.expand')}>
                             <Menu className="h-4 w-4" />
                         </Button>
                         <Button variant="ghost" size="icon" title={t("sidebar.logout")} aria-label={t("sidebar.logout")} onClick={() => void onLogout?.()}>
@@ -236,7 +238,7 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
                                     <img src="/logo-80.webp?v=tg-vault" alt="TG Vault" width="40" height="40" decoding="async" className="h-10 w-10 rounded-xl object-contain shadow-sm" />
                                     <span className="font-bold text-xl">{t("app.title")}</span>
                                 </div>
-                                <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(false)} aria-label="关闭导航菜单" title="关闭导航菜单">
+                                <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(false)} aria-label={t('sidebar.closeNavigation')} title={t('sidebar.closeNavigation')}>
                                     <X className="h-5 w-5" />
                                 </Button>
                             </div>
@@ -249,19 +251,20 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
 
             {/* Main Content */}
             <main className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative bg-gradient-to-br from-background to-muted/20">
-                <header className="h-[72px] px-4 sm:px-8 flex items-center justify-between bg-background border-b border-border/40 transition-all">
-                    <div className="flex items-center gap-3 md:hidden">
-                        <img src="/logo-80.webp?v=tg-vault" alt="TG Vault" width="40" height="40" decoding="async" className="h-10 w-10 rounded-xl object-contain shadow-sm" />
-                        <div className="flex flex-col justify-center h-full pt-4 pb-4">
+                <header data-testid="app-header" className="h-[72px] min-w-0 px-4 sm:px-8 flex items-center justify-between bg-background border-b border-border/40 transition-all">
+                    <div data-testid="mobile-brand" className="flex min-w-0 items-center gap-2 md:hidden">
+                        <img src="/logo-80.webp?v=tg-vault" alt="TG Vault" width="40" height="40" decoding="async" className="h-10 w-10 shrink-0 rounded-xl object-contain shadow-sm" />
+                        <div className="flex min-w-0 flex-col justify-center h-full pt-4 pb-4">
                             <h1 className="text-xl font-bold tracking-tight text-foreground">{t("app.title")}</h1>
                             <p className="text-xs text-muted-foreground">{categories.find(c => c.id === activeCategory)?.label || activeCategory}</p>
                         </div>
                     </div>
 
-                    <div className="ml-auto flex items-center gap-2">
-                        <HeaderThemeSwitch />
+                    <div data-testid="header-actions" className="ml-auto flex shrink-0 items-center gap-2">
+                        <LanguageToggle compact className="max-[420px]:w-[84px] max-[420px]:px-2 max-[420px]:[&_svg]:hidden max-[420px]:[&_select]:w-full max-[420px]:[&_select]:max-w-none" />
+                        <div className="max-[420px]:hidden"><HeaderThemeSwitch /></div>
                         <div className="md:hidden">
-                            <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(true)} aria-label="打开导航菜单" title="打开导航菜单">
+                            <Button size="icon" variant="ghost" onClick={() => setIsMobileMenuOpen(true)} aria-label={t('sidebar.openNavigation')} title={t('sidebar.openNavigation')}>
                                 <Menu className="h-6 w-6" />
                             </Button>
                         </div>

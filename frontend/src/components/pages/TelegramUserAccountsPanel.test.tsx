@@ -26,6 +26,7 @@ install('IS_REACT_ACT_ENVIRONMENT', true);
 
 const { cleanup, render, screen, waitFor } = await import('@testing-library/react');
 const userEvent = (await import('@testing-library/user-event')).default;
+const { default: i18n } = await import('../../i18n');
 const { fileApi } = await import('../../services/api');
 const { TelegramUserAccountsPanel } = await import('./TelegramUserAccountsPanel');
 
@@ -60,6 +61,7 @@ after(() => {
 });
 
 test('renders account health, permission totals and opens a QR-only secret view', async () => {
+    await i18n.changeLanguage('zh-CN');
     fileApi.getTelegramUserAccounts = async () => overview;
     let qrStarts = 0;
     fileApi.startTelegramUserQrLogin = async () => ({
@@ -77,7 +79,9 @@ test('renders account health, permission totals and opens a QR-only secret view'
     render(<TelegramUserAccountsPanel configured onNotice={() => undefined} requestConfirmation={async () => true} />);
     await screen.findByText('归档账号');
     assert.match(screen.getByText('当前可用').parentElement?.textContent || '', /1/);
-    assert.match(screen.getByText(/权限：/).textContent || '', /可访问 3/);
+    const accountCard = screen.getByText('归档账号').closest('article');
+    assert.ok(accountCard);
+    assert.match(accountCard.textContent || '', /权限.*可访问 3/);
 
     await user.click(screen.getByRole('button', { name: /添加账号/ }));
     await screen.findByText('选择登录方式');

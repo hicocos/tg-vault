@@ -50,7 +50,7 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
         onPreview(selectedFolder, controller.signal)
             .then(result => setPreview(result))
             .catch(error => {
-                if (error?.name !== 'AbortError') setPreviewError(error?.message || '无法获取移动预览');
+                if (error?.name !== 'AbortError') setPreviewError(error?.message || t('files.ui.move.previewFailed'));
             })
             .finally(() => {
                 if (!controller.signal.aborted) setIsPreviewLoading(false);
@@ -85,17 +85,17 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                         </div>
                         <div className="flex flex-col flex-1">
                             <h3 id="move-modal-title" className="font-semibold text-lg leading-none tracking-tight">
-                                {title || t("app.moveTo") || "移动到"}
+                                {title || t('files.ui.move.title')}
                             </h3>
-                            <p className="text-sm text-muted-foreground mt-1.5">选择目标文件夹位置</p>
+                            <p className="text-sm text-muted-foreground mt-1.5">{t('files.ui.move.subtitle')}</p>
                         </div>
                         <button
                             type="button"
                             onClick={isSubmitting ? undefined : onClose}
                             disabled={isSubmitting}
                             className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-muted transition-colors"
-                            aria-label="关闭移动弹窗"
-                            title="关闭移动弹窗"
+                            aria-label={t('files.ui.move.close')}
+                            title={t('files.ui.move.close')}
                         >
                             <X className="h-4 w-4 text-muted-foreground" />
                         </button>
@@ -105,7 +105,7 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                     {currentFolder && (
                         <div className="px-6 py-3 border-b border-border/50 bg-muted/10">
                             <div className="flex items-center gap-2 text-xs">
-                                <span className="text-muted-foreground font-medium">当前位置:</span>
+                                <span className="text-muted-foreground font-medium">{t('files.ui.move.currentLocation')}</span>
                                 <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-background border border-border/40">
                                     <Folder className="h-3 w-3 text-muted-foreground" />
                                     <span className="font-semibold text-foreground truncate max-w-[200px]">{currentFolder}</span>
@@ -117,13 +117,13 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                     {isFolder && isChanged && (
                         <div className="px-6 py-3 border-b border-border/50 text-xs">
                             {isPreviewLoading ? (
-                                <p className="text-muted-foreground">正在检查最终路径和冲突...</p>
+                                <p className="text-muted-foreground">{t('files.ui.move.previewLoading')}</p>
                             ) : previewError ? (
                                 <p className="text-destructive">{previewError}</p>
                             ) : preview ? (
                                 <div className="space-y-1.5">
-                                    <p><span className="text-muted-foreground">最终路径：</span><strong>{preview.finalPath}</strong></p>
-                                    <p className="text-muted-foreground">将移动 {preview.folderCount} 个目录、{preview.fileCount} 个文件（{formatBytes(preview.totalSizeBytes)}）</p>
+                                    <p><span className="text-muted-foreground">{t('files.ui.move.finalPath')}</span><strong>{preview.finalPath}</strong></p>
+                                    <p className="text-muted-foreground">{t('files.ui.move.impact', { folders: preview.folderCount, files: preview.fileCount, size: formatBytes(preview.totalSizeBytes) })}</p>
                                     {preview.conflict && <p className="text-destructive">{preview.conflictReason}</p>}
                                 </div>
                             ) : null}
@@ -159,7 +159,7 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                                 <span className={`flex-1 text-sm truncate ${
                                     selectedFolder === null ? "text-primary font-medium" : "text-foreground"
                                 }`}>
-                                    {t("app.rootDirectory") || "根目录"}
+                                    {t('files.root')}
                                 </span>
                                 {selectedFolder === null && (
                                     <motion.div
@@ -230,7 +230,7 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                             onClick={onClose}
                             disabled={isSubmitting}
                         >
-                            {t("app.cancel") || "取消"}
+                            {t('common.actions.cancel')}
                         </Button>
                         <Button 
                             onClick={async () => {
@@ -240,14 +240,14 @@ export const MoveModal = ({ isOpen, onClose, onConfirm, currentFolder, folders, 
                                 await performAsyncMutation({
                                     action: () => onConfirm(selectedFolder),
                                     onSuccess: onClose,
-                                    onFailure: error => setSubmitError(error instanceof Error ? error.message : '移动失败'),
+                                    onFailure: error => setSubmitError(error instanceof Error ? error.message : t('files.ui.move.failed')),
                                     onSettled: () => setIsSubmitting(false),
                                 });
                             }} 
                             className="h-10 px-5 text-sm font-medium shadow-sm"
                             disabled={!canConfirm || isSubmitting}
                         >
-                            {isSubmitting ? '正在移动...' : (t("app.confirm") || "确认移动")}
+                            {isSubmitting ? t('files.ui.move.moving') : t('files.ui.move.confirm')}
                         </Button>
                     </div>
                 </motion.div>

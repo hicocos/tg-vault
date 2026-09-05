@@ -16,7 +16,7 @@ import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
 import { initTelegramBot, scheduleTelegramBotPostStartup, sendUpdateNotificationToUser } from './services/telegramBot.js';
 import { applyEffectiveTelegramBotConfig } from './services/telegramBotConfig.js';
-import { classifyTelegramBotStartupError, getTelegramBotStatus, markTelegramBotError, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
+import { classifyTelegramBotStartupError, getTelegramBotStatus, markTelegramBotError, resetTelegramBotStatus, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
 import { isTelegramUserClientReady, restoreEnabledTelegramUserAccountsAfterRestart } from './services/telegramUserClient.js';
 import { installTelegramMultiAccountRuntimeAdapters } from './services/telegramMultiAccountRuntime.js';
 import { isInitialSetupRequired } from './utils/authSettings.js';
@@ -26,7 +26,7 @@ import helmet from 'helmet';
 import crypto from 'node:crypto';
 import { normalizeRequestId } from './services/operationalEvents.js';
 import { markTransferTasksAfterRestart } from './services/transferTasks.js';
-import { initializeYtDlpQueue } from './services/ytDlpDownload.js';
+
 import { recoverMediaDerivativeJobs } from './services/mediaDerivatives.js';
 import { applyPersistedOrphanCleanupSetting, startPeriodicCleanup } from './services/orphanCleanup.js';
 import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
@@ -216,7 +216,7 @@ app.get('/readyz', (_req, res) => {
 app.get('/deepz', async (_req, res) => {
     const dependencies = await refreshDependencyReadiness();
     const bot = getTelegramBotStatus();
-    const ready = dependencies.ready && !telegramBotBlocksReadiness(bot);
+    const ready = dependencies.ready && applicationReady && !telegramBotBlocksReadiness(bot);
     res.status(ready ? 200 : 503).json({
         status: ready ? (bot.degraded ? 'degraded' : 'ready') : 'not_ready',
         timestamp: new Date().toISOString(),
@@ -236,6 +236,33 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 let server: ReturnType<typeof app.listen> | null = null;
 
+async function startTelegramRuntime(telegramConfig: Awaited<ReturnType<typeof applyEffectiveTelegramBotConfig>>): Promise<void> {
+    if (!telegramConfig.configured || !telegramConfig.enabled) {
+        resetTelegramBotStatus(false);
+        await restoreEnabledTelegramUserAccountsAfterRestart();
+        return;
+    }
+    try {
+        await initTelegramBot();
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const status = classifyTelegramBotStartupError(error);
+        markTelegramBotError(
+            status,
+            message,
+            status === 'auth_failed' ? 'Telegram Bot Token 已失效，请在网页端更换凭证' : '检查网络与后端日志后重试',
+        );
+        if (telegramConfig.required) {
+            console.error('Telegram Bot 是必需组件，readiness 保持未就绪:', message);
+            return;
+        }
+        console.warn('Telegram Bot 可选组件启动失败，应用以 degraded 状态继续:', message);
+        await restoreEnabledTelegramUserAccountsAfterRestart();
+        return;
+    }
+    scheduleTelegramBotPostStartup(restoreEnabledTelegramUserAccountsAfterRestart);
+}
+
 async function initializeApplication(): Promise<void> {
     await ensureDatabaseInitialized();
     const telegramConfig = await applyEffectiveTelegramBotConfig();
@@ -248,35 +275,19 @@ async function initializeApplication(): Promise<void> {
     startPeriodicCleanup();
     const twoFactor = await get2FAReadiness();
     if (!twoFactor.ready) throw new Error('2FA 已启用但密钥不可读取');
-    if (telegramEnabled) {
-        try {
-            await initTelegramBot();
-        } catch (error) {
-            if (telegramConfig.required) throw error;
-            const message = error instanceof Error ? error.message : String(error);
-            const status = classifyTelegramBotStartupError(error);
-            markTelegramBotError(
-                status,
-                message,
-                status === 'auth_failed' ? 'Telegram Bot Token 已失效，请在网页端更换凭证' : '检查网络与后端日志后重试',
-            );
-            console.warn('Telegram Bot 可选组件启动失败，应用以 degraded 状态继续:', message);
-        }
-    }
-    if (telegramEnabled && getTelegramBotStatus().status === 'ready') {
-        scheduleTelegramBotPostStartup(restoreEnabledTelegramUserAccountsAfterRestart);
-    } else {
-        // With no Bot activation there is no correlated startup event to
-        // isolate. If optional Bot startup failed, the Bot is not emitting
-        // traffic either, so enabled downloader accounts may resume normally.
-        await restoreEnabledTelegramUserAccountsAfterRestart();
-    }
-    await initializeYtDlpQueue();
+
+    // The HTTP listener is independent from Telegram. Start optional/required
+    // Telegram work after the API is accepting traffic; /readyz expresses the
+    // configured required dependency separately.
+    applicationReady = true;
+    readinessError = null;
+    void startTelegramRuntime(telegramConfig).catch(error => {
+        console.error('Telegram 运行时启动任务失败:', error);
+    });
+
     await recoverMediaDerivativeJobs();
     const dependencies = await refreshDependencyReadiness();
     if (!dependencies.ready) throw new Error(dependencies.error || '依赖就绪检查失败');
-    applicationReady = true;
-    readinessError = null;
     readinessProbeTimer = setInterval(() => { void refreshDependencyReadiness(); }, 60_000);
     readinessProbeTimer.unref?.();
     if (updateCheckEnabled) {

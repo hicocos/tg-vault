@@ -18,13 +18,11 @@ import { errorMessage } from '../../services/unknownError';
 interface TasksPageProps { onUnauthorized?: () => void; onOpenUploads?: () => void; onShowAllTasks?: () => void; initialAccountId?: string | null; }
 interface TaskNotice { message: string; sequence: number; }
 
-// i18n source anchors: 任务中心、全部来源、全部状态、没有符合条件的任务、确认取消任务、选择任务、全选可删除、清理终态记录、删除记录、不会删除任何文件。
-
 const SOURCE_OPTIONS: Array<{ value: '' | UnifiedTaskSource; labelKey: string }> = [
     { value: '', labelKey: 'tasks.sources.all' }, { value: 'web_upload', labelKey: 'tasks.sources.webUpload' },
     { value: 'telegram_bot', labelKey: 'tasks.sources.telegramFile' }, { value: 'telegram_channel', labelKey: 'tasks.sources.channelDownload' },
     { value: 'telegram_target', labelKey: 'tasks.sources.telegramTarget' },
-    { value: 'ytdlp', labelKey: 'tasks.sources.ytdlp' }, { value: 'subscription', labelKey: 'tasks.sources.subscription' },
+    { value: 'subscription', labelKey: 'tasks.sources.subscription' },
 ];
 const STATUS_OPTIONS = [
     { value: '', labelKey: 'tasks.statuses.all' }, { value: 'pending', labelKey: 'tasks.statuses.pending' },
@@ -62,7 +60,7 @@ function StatusIcon({ status, runningLabel }: { status: string; runningLabel: st
 
 export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initialAccountId }: TasksPageProps) => {
     const { t, i18n } = useTranslation();
-    const locale = i18n.resolvedLanguage?.startsWith('en') ? 'en-US' : 'zh-CN';
+    const locale = i18n.resolvedLanguage || i18n.language;
     const taskTarget = (task: UnifiedTask): string => t('tasks.target.path', {
         storage: task.target.accountName || task.target.provider || t('tasks.target.unknownStorage'),
         folder: task.target.folder || t('tasks.target.root'),
@@ -227,7 +225,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                             type="button"
                             aria-pressed={quickFilter === filter}
                             className={cn(
-                                'rounded-md border px-2 py-2 transition-colors',
+                                'min-w-0 break-words whitespace-normal rounded-md border px-2 py-2 text-center leading-tight transition-colors',
                                 tone,
                                 quickFilter === filter ? 'bg-primary text-primary-foreground ring-2 ring-primary/20' : 'bg-background hover:bg-muted/60',
                             )}
@@ -241,8 +239,8 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
 
             <div className="border-y border-border py-4">
                 <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center">
-                    <select className="h-10 min-w-0 rounded-md border bg-background px-2 text-sm sm:w-auto" value={source} onChange={e => setSource(e.target.value)} aria-label={t('tasks.filters.sourceAria')}>{SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select>
-                    <select className="h-10 min-w-0 rounded-md border bg-background px-2 text-sm sm:w-auto" value={status} onChange={e => { setStatus(e.target.value); setQuickFilter('all'); }} aria-label={t('tasks.filters.statusAria')}>{STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select>
+                    <select className="h-10 min-w-0 whitespace-normal rounded-md border bg-background px-2 text-sm sm:w-auto" value={source} onChange={e => setSource(e.target.value)} aria-label={t('tasks.filters.sourceAria')}>{SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select>
+                    <select className="h-10 min-w-0 whitespace-normal rounded-md border bg-background px-2 text-sm sm:w-auto" value={status} onChange={e => { setStatus(e.target.value); setQuickFilter('all'); }} aria-label={t('tasks.filters.statusAria')}>{STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select>
                     <div className="col-span-2 flex flex-wrap gap-2 sm:ml-auto">
                         <Button size="sm" variant="outline" className="gap-2" onClick={() => { setSelectionMode(!selectionMode); setSelected([]); }} disabled={!dismissibleTasks.length}><CheckSquare className="h-4 w-4" />{t(selectionMode ? 'tasks.selection.exit' : 'tasks.selection.enter')}</Button>
                         <Button size="sm" variant="outline" className="gap-2 text-red-700" onClick={() => void prepareDismissal({ tasks: dismissibleTasks })} disabled={!dismissibleTasks.length || acting}><Trash2 className="h-4 w-4" />{t('tasks.actions.cleanTerminal')}</Button>

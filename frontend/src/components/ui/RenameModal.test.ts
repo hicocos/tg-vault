@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import zh from '../../locales/zh-CN/index';
+import en from '../../locales/en/index';
 
 const modal = fs.readFileSync(new URL('./RenameModal.tsx', import.meta.url), 'utf8');
 const app = fs.readFileSync(new URL('../../App.tsx', import.meta.url), 'utf8');
@@ -23,7 +25,9 @@ test('rename modal disables all form exits and duplicate submissions while confi
     assert.match(modal, /if \(isSubmitting\) return/);
     assert.match(modal, /onClick=\{isSubmitting \? undefined : onClose\}/);
     assert.match(modal, /onClick=\{\(\) => void handleConfirm\(\)\}[\s\S]*disabled=\{isSubmitting\}/);
-    assert.match(modal, /disabled=\{isSubmitting\}[\s\S]*renameConfirm/);
+    assert.match(modal, /disabled=\{isSubmitting\}[\s\S]*t\('files\.ui\.rename\.renaming'\)[\s\S]*t\('files\.ui\.rename\.confirm'\)/);
+    assert.equal(zh.files.ui.rename.confirm, '确认');
+    assert.equal(en.files.ui.rename.confirm, 'Rename');
 });
 
 test('rename handlers surface failures in the modal instead of swallowing them', () => {

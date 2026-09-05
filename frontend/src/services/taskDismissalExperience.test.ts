@@ -6,6 +6,7 @@ const api = fs.readFileSync(new URL('./api.ts', import.meta.url), 'utf8');
 const apiTypes = fs.readFileSync(new URL('./apiTypes.ts', import.meta.url), 'utf8');
 const tasksClient = fs.readFileSync(new URL('./clients/tasksClient.ts', import.meta.url), 'utf8');
 const page = fs.readFileSync(new URL('../components/pages/TasksPage.tsx', import.meta.url), 'utf8');
+const zh = fs.readFileSync(new URL('../locales/zh.json', import.meta.url), 'utf8');
 
 test('task API exposes terminal dismissal preview and confirm contracts', () => {
     assert.match(apiTypes, /dismissible: boolean/);
@@ -16,12 +17,13 @@ test('task API exposes terminal dismissal preview and confirm contracts', () => 
 });
 
 test('task center supports single, multi-select, and filter-scoped cleanup', () => {
-    assert.match(page, /选择任务/);
-    assert.match(page, /全选可删除/);
-    assert.match(page, /清理终态记录/);
-    assert.match(page, /删除记录/);
+    for (const key of ['tasks.selection.enter', 'tasks.selection.selectAll', 'tasks.actions.cleanTerminal', 'tasks.actions.deleteRecord', 'tasks.dialogs.dismissDescription']) {
+        assert.ok(page.includes(key), key);
+    }
+    for (const copy of ['选择任务', '全选可删除', '清理终态记录', '删除记录', '不会删除任何文件']) {
+        assert.match(zh, new RegExp(copy));
+    }
     assert.match(page, /task\.dismissible/);
-    assert.match(page, /不会删除任何文件/);
 });
 
 test('mobile task controls use compact filters and avoid duplicate stage labels', () => {

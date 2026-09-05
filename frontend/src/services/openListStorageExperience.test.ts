@@ -9,7 +9,7 @@ const apiTypes = fs.readFileSync(new URL('../services/apiTypes.ts', import.meta.
 const bulk = fs.readFileSync(new URL('../components/ui/BulkActionToolbar.tsx', import.meta.url), 'utf8');
 
 test('settings exposes only a minimal native OpenList connection form', () => {
-    assert.match(settings, /OpenList 原生存储/);
+    assert.match(settings, /settings\.openlist\.title/);
     assert.match(settings, /openlistBaseUrl/);
     assert.match(settings, /openlistRootPath/);
     assert.match(settings, /openlistUsername/);

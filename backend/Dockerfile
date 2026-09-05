@@ -27,12 +27,7 @@ LABEL org.opencontainers.image.revision=$SOURCE_REVISION \
 WORKDIR /app
 
 # 安装 sharp 需要的依赖 和 ffmpeg (用于视频处理)
-ARG YTDLP_VERSION=2026.06.09
-ARG YTDLP_SHA256=e5d57466682cfa9d61e9cf7c8a4f09b00f4a62af37d3bbdc4bcffdf63615feac
-RUN apk add --no-cache vips-dev ffmpeg ca-certificates curl \
-    && curl -fsSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp" -o /usr/local/bin/yt-dlp \
-    && echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
-    && chmod +x /usr/local/bin/yt-dlp
+RUN apk add --no-cache vips-dev ffmpeg ca-certificates curl
 
 # 复制依赖
 COPY package*.json ./

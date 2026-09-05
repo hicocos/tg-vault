@@ -4,19 +4,14 @@ import test from 'node:test';
 
 const bot = fs.readFileSync(new URL('./telegramBot.ts', import.meta.url), 'utf8');
 const upload = fs.readFileSync(new URL('./telegramUpload.ts', import.meta.url), 'utf8');
-const ytdlp = fs.readFileSync(new URL('./ytDlpDownload.ts', import.meta.url), 'utf8');
 const jobs = fs.readFileSync(new URL('./telegramChannelJobs.ts', import.meta.url), 'utf8');
 const schema = fs.readFileSync(new URL('../db/schema.sql', import.meta.url), 'utf8');
 const lifecycle = fs.readFileSync(new URL('./storageAccountLifecycle.ts', import.meta.url), 'utf8');
 
-test('ordinary files, albums, channel jobs and yt-dlp resolve chat target at admission', () => {
+test('ordinary files, albums and channel jobs resolve chat target at admission', () => {
     assert.match(upload, /consumeOrGetTelegramTargetState\(chatKey\)/);
     assert.match(upload, /consumeOrGetTelegramTargetState\(chatIdStr\)/);
     assert.match(bot, /consumeOrGetTelegramTargetState\(chatKey\)/);
-    assert.match(bot, /createYtDlpPreview\(message, senderId, url\)/);
-    assert.match(bot, /consumeOrGetTelegramTargetState\(messageChatKey\(message, userId\)\)/);
-    assert.match(bot, /handleYtDlpCommand\(currentMessage, consumed\.value\.url, consumed\.value\.target/);
-    assert.match(ytdlp, /input\.target \|\| storageManager\.getActiveTarget\(\)/);
     assert.match(jobs, /target\?: StorageTargetSnapshot/);
 });
 

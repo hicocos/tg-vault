@@ -46,7 +46,7 @@ export const FileMenu = ({ onDelete, onToggleFavorite, onDownload, onRename, onM
                     e.stopPropagation();
                     setIsOpen(!isOpen);
                 }}
-                aria-label={t("file.moreActions") || "More actions"}
+                aria-label={t("file.moreActions")}
                 aria-haspopup="menu"
                 aria-expanded={isOpen}
             >
@@ -63,9 +63,9 @@ export const FileMenu = ({ onDelete, onToggleFavorite, onDownload, onRename, onM
                         transition={{ duration: 0.1 }}
                         className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-zinc-900 border border-border rounded-xl shadow-lg overflow-hidden z-50 p-1.5"
                     >
-                        {onDownload && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onDownload(); setIsOpen(false); }}><Download className="h-4 w-4" />{t("file.download") || "Download"}</button>}
-                        {onRename && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onRename(); setIsOpen(false); }}><Pencil className="h-4 w-4" />{t("file.rename") || "Rename"}</button>}
-                        {onMove && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onMove(); setIsOpen(false); }}><FolderInput className="h-4 w-4" />{t("file.move") || "Move"}</button>}
+                        {onDownload && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onDownload(); setIsOpen(false); }}><Download className="h-4 w-4" />{t("file.download")}</button>}
+                        {onRename && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onRename(); setIsOpen(false); }}><Pencil className="h-4 w-4" />{t("file.rename")}</button>}
+                        {onMove && <button role="menuitem" className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm hover:bg-muted rounded-lg text-left" onClick={e => { e.stopPropagation(); onMove(); setIsOpen(false); }}><FolderInput className="h-4 w-4" />{t("file.move")}</button>}
                         {onDelete && <button
                             role="menuitem"
                             className="w-full min-h-11 flex items-center gap-2 px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10 rounded-lg transition-colors text-left font-medium touch-manipulation"
@@ -76,7 +76,7 @@ export const FileMenu = ({ onDelete, onToggleFavorite, onDownload, onRename, onM
                             }}
                         >
                             <Trash2 className="h-4 w-4" />
-                            {t("file.delete") || "Delete"}
+                            {t("file.delete")}
                         </button>}
                         <button
                             role="menuitem"
@@ -88,7 +88,7 @@ export const FileMenu = ({ onDelete, onToggleFavorite, onDownload, onRename, onM
                             }}
                         >
                             <Star className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />
-                            {isFavorite ? (t("file.unfavorite") || "Unfavorite") : (t("file.favorite") || "Favorite")}
+                            {isFavorite ? t("file.unfavorite") : t("file.favorite")}
                         </button>
                     </motion.div>
                 )}

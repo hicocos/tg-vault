@@ -1,24 +1,23 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import zh from '../../locales/zh-CN/index';
+import en from '../../locales/en/index';
 
 const panelUrl = new URL('./TelegramUserAccountsPanel.tsx', import.meta.url);
 
 test('Telegram accounts panel presents method-choice multi-account management and scheduling copy', () => {
     const panel = fs.readFileSync(panelUrl, 'utf8');
-    for (const copy of [
-        'Telegram 用户账号',
-        '添加账号',
-        '二维码登录',
-        '改用手机号',
-        '两步验证密码',
-        '停用',
-        '重新启用',
-        '删除账号',
-        '权限汇总',
-        '智能调度',
+    for (const key of [
+        'title', 'add', 'login.qr', 'login.usePhone', 'login.passwordLabel',
+        'account.disable', 'account.enable', 'account.delete', 'summary.permissions', 'scheduling.title',
     ]) {
-        assert.match(panel, new RegExp(copy));
+        const path = `management.telegramAccounts.${key}`;
+        assert.match(panel, new RegExp(`t\\(['\"]${path.replaceAll('.', '\\.')}['\"]`), path);
+        const read = (catalog: Record<string, unknown>) => path.split('.').reduce<unknown>((value, segment) => (value as Record<string, unknown>)[segment], catalog);
+        assert.equal(typeof read(zh), 'string', `missing zh-CN ${path}`);
+        assert.equal(typeof read(en), 'string', `missing en ${path}`);
+        assert.notEqual(read(zh), read(en), `${path} must be localized`);
     }
     assert.doesNotMatch(panel, /停用（保留登录）/);
     assert.doesNotMatch(panel, /解除绑定/);

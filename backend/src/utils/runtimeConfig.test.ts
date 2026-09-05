@@ -6,7 +6,6 @@ function testDefaultsMatchRuntimeContract() {
     assert.equal(summary.upload.chunkMiB, 32);
     assert.equal(summary.upload.maxUploadGiB, 20);
     assert.equal(summary.telegram.enabled, false);
-    assert.equal(summary.ytdlp.maxConcurrent, 1);
     assert.equal(summary.storage.probeTimeoutMs, 15_000);
 }
 

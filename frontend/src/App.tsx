@@ -1,3 +1,4 @@
+import { tr } from './i18n/runtime';
 import { Fragment, useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
 import { Button } from "./components/ui/Button";
@@ -36,7 +37,6 @@ import { appRouteHref, parseAppRoute, routeForCategory, routeForSettings, type A
 import type { SettingsSectionId } from "./components/pages/settingsSections";
 import { IndeterminateSpinner } from "./components/ui/IndeterminateSpinner";
 import { UploadCenter } from "./components/pages/UploadCenter";
-import { YtDlpTaskComposer } from "./components/pages/YtDlpTaskComposer";
 import { getProviderMetadata } from "./services/providerMetadata";
 import { errorMessage, isErrorNamed } from "./services/unknownError";
 import { useAuthSession } from "./hooks/useAuthSession";
@@ -52,7 +52,7 @@ const CreateFolderModal = lazy(() => import("./components/ui/CreateFolderModal")
 
 const LazyFallback = () => (
   <div className="flex min-h-32 items-center justify-center text-muted-foreground">
-    <IndeterminateSpinner label="正在加载页面" size="md" />
+    <IndeterminateSpinner label={tr('files.loadingPage')} size="md" />
   </div>
 );
 
@@ -189,7 +189,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState(() => initialRoute.kind === 'files' ? initialRoute.query : '');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
   const [isMobileSearchOpen, setIsMobileSearchOpen] = useState(false);
-  const [currentFolder, setCurrentFolder] = useState<string | null>(() => initialRoute.kind === 'files' ? initialRoute.folder : null); // 当前选中的文件夹
+  const [currentFolder, setCurrentFolder] = useState<string | null>(() => initialRoute.kind === 'files' ? initialRoute.folder : null); // selected folder
   const [settingsSection, setSettingsSection] = useState<SettingsSectionId>(() => initialRoute.kind === 'settings' ? initialRoute.section : 'general');
   const [isNavigationTapShieldActive, setIsNavigationTapShieldActive] = useState(false);
   const navigationTapShieldTimerRef = useRef<number | null>(null);
@@ -201,7 +201,7 @@ function App() {
   // 移动状态
   const [movingFile, setMovingFile] = useState<FileData | null>(null);
   const [movingFolder, setMovingFolder] = useState<string | null>(null);
-  const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // 文件夹区域折叠状态，默认折叠
+  const [isFoldersExpanded, setIsFoldersExpanded] = useState(false); // folder section starts collapsed
 
   const [isCreateFolderModalOpen, setIsCreateFolderModalOpen] = useState(false);
 
@@ -341,7 +341,7 @@ function App() {
     if (currentCategory === 'media') type = 'media';
     else if (['image', 'video', 'audio', 'document'].includes(currentCategory)) type = currentCategory as FileQueryOptions['type'];
 
-    const folder = currentCategory === 'ytdlp' ? 'ytdlp' : (currentFolder ?? null);
+    const folder = currentFolder ?? null;
     return {
       q: debouncedSearchQuery,
       type,
@@ -362,7 +362,7 @@ function App() {
       setLoading(true);
       setQueryError(null);
       const options = buildFileQueryOptions(request.signal);
-      const includeFolders = currentCategory !== 'ytdlp';
+      const includeFolders = true;
       const [page, globalFolders] = await Promise.all([
         fileApi.getFilesPage(options),
         includeFolders
@@ -382,7 +382,7 @@ function App() {
         authService.invalidateSession(error.status);
       } else {
         console.error('加载文件失败:', error);
-        setQueryError(errorMessage(error, '加载文件失败'));
+        setQueryError(errorMessage(error, t('appCopy.loadFilesFailed')));
         setIsStale(hadData);
       }
     } finally {
@@ -416,7 +416,7 @@ function App() {
         authService.invalidateSession(error.status);
       } else {
         console.error('加载更多文件失败:', error);
-        setQueryError(errorMessage(error) || '加载更多文件失败');
+        setQueryError(errorMessage(error) || t('appCopy.loadMoreFailed'));
         setIsStale(true);
       }
     } finally {
@@ -432,7 +432,7 @@ function App() {
       const stats = await fileApi.getStorageStats();
       const accepted = request.accept(stats);
       if (accepted) setStorageStats(stats);
-      else if (expectedAccountId !== undefined) throw new Error('存储统计账户与当前活动账户不一致');
+      else if (expectedAccountId !== undefined) throw new Error(t('appCopy.storageAccountMismatch'));
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         authService.invalidateSession(error.status);
@@ -485,7 +485,7 @@ function App() {
         setLoading(!cached);
         setQueryError(null);
         const options = buildFileQueryOptions(request.signal);
-        const includeFolders = currentCategory !== 'ytdlp';
+        const includeFolders = true;
         const [page, globalFolders] = await Promise.all([
           fileApi.getFilesPage(options),
           includeFolders ? fileApi.getFolderAggregations(options) : Promise.resolve([]),
@@ -506,7 +506,7 @@ function App() {
           if (isUnauthorizedError(error)) {
             authService.invalidateSession(error.status);
           } else {
-            setQueryError(errorMessage(error, '加载文件失败'));
+            setQueryError(errorMessage(error, t('appCopy.loadFilesFailed')));
             setIsStale(hadData);
           }
         }
@@ -524,12 +524,6 @@ function App() {
       loadStorageConfig();
     }
   }, [isAuthenticated, loadStorageStats, loadStorageConfig]);
-
-  useEffect(() => {
-    if (currentCategory === 'ytdlp') {
-      setCurrentFolder(null);
-    }
-  }, [currentCategory]);
 
   useEffect(() => {
     return () => {
@@ -597,7 +591,7 @@ function App() {
         invalidateFileQueryCache();
         setNotification({
           show: true,
-          message: result.isFavorite ? '已添加到收藏' : '已取消收藏',
+          message: t(result.isFavorite ? 'files.favoriteAdded' : 'files.favoriteRemoved'),
           type: 'success'
         });
       }
@@ -608,7 +602,7 @@ function App() {
         console.error('切换文件夹收藏状态失败:', error);
         setNotification({
           show: true,
-          message: '操作失败',
+          message: t('errors.fallback'),
           type: 'error'
         });
       }
@@ -617,7 +611,7 @@ function App() {
 
   const startUpload = async (newFiles: File[], folder?: string) => {
     if (!storageConfig) {
-      setNotification({ show: true, message: '上传目标尚未加载，请稍后重试', type: 'error' });
+      setNotification({ show: true, message: t('appCopy.uploadTargetUnavailable'), type: 'error' });
       return;
     }
     const targetSnapshot = createUploadTargetSnapshot(storageConfig, activeStorageDisplay?.provider || null, folder);
@@ -649,7 +643,7 @@ function App() {
           setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'completed', progress: 100 } : q));
         } catch (err: unknown) {
           if (isErrorNamed(err, 'AbortError')) {
-            setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'cancelled', error: '已取消' } : q));
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'cancelled', error: t('files.uploadCancelled') } : q));
             return;
           }
           console.error(`File ${item.file.name} upload failed:`, err);
@@ -659,7 +653,7 @@ function App() {
           setUploadQueue(prev => prev.map(q => q.id === item.id ? {
             ...q,
             status: 'error',
-            error: errorMessage(err, '上传失败')
+            error: errorMessage(err, t('files.uploadFailed'))
           } : q));
         }
       });
@@ -682,7 +676,7 @@ function App() {
 
   const handleResumeUpload = async (session: ChunkUploadSession, file: File) => {
     if (file.name !== session.filename || file.size !== session.totalSize) {
-      setNotification({ show: true, message: '所选文件的名称或大小与原上传任务不一致', type: 'error' });
+      setNotification({ show: true, message: t('appCopy.resumeMismatch'), type: 'error' });
       return;
     }
     const item: QueueItem = {
@@ -696,7 +690,7 @@ function App() {
       etaSeconds: null,
       telemetry: { ...createUploadTelemetry(session.totalSize), loadedBytes: session.receivedBytes },
       resumeSessionId: session.uploadId,
-      targetLabel: `${session.targetAccountName || session.targetProvider} / ${session.folder || '根目录'}`,
+      targetLabel: `${session.targetAccountName || session.targetProvider} / ${session.folder || t('files.root')}`,
     };
     setUploadQueue(prev => [...prev, item]);
     setResumingSessionIds(prev => [...prev, session.uploadId]);
@@ -716,7 +710,7 @@ function App() {
     } catch (error: unknown) {
       const cancelled = isErrorNamed(error, 'AbortError');
       setUploadQueue(prev => prev.map(entry => entry.id === item.id
-        ? { ...entry, status: cancelled ? 'cancelled' : 'error', error: cancelled ? '已取消' : errorMessage(error, '续传失败') }
+        ? { ...entry, status: cancelled ? 'cancelled' : 'error', error: cancelled ? t('files.uploadCancelled') : errorMessage(error, t('appCopy.resumeFailed')) }
         : entry));
       await loadIncompleteUploads(false);
     } finally {
@@ -735,18 +729,18 @@ function App() {
     try {
       const cancellation = await fileApi.cancelChunkUpload(session.uploadId);
       if (cancellation === 'busy') {
-        setNotification({ show: true, message: '服务器正在完成该上传，暂时不能取消；请稍后刷新确认结果', type: 'info' });
+        setNotification({ show: true, message: t('appCopy.uploadCompleting'), type: 'info' });
         await loadIncompleteUploads(false);
         return;
       }
       setRecoveredUploads(prev => prev.filter(entry => entry.uploadId !== session.uploadId));
       setNotification({
         show: true,
-        message: cancellation === 'cancelled' ? '上传会话已取消' : '上传会话已结束',
+        message: cancellation === 'cancelled' ? t('appCopy.uploadSessionCancelled') : t('appCopy.uploadSessionEnded'),
         type: 'success',
       });
     } catch (error: unknown) {
-      setNotification({ show: true, message: errorMessage(error, '取消上传会话失败'), type: 'error' });
+      setNotification({ show: true, message: errorMessage(error, t('appCopy.cancelUploadFailed')), type: 'error' });
       await loadIncompleteUploads(false);
     }
   };
@@ -791,7 +785,7 @@ function App() {
     } catch (error: unknown) {
       const cancelled = isErrorNamed(error, 'AbortError');
       setUploadQueue(prev => prev.map(item => item.id === id
-        ? { ...item, status: cancelled ? 'cancelled' : 'error', error: cancelled ? '已取消' : (errorMessage(error, '上传失败')) }
+        ? { ...item, status: cancelled ? 'cancelled' : 'error', error: cancelled ? t('files.uploadCancelled') : (errorMessage(error, t('files.uploadFailed'))) }
         : item));
     }
   };
@@ -807,14 +801,14 @@ function App() {
       setFiles((prev) => prev.filter((f) => f.id !== deletingFile.id));
       invalidateFileQueryCache();
       setDeletingFile(null);
-      setNotification({ show: true, message: '文件已删除', type: 'success' });
+      setNotification({ show: true, message: t('files.deleted'), type: 'success' });
       await loadStorageStats();
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         authService.invalidateSession(error.status);
       } else {
         console.error('删除失败:', error);
-        setNotification({ show: true, message: errorMessage(error) || '删除失败', type: 'error' });
+        setNotification({ show: true, message: errorMessage(error) || t('files.deleteFailed'), type: 'error' });
         throw error;
       }
     }
@@ -846,13 +840,13 @@ function App() {
       setIsSelectionMode(false);
       setPendingBatchDelete(null);
       setBatchDeletePreview(null);
-      setNotification({ show: true, message: result.message || '删除完成', type: 'success' });
+      setNotification({ show: true, message: result.message || t('appCopy.deleteComplete'), type: 'success' });
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         authService.invalidateSession(error.status);
       } else {
         console.error('批量删除失败:', error);
-        setNotification({ show: true, message: errorMessage(error) || '批量删除失败', type: 'error' });
+        setNotification({ show: true, message: errorMessage(error) || t('appCopy.bulkDeleteFailed'), type: 'error' });
         throw error;
       }
     } finally {
@@ -871,7 +865,7 @@ function App() {
       if (isUnauthorizedError(error)) {
         authService.invalidateSession(error.status);
       } else {
-        setNotification({ show: true, message: errorMessage(error) || '获取删除影响范围失败', type: 'error' });
+        setNotification({ show: true, message: errorMessage(error) || t('appCopy.deletePreviewFailed'), type: 'error' });
       }
     }
   };
@@ -892,7 +886,7 @@ function App() {
         // 显示通知
         setNotification({
           show: true,
-          message: result.isFavorite ? '已添加到收藏' : '已取消收藏',
+          message: t(result.isFavorite ? 'files.favoriteAdded' : 'files.favoriteRemoved'),
           type: 'success'
         });
       }
@@ -903,7 +897,7 @@ function App() {
         console.error('切换收藏状态失败:', error);
         setNotification({
           show: true,
-          message: '操作失败',
+          message: t('errors.fallback'),
           type: 'error'
         });
       }
@@ -912,7 +906,7 @@ function App() {
 
   const handleShare = async (password: string, expiration: string) => {
     if (selectedFileIds.length !== 1 || selectedFolderNames.length > 0) {
-      throw new Error("只能分享单个文件");
+      throw new Error(t('files.shareSingleOnly'));
     }
 
     const fileId = selectedFileIds[0];
@@ -955,7 +949,7 @@ function App() {
         console.error('重命名失败:', error);
         setNotification({
           show: true,
-          message: errorMessage(error) || '重命名失败',
+          message: errorMessage(error) || t('files.renameFailed'),
           type: 'error'
         });
       }
@@ -981,7 +975,7 @@ function App() {
         console.error('重命名文件夹失败:', error);
         setNotification({
           show: true,
-          message: errorMessage(error) || '重命名文件夹失败',
+          message: errorMessage(error) || t('appCopy.renameFolderFailed'),
           type: 'error'
         });
       }
@@ -996,7 +990,7 @@ function App() {
       await fileApi.createFolder(finalPath);
       setNotification({
         show: true,
-        message: '文件夹创建成功',
+        message: t('files.folderCreated'),
         type: 'success'
       });
       // 刷新列表
@@ -1005,7 +999,7 @@ function App() {
       console.error('创建文件夹失败:', error);
       setNotification({
         show: true,
-        message: errorMessage(error, '创建文件夹失败'),
+        message: errorMessage(error, t('files.createFolderFailed')),
         type: 'error'
       });
       throw error;
@@ -1018,7 +1012,6 @@ function App() {
         file.name === '.folder' || // 占位文件始终允许通过，以便计算文件夹列表
         (currentCategory === "favorites" && file.is_favorite === true) ||
         currentCategory === "all" ||
-        (currentCategory === "ytdlp" && file.folder === "ytdlp") ||
         (currentCategory === "media" && ["image", "video", "audio"].includes(file.type)) ||
         (currentCategory === "image" && file.type === "image") ||
         (currentCategory === "video" && file.type === "video") ||
@@ -1034,9 +1027,6 @@ function App() {
 
   // 将数据库中的完整 folder 路径聚合成当前位置的直接子目录。
   const folders = useMemo(() => {
-    if (currentCategory === 'ytdlp') {
-      return [];
-    }
     const prefix = currentFolder ? `${currentFolder}/` : '';
     const grouped = new Map<string, FolderData>();
 
@@ -1137,23 +1127,24 @@ function App() {
     return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   }, [folderAggregations]);
 
+  const providerLabels = useMemo<Record<string, string>>(() => ({
+    local: t('appCopy.localStorage'),
+    onedrive: 'OneDrive',
+    google_drive: 'Google Drive',
+    aliyun_oss: 'Alibaba Cloud OSS',
+    s3: 'S3',
+    webdav: 'WebDAV',
+    openlist: 'OpenList',
+  }), [t]);
+
   const activeStorageDisplay = useMemo(() => {
     if (!storageConfig) return null;
-    const providerLabels: Record<string, string> = {
-      local: '本地存储',
-      onedrive: 'OneDrive',
-      google_drive: 'Google Drive',
-      aliyun_oss: '阿里云 OSS',
-      s3: 'S3',
-      webdav: 'WebDAV',
-      openlist: 'OpenList',
-    };
     const account = storageConfig.accounts.find(item => item.id === storageConfig.activeAccountId);
     return {
       provider: providerLabels[storageConfig.provider] || storageConfig.provider,
-      account: account?.name || (storageConfig.provider === 'local' ? '服务器本地目录' : '未命名账户'),
+      account: account?.name || (storageConfig.provider === 'local' ? t('appCopy.localDirectory') : t('appCopy.unnamedAccount')),
     };
-  }, [storageConfig]);
+  }, [storageConfig, t, providerLabels]);
 
   const fileViewState = useMemo(() => describeFileViewState({
     folder: currentFolder,
@@ -1171,7 +1162,7 @@ function App() {
         await refreshFilesAfterMutation();
         setNotification({
           show: true,
-          message: t("app.moveSuccess") || "移动成功",
+          message: t("app.moveSuccess"),
           type: "success"
         });
       }
@@ -1179,7 +1170,7 @@ function App() {
       console.error("Move file failed:", error);
       setNotification({
         show: true,
-        message: errorMessage(error) || t("app.moveFailed") || "移动失败",
+        message: errorMessage(error) || t("app.moveFailed"),
         type: "error"
       });
       throw error;
@@ -1197,7 +1188,7 @@ function App() {
         }
         setNotification({
           show: true,
-          message: t("app.moveSuccess") || "移动成功",
+          message: t("app.moveSuccess"),
           type: "success"
         });
         await refreshFilesAfterMutation();
@@ -1206,7 +1197,7 @@ function App() {
       console.error("Move folder failed:", error);
       setNotification({
         show: true,
-        message: errorMessage(error) || t("app.moveFailed") || "移动文件夹失败",
+        message: errorMessage(error) || t("app.moveFailed"),
         type: "error"
       });
       throw error;
@@ -1214,15 +1205,15 @@ function App() {
   };
 
   const previewFolderMove = useCallback((destinationFolder: string | null, signal: AbortSignal) => {
-    if (!movingFolder) return Promise.reject(new Error('没有待移动的文件夹'));
+    if (!movingFolder) return Promise.reject(new Error(t('appCopy.folderMoveMissing')));
     return fileApi.previewMoveFolder(movingFolder, destinationFolder, signal);
-  }, [movingFolder]);
+  }, [movingFolder, t]);
 
   // 正在检查认证状态
   if (authChecking) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <IndeterminateSpinner label="正在验证登录状态" size="lg" />
+        <IndeterminateSpinner label={t('auth.signingIn')} size="lg" />
       </div>
     );
   }
@@ -1276,18 +1267,14 @@ function App() {
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-3xl font-bold tracking-tight text-foreground">
-                    {currentCategory === "ytdlp"
-                      ? t("app.ytdlpTitle")
-                      : currentCategory === "favorites"
-                        ? t("sidebar.favorites")
-                        : t("sidebar.files")}
+                    {currentCategory === "favorites"
+                      ? t("sidebar.favorites")
+                      : t("sidebar.files")}
                   </h2>
                   <p className="text-muted-foreground mt-1">
-                    {currentCategory === "ytdlp"
-                      ? t("app.ytdlpSubtitle")
-                      : currentCategory === "favorites"
-                        ? t("app.favoritesSubtitle")
-                        : t("app.filesSubtitle")}
+                    {currentCategory === "favorites"
+                      ? t("app.favoritesSubtitle")
+                      : t("app.filesSubtitle")}
                   </p>
                 </div>
                 <div data-testid="file-toolbar" className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:flex-nowrap md:items-center">
@@ -1325,7 +1312,7 @@ function App() {
                       aria-label={t("app.refresh")}
                       title={t("app.refresh")}
                     >
-                      {loading ? <IndeterminateSpinner label="正在刷新文件" size="sm" /> : <RefreshCw className="h-4 w-4" />}
+                      {loading ? <IndeterminateSpinner label={t('files.refreshFiles')} size="sm" /> : <RefreshCw className="h-4 w-4" />}
                     </Button>
 
                     {/* 多选切换按钮 */}
@@ -1340,7 +1327,7 @@ function App() {
                       }}
                     >
                       <CheckSquare className="h-4 w-4" />
-                      <span>{isSelectionMode ? "退出选择" : "选择"}</span>
+                      <span>{t(isSelectionMode ? 'files.exitSelection' : 'files.select')}</span>
                     </Button>
                   </div>
 
@@ -1356,7 +1343,7 @@ function App() {
                           direction: current.key === 'name' && current.direction === 'asc' ? 'desc' : 'asc'
                         }))}
                       >
-                        名称 {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                        {t('files.sortName')} {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </Button>
                       <Button
                         variant={sortConfig.key === 'date' ? 'secondary' : 'ghost'}
@@ -1367,7 +1354,7 @@ function App() {
                           direction: current.key === 'date' && current.direction === 'asc' ? 'desc' : 'asc'
                         }))}
                       >
-                        日期 {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                        {t('files.sortDate')} {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                       </Button>
                     </div>
 
@@ -1377,22 +1364,7 @@ function App() {
                   </div>
                 </div>
               </div>
-              {currentCategory === "ytdlp" && (
-                <YtDlpTaskComposer
-                  onSubmit={async input => {
-                    try {
-                      const result = await fileApi.createYtDlpTask(input);
-                      setNotification({ show: true, message: `下载任务 ${result.task.id} 已加入队列`, type: 'success' });
-                    } catch (error: unknown) {
-                      if (isUnauthorizedError(error)) {
-                        authService.invalidateSession(error.status);
-                      }
-                      throw error;
-                    }
-                  }}
-                  onOpenTasks={() => navigateRoute({ kind: 'tasks', accountId: null, needsReplace: false })}
-                />
-              )}
+
               {isMobileSearchOpen && (
                 <div className="relative md:hidden">
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1411,7 +1383,7 @@ function App() {
                 <div className="sticky bottom-4 z-40 flex justify-end pointer-events-none">
                   <Button className="pointer-events-auto gap-2 shadow-lg" onClick={() => setIsQueueModalOpen(true)}>
                     <Upload className="h-4 w-4" />
-                    打开上传队列（{uploadQueue.filter(item => ['pending', 'uploading', 'processing'].includes(item.status)).length + recoveredUploads.length}）
+                    {t('files.uploadQueue', { count: uploadQueue.filter(item => ['pending', 'uploading', 'processing'].includes(item.status)).length + recoveredUploads.length })}
                   </Button>
                 </div>
               )}
@@ -1447,11 +1419,11 @@ function App() {
                           size="icon"
                           className="h-11 w-11 rounded-full touch-manipulation"
                           onClick={() => navigateFolder(parentFolder(currentFolder))}
-                          aria-label="返回上级目录"
+                          aria-label={t('files.backToParent')}
                         >
                           <ArrowLeft className="h-4 w-4" />
                         </Button>
-                        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => navigateFolder(null)}>根目录</button>
+                        <button className="text-sm text-muted-foreground hover:text-foreground" onClick={() => navigateFolder(null)}>{t('files.root')}</button>
                         {buildFolderBreadcrumbs(currentFolder).map(({ label: segment, path }) => {
                           return (
                             <Fragment key={path}>
@@ -1461,18 +1433,18 @@ function App() {
                           );
                         })}
                         <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                          {folders.length} 个子目录，{displayFiles.length} 个文件
+                          {t('appCopy.subfolderSummary', { folders: folders.length, files: displayFiles.length })}
                         </span>
                         <Button variant="ghost" size="sm" className="h-10 px-3 text-xs" onClick={() => setIsCreateFolderModalOpen(true)}>
                           <FolderPlus className="h-3.5 w-3.5" />
-                          新建子目录
+                          {t('files.newSubfolder')}
                         </Button>
                       </>
                     ) : (
                       <div className="flex items-center gap-3">
                         {t("app.allFiles")}
                         <span className="text-xs font-normal text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
-                          {folders.length > 0 ? `${folders.length} 个文件夹, ` : ''}{looseFiles.length} 个文件
+                          {t('appCopy.folderFileSummary', { folders: folders.length, files: looseFiles.length })}
                         </span>
                         <Button
                           variant="ghost"
@@ -1481,7 +1453,7 @@ function App() {
                           onClick={() => setIsCreateFolderModalOpen(true)}
                         >
                           <FolderPlus className="h-3.5 w-3.5" />
-                          创建文件夹
+                          {t('files.createFolder')}
                         </Button>
                       </div>
                     )}
@@ -1499,7 +1471,7 @@ function App() {
                 )}
                 {loading && files.length === 0 && folderAggregations.length === 0 ? (
                   <div className="flex items-center justify-center py-20">
-                    <IndeterminateSpinner label="正在加载文件" size="lg" />
+                    <IndeterminateSpinner label={t('files.loadingFiles')} size="lg" />
                   </div>
                 ) : queryError && !isStale ? (
                   <EmptyState kind={fileViewState.kind} onRetry={() => void loadFiles()} />
@@ -1593,7 +1565,7 @@ function App() {
                             </div>
                           )}
                           <h4 className={`text-sm font-medium text-muted-foreground flex items-center gap-2 select-none ${!showFolderToggle ? 'pl-2' : ''}`}>
-                            📁 文件夹
+                            📁 {t('appCopy.folderLabel')}
                             <span className="text-xs bg-muted px-2 py-0.5 rounded-full">
                               {folders.length}
                             </span>
@@ -1634,7 +1606,7 @@ function App() {
                       <div>
                         {folders.length > 0 && (
                           <h4 className="text-sm font-medium text-muted-foreground mb-4 flex items-center gap-2">
-                            📄 文件
+                            📄 {t('appCopy.fileLabel')}
                           </h4>
                         )}
                         <div className={viewMode === "grid" ? "grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-5" : "flex flex-col gap-2"}>
@@ -1704,10 +1676,10 @@ function App() {
                 )}
 
                 {displayedFileSource.length > FILE_RENDER_WINDOW_SIZE && !loading && (
-                  <nav className="flex items-center justify-center gap-3 pt-6" aria-label="已加载文件窗口">
-                    <Button variant="outline" disabled={fileRenderWindow === 0} onClick={() => setFileRenderWindow(value => Math.max(0, value - 1))}>上一批</Button>
-                    <span className="text-sm text-muted-foreground">已加载文件第 {fileRenderWindow + 1}/{fileRenderWindowCount} 批</span>
-                    <Button variant="outline" disabled={fileRenderWindow >= fileRenderWindowCount - 1} onClick={() => setFileRenderWindow(value => Math.min(fileRenderWindowCount - 1, value + 1))}>下一批</Button>
+                  <nav className="flex items-center justify-center gap-3 pt-6" aria-label={t('appCopy.loadedFilesWindow')}>
+                    <Button variant="outline" disabled={fileRenderWindow === 0} onClick={() => setFileRenderWindow(value => Math.max(0, value - 1))}>{t('files.previousBatch')}</Button>
+                    <span className="text-sm text-muted-foreground">{t('files.loadedBatch', { current: fileRenderWindow + 1, total: fileRenderWindowCount })}</span>
+                    <Button variant="outline" disabled={fileRenderWindow >= fileRenderWindowCount - 1} onClick={() => setFileRenderWindow(value => Math.min(fileRenderWindowCount - 1, value + 1))}>{t('files.nextBatch')}</Button>
                   </nav>
                 )}
 
@@ -1719,8 +1691,8 @@ function App() {
                       disabled={loadingMoreFiles}
                       className="gap-2"
                     >
-                      {loadingMoreFiles ? <IndeterminateSpinner label="正在加载更多文件" size="sm" /> : <RefreshCw className="h-4 w-4" />}
-                      {loadingMoreFiles ? '加载中…' : '加载更多'}
+                      {loadingMoreFiles ? <IndeterminateSpinner label={t('files.loadingMore')} size="sm" /> : <RefreshCw className="h-4 w-4" />}
+                      {loadingMoreFiles ? t('common.status.loading') : t('common.actions.loadMore')}
                     </Button>
                   </div>
                 )}
@@ -1809,9 +1781,9 @@ function App() {
 
         <ConfirmDialog
           isOpen={!!cancellingRecoveredUpload}
-          title="取消可续传上传？"
-          description={`将取消“${cancellingRecoveredUpload?.filename || ''}”的上传会话，并删除服务器已接收的分块。此操作无法撤销。`}
-          confirmLabel="取消上传"
+          title={t('appCopy.cancelResumeTitle')}
+          description={t('appCopy.cancelResumeDescription', { name: cancellingRecoveredUpload?.filename || '' })}
+          confirmLabel={t('appCopy.cancelUpload')}
           onClose={() => setCancellingRecoveredUpload(null)}
           onConfirm={confirmCancelRecoveredUpload}
         />

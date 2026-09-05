@@ -1,5 +1,6 @@
 import type { UpdateStatus } from '../apiTypes';
 import { apiRequest } from '../httpClient';
+import { tr } from '../../i18n/runtime';
 import { getApiHeaders } from './clientHeaders';
 
 export class SystemClient {
@@ -9,7 +10,7 @@ export class SystemClient {
             cache: 'no-store',
             headers: getApiHeaders(),
         });
-        if (!response.ok) throw new Error('获取版本信息失败');
+        if (!response.ok) throw new Error(tr('errors.services.system.getVersionFailed'));
         return response.json();
     }
 
@@ -20,14 +21,14 @@ export class SystemClient {
             cache: 'no-store',
             headers: getApiHeaders(),
         });
-        if (response.status === 429) throw new Error('检查过于频繁，请稍后再试');
-        if (!response.ok) throw new Error('检查版本失败');
+        if (response.status === 429) throw new Error(tr('errors.services.system.updateCheckRateLimited'));
+        if (!response.ok) throw new Error(tr('errors.services.system.checkVersionFailed'));
         return response.json();
     }
 
     async healthCheck(): Promise<{ status: string; timestamp: string }> {
         const response = await apiRequest('/health');
-        if (!response.ok) throw new Error('健康检查失败');
+        if (!response.ok) throw new Error(tr('errors.services.system.healthCheckFailed'));
         return response.json();
     }
 }

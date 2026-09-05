@@ -19,7 +19,7 @@ export const StorageWidget = ({ stats, used, total }: StorageWidgetProps) => {
                 {/* Server Storage */}
                 <div>
                     <div className="flex items-center justify-between mb-1.5">
-                        <h4 className="text-xs font-medium text-muted-foreground">服务器</h4>
+                        <h4 className="text-xs font-medium text-muted-foreground">{t('files.ui.storage.server')}</h4>
                         <span className="text-xs text-muted-foreground">{stats.server.usedPercent}%</span>
                     </div>
                     <div className="h-1.5 w-full rounded-full bg-secondary overflow-hidden">
@@ -41,10 +41,10 @@ export const StorageWidget = ({ stats, used, total }: StorageWidgetProps) => {
                 <div>
                     <div className="flex items-center justify-between mb-1.5">
                         <h4 className="text-xs font-medium text-muted-foreground">TG Vault</h4>
-                        <span className="text-xs text-muted-foreground">{stats.tgvault.fileCount} 文件</span>
+                        <span className="text-xs text-muted-foreground">{t('files.ui.storage.fileCount', { count: stats.tgvault.fileCount })}</span>
                     </div>
                     <p className="mt-1 text-[10px] text-muted-foreground">
-                        已用 {stats.tgvault.used}
+                        {t('files.ui.storage.used', { value: stats.tgvault.used })}
                     </p>
                 </div>
             </div>

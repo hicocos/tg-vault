@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface DatePickerProps {
     selectedDate: Date | null;
@@ -15,6 +16,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
     onClose,
     minDate = new Date()
 }) => {
+    const { t, i18n } = useTranslation();
     const [viewDate, setViewDate] = useState(selectedDate || new Date());
     const [showYearPicker, setShowYearPicker] = useState(false);
     const calendarRef = useRef<HTMLDivElement>(null);
@@ -102,7 +104,8 @@ export const DatePicker: React.FC<DatePickerProps> = ({
         return days;
     };
 
-    const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
+    const weekDaysValue = t('files.ui.datePicker.weekdays', { returnObjects: true });
+    const weekDays = Array.isArray(weekDaysValue) ? weekDaysValue as string[] : [];
 
     return (
         <motion.div
@@ -118,21 +121,21 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                     onClick={() => setShowYearPicker(!showYearPicker)}
                     className="flex items-center gap-1.5 font-semibold text-lg hover:bg-muted py-0.5 px-2 rounded-lg transition-colors group"
                 >
-                    <span>{viewDate.getMonth() + 1} 月 {viewDate.getFullYear()}</span>
+                    <span>{new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { month: 'long', year: 'numeric' }).format(viewDate)}</span>
                     <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${showYearPicker ? 'rotate-90' : ''}`} />
                 </button>
                 <div className="flex items-center gap-1">
                     {!showYearPicker && (
                         <>
-                            <button onClick={handlePrevMonth} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
+                            <button onClick={handlePrevMonth} aria-label={t('files.ui.datePicker.previousMonth')} title={t('files.ui.datePicker.previousMonth')} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
                                 <ChevronLeft className="h-4 w-4" />
                             </button>
-                            <button onClick={handleNextMonth} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
+                            <button onClick={handleNextMonth} aria-label={t('files.ui.datePicker.nextMonth')} title={t('files.ui.datePicker.nextMonth')} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors">
                                 <ChevronRight className="h-4 w-4" />
                             </button>
                         </>
                     )}
-                    <button onClick={onClose} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors ml-1">
+                    <button onClick={onClose} aria-label={t('files.ui.datePicker.close')} title={t('files.ui.datePicker.close')} className="p-1.5 hover:bg-muted dark:hover:bg-zinc-800 rounded-lg transition-colors ml-1">
                         <X className="h-4 w-4" />
                     </button>
                 </div>
@@ -140,7 +143,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
 
             {showYearPicker ? (
                 <div className="py-4">
-                    <div className="text-xs text-muted-foreground mb-3 px-1 text-center font-medium">选择年份</div>
+                    <div className="text-xs text-muted-foreground mb-3 px-1 text-center font-medium">{t('files.ui.datePicker.selectYear')}</div>
                     <div className="grid grid-cols-1 gap-2 max-h-[220px] overflow-y-auto pr-1">
                         {availableYears.map(year => (
                             <button
@@ -163,7 +166,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                     <div className="grid grid-cols-7 mb-2">
                         {weekDays.map(day => (
                             <div key={day} className="h-9 w-9 flex items-center justify-center text-[10px] font-bold text-muted-foreground uppercase tracking-wider">
-                                周{day}
+                                {day}
                             </div>
                         ))}
                     </div>
@@ -184,10 +187,10 @@ export const DatePicker: React.FC<DatePickerProps> = ({
                     }}
                     className="text-xs text-primary hover:underline font-medium"
                 >
-                    跳转到今天
+                    {t('files.ui.datePicker.today')}
                 </button>
                 <div className="text-[10px] text-muted-foreground">
-                    {showYearPicker ? '请选择一个年份' : '请选择过期时间'}
+                    {showYearPicker ? t('files.ui.datePicker.yearHint') : t('files.ui.datePicker.expirationHint')}
                 </div>
             </div>
         </motion.div>

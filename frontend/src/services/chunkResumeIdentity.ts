@@ -1,4 +1,5 @@
 import { sha256Hex } from './chunkHash.js';
+import { tr } from '../i18n/runtime';
 
 export { sha256Hex } from './chunkHash.js';
 
@@ -10,12 +11,12 @@ export interface ResumeIdentity {
 }
 
 export async function verifyResumeFileIdentity(file: Blob, session: ResumeIdentity): Promise<void> {
-    if (file.size !== session.totalSize) throw new Error('所选文件的大小与原上传任务不一致');
+    if (file.size !== session.totalSize) throw new Error(tr('errors.services.upload.resumeSizeMismatch'));
     for (const index of session.uploadedChunks) {
         const expected = session.uploadedChunkHashes[index];
-        if (!expected) throw new Error('上传会话缺少已接收分块的身份信息，请取消后重新上传');
+        if (!expected) throw new Error(tr('errors.services.upload.resumeIdentityMissing'));
         const start = index * session.maxChunkBytes;
         const actual = await sha256Hex(file.slice(start, Math.min(file.size, start + session.maxChunkBytes)));
-        if (actual !== expected) throw new Error('所选文件内容与原上传任务不一致');
+        if (actual !== expected) throw new Error(tr('errors.services.upload.resumeContentMismatch'));
     }
 }

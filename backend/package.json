@@ -1,6 +1,6 @@
 {
     "name": "tg-vault-backend",
-    "version": "2.4.1",
+    "version": "2.4.2",
     "type": "module",
     "scripts": {
         "dev": "tsx watch src/index.ts",

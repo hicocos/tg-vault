@@ -11,38 +11,45 @@ function account(id: string, overrides: Record<string, unknown> = {}) {
     };
 }
 
-test('pool lazily connects eligible accounts, schedules by source permission and releases connection load', async () => {
-    const rows = [account('a'), account('b')];
-    const access = [{ accountId: 'b', sourceKey: '@news', scope: 'download' as const, accessState: 'allowed' as const, lastError: null, checkedAt: null }];
-    const clients = new Map<string, any>();
-    const repo: any = {
+function repository(rows: any[], overrides: Record<string, unknown> = {}): any {
+    return {
         migrateLegacySystemSettings: async () => null,
         listEnabledAccounts: async () => rows,
         getAccount: async (id: string) => rows.find(row => row.id === id) || null,
-        listSourceAccess: async () => access,
+        listSourceAccess: async () => [],
         updateSession: async () => true,
         recordHealthy: async () => true,
         recordFailure: async () => true,
         markSessionExpired: async () => true,
+        ...overrides,
     };
-    const pool = new TelegramUserClientPool({
-        repository: repo,
+}
+
+function createPool(rows: any[], createClient: (session: string, credentials: any, accountId: string) => any, overrides: Record<string, unknown> = {}) {
+    return new TelegramUserClientPool({
+        repository: repository(rows, overrides),
         decryptSession: (value: string) => value,
-        saveSession: (client: any) => client.saveSession(),
-        createClient: (session: string, _credentials: { apiId: number; apiHash: string }, accountId: string) => {
-            const client = {
-                connected: false,
-                async connect() { this.connected = true; },
-                async checkAuthorization() { return true; },
-                async getMe() { return { id: accountId }; },
-                saveSession() { return session; },
-                async disconnect() { this.connected = false; },
-                async destroy() {},
-            };
-            clients.set(accountId, client);
-            return client;
-        },
+        createClient,
     });
+}
+
+test('pool lazily connects eligible accounts, schedules by source permission and releases connection load', async () => {
+    const rows = [account('a'), account('b')];
+    const access = [{ accountId: 'b', sourceKey: '@news', scope: 'download' as const, accessState: 'allowed' as const, lastError: null, checkedAt: null }];
+    const clients = new Map<string, any>();
+    const pool = createPool(rows, (session, _credentials, accountId) => {
+        const client = {
+            connected: false,
+            async connect() { this.connected = true; },
+            async checkAuthorization() { return true; },
+            async getMe() { return { id: accountId }; },
+            saveSession() { return session; },
+            async disconnect() { this.connected = false; },
+            async destroy() {},
+        };
+        clients.set(accountId, client);
+        return client;
+    }, { listSourceAccess: async () => access });
     await pool.initialize({ apiId: 1, apiHash: 'hash' });
     const selected = await pool.select('@news');
     assert.equal(selected?.accountId, 'b');
@@ -60,28 +67,14 @@ test('pool lazily connects eligible accounts, schedules by source permission and
 test('explicit activation connects only the requested account', async () => {
     const rows = [account('a'), account('b')];
     const connected: string[] = [];
-    const repo: any = {
-        migrateLegacySystemSettings: async () => null,
-        listEnabledAccounts: async () => rows,
-        getAccount: async (id: string) => rows.find(row => row.id === id) || null,
-        listSourceAccess: async () => [],
-        updateSession: async () => true,
-        recordHealthy: async () => true,
-        recordFailure: async () => true,
-        markSessionExpired: async () => true,
-    };
-    const pool = new TelegramUserClientPool({
-        repository: repo,
-        decryptSession: (value: string) => value,
-        createClient: (_session: string, _credentials: { apiId: number; apiHash: string }, accountId: string): any => ({
-            connected: false,
-            async connect() { this.connected = true; connected.push(accountId); },
-            async checkAuthorization() { return true; },
-            async getMe() { return { id: accountId }; },
-            async disconnect() { this.connected = false; },
-            async destroy() {},
-        }),
-    });
+    const pool = createPool(rows, (_session, _credentials, accountId) => ({
+        connected: false,
+        async connect() { this.connected = true; connected.push(accountId); },
+        async checkAuthorization() { return true; },
+        async getMe() { return { id: accountId }; },
+        async disconnect() { this.connected = false; },
+        async destroy() {},
+    }));
     await assert.rejects(
         () => (pool as any).activateAccount('a', 'bot_startup', { apiId: 1, apiHash: 'hash' }),
         /TELEGRAM_USER_ACTIVATION_NOT_ALLOWED/,
@@ -96,30 +89,16 @@ test('re-login closes the previous account runtime before replacing its session'
     const row = account('same');
     const lifecycle: string[] = [];
     let generation = 0;
-    const repo: any = {
-        migrateLegacySystemSettings: async () => null,
-        listEnabledAccounts: async () => [row],
-        getAccount: async () => row,
-        listSourceAccess: async () => [],
-        updateSession: async () => true,
-        recordHealthy: async () => true,
-        recordFailure: async () => true,
-        markSessionExpired: async () => true,
-    };
-    const pool = new TelegramUserClientPool({
-        repository: repo,
-        decryptSession: (value: string) => value,
-        createClient: (): any => {
-            const id = ++generation;
-            return {
-                connected: false,
-                async connect() { this.connected = true; lifecycle.push(`connect:${id}`); },
-                async checkAuthorization() { return true; },
-                async getMe() { return { id }; },
-                async disconnect() { this.connected = false; lifecycle.push(`disconnect:${id}`); },
-                async destroy() { lifecycle.push(`destroy:${id}`); },
-            };
-        },
+    const pool = createPool([row], (_session, _credentials, accountId) => {
+        const id = ++generation;
+        return {
+            connected: false,
+            async connect() { this.connected = true; lifecycle.push(`connect:${id}`); },
+            async checkAuthorization() { return true; },
+            async getMe() { return { id: accountId }; },
+            async disconnect() { this.connected = false; lifecycle.push(`disconnect:${id}`); },
+            async destroy() { lifecycle.push(`destroy:${id}`); },
+        };
     });
     await pool.activateAccount('same', 'login_complete', { apiId: 1, apiHash: 'old' });
     await pool.activateAccount('same', 'login_complete', { apiId: 1, apiHash: 'new' });
@@ -132,28 +111,14 @@ test('concurrent activate and deactivate operations leave no orphaned account cl
     const lifecycle: string[] = [];
     let releaseConnect!: () => void;
     const connectGate = new Promise<void>(resolve => { releaseConnect = resolve; });
-    const repo: any = {
-        migrateLegacySystemSettings: async () => null,
-        listEnabledAccounts: async () => [row],
-        getAccount: async () => row,
-        listSourceAccess: async () => [],
-        updateSession: async () => true,
-        recordHealthy: async () => true,
-        recordFailure: async () => true,
-        markSessionExpired: async () => true,
-    };
-    const pool = new TelegramUserClientPool({
-        repository: repo,
-        decryptSession: (value: string) => value,
-        createClient: (): any => ({
-            connected: false,
-            async connect() { await connectGate; this.connected = true; lifecycle.push('connect'); },
-            async checkAuthorization() { return true; },
-            async getMe() { return { id: 'race' }; },
-            async disconnect() { this.connected = false; lifecycle.push('disconnect'); },
-            async destroy() { lifecycle.push('destroy'); },
-        }),
-    });
+    const pool = createPool([row], () => ({
+        connected: false,
+        async connect() { await connectGate; this.connected = true; lifecycle.push('connect'); },
+        async checkAuthorization() { return true; },
+        async getMe() { return { id: 'race' }; },
+        async disconnect() { this.connected = false; lifecycle.push('disconnect'); },
+        async destroy() { lifecycle.push('destroy'); },
+    }));
     const activating = pool.activateAccount('race', 'login_complete', { apiId: 1, apiHash: 'hash' });
     const deactivating = pool.deactivateAccount('race');
     releaseConnect();
@@ -166,31 +131,37 @@ test('pool records authorization expiry per account and continues with healthy a
     const expired = account('expired', { priority: 100 });
     const healthy = account('healthy');
     const expiredMarks: string[] = [];
-    const repo: any = {
-        migrateLegacySystemSettings: async () => null,
-        listEnabledAccounts: async () => [expired, healthy],
-        getAccount: async (id: string) => [expired, healthy].find(row => row.id === id) || null,
-        listSourceAccess: async () => [],
-        updateSession: async () => true,
-        recordHealthy: async () => true,
-        recordFailure: async () => true,
-        markSessionExpired: async (id: string) => { expiredMarks.push(id); return true; },
-    };
-    const pool = new TelegramUserClientPool({
-        repository: repo,
-        decryptSession: (value: string) => value,
-        saveSession: (client: any) => client.saveSession(),
-        createClient: (_session: string, _credentials: { apiId: number; apiHash: string }, accountId: string): any => ({
-            connected: false,
-            async connect() { this.connected = true; },
-            async checkAuthorization() { return accountId !== 'expired'; },
-            async getMe() { return { id: accountId }; },
-            saveSession() { return `saved-${accountId}`; },
-            async disconnect() { this.connected = false; },
-            async destroy() {},
-        }),
-    });
+    const pool = createPool([expired, healthy], (_session, _credentials, accountId) => ({
+        connected: false,
+        async connect() { this.connected = true; },
+        async checkAuthorization() { return accountId !== 'expired'; },
+        async getMe() { return { id: accountId }; },
+        async disconnect() { this.connected = false; },
+        async destroy() {},
+    }), { markSessionExpired: async (id: string) => { expiredMarks.push(id); return true; } });
     await pool.initialize({ apiId: 1, apiHash: 'hash' });
     assert.deepEqual(expiredMarks, ['expired']);
     assert.equal((await pool.select('@any'))?.accountId, 'healthy');
+});
+
+test('initialization connects enabled accounts in parallel', async () => {
+    const rows = [account('a'), account('b')];
+    let active = 0;
+    let peak = 0;
+    const pool = createPool(rows, (_session, _credentials, accountId) => ({
+        connected: false,
+        async connect() {
+            active += 1;
+            peak = Math.max(peak, active);
+            await new Promise(resolve => setTimeout(resolve, 5));
+            active -= 1;
+            this.connected = true;
+        },
+        async checkAuthorization() { return true; },
+        async getMe() { return { id: accountId }; },
+        async disconnect() { this.connected = false; },
+        async destroy() {},
+    }));
+    await pool.initialize({ apiId: 1, apiHash: 'hash' });
+    assert.equal(peak, 2);
 });

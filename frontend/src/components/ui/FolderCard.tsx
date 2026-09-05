@@ -111,7 +111,7 @@ export const FolderCard = ({
                 layout
                 role="button"
                 tabIndex={0}
-                aria-label={`${isSelectionMode ? '选择文件夹' : '打开文件夹'} ${folder.displayName || folder.name}`}
+                aria-label={t(isSelectionMode ? 'files.ui.cards.selectFolder' : 'files.ui.cards.openFolder', { name: folder.displayName || folder.name })}
                 onKeyDown={handleCardKeyDown}
                 whileHover={{ y: isSelectionMode ? 0 : -4, transition: { duration: 0.2 } }}
                 className={`group relative flex flex-col rounded-2xl border ${isSelected ? 'border-primary ring-2 ring-primary/20 bg-primary/5' : 'border-border/50 bg-card'} overflow-hidden shadow-sm transition-all touch-manipulation select-none ${!isSelectionMode ? 'hover:shadow-lg hover:border-primary/30 cursor-pointer active:scale-[0.99]' : 'cursor-pointer active:scale-[0.99]'}`}
@@ -152,7 +152,7 @@ export const FolderCard = ({
                             <div
                                 role="checkbox"
                                 aria-checked={isSelected}
-                                aria-label={`选择文件夹 ${folder.name}`}
+                                aria-label={t('files.ui.cards.selectFolder', { name: folder.name })}
                                 className={`h-7 w-7 rounded-full border-2 flex items-center justify-center transition-all cursor-pointer shadow-sm ${isSelected ? 'bg-primary border-primary' : 'bg-black/35 border-white/70 backdrop-blur-sm'}`}
                                 onClick={() => onSelect?.(folder.name)}
                             >
@@ -199,7 +199,7 @@ export const FolderCard = ({
                             {folder.displayName || folder.name}
                         </h3>
                         <p className="text-xs text-muted-foreground">
-                            {folder.fileCount} 个文件
+                            {t('files.ui.cards.folderFiles', { count: folder.fileCount })}
                         </p>
                     </div>
                     {!isSelectionMode && (
@@ -221,7 +221,7 @@ export const FolderCard = ({
                             onMouseUp={(e) => e.stopPropagation()}
                             onTouchStart={(e) => e.stopPropagation()}
                             onTouchEnd={(e) => e.stopPropagation()}
-                            aria-label={`更多操作：${folder.name}`}
+                            aria-label={t('files.ui.actions.more', { name: folder.name })}
                             aria-haspopup="menu"
                             aria-expanded={!!contextMenu}
                         >

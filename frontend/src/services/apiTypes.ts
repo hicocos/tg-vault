@@ -105,7 +105,7 @@ export interface ChunkUploadSession {
 
 export type ChunkUploadCancelStatus = 'cancelled' | 'busy' | 'terminal' | 'not_found';
 
-export type UnifiedTaskSource = 'telegram_bot' | 'telegram_channel' | 'ytdlp' | 'web_upload' | 'subscription' | 'telegram_target';
+export type UnifiedTaskSource = 'telegram_bot' | 'telegram_channel' | 'web_upload' | 'subscription' | 'telegram_target';
 
 export interface UnifiedTask {
     id: string;
@@ -221,10 +221,6 @@ export interface TelegramAdDecisionList {
     offset: number;
 }
 
-export interface CreateYtDlpTaskResult {
-    success: true;
-    task: UnifiedTask;
-}
 
 export interface TaskFilters {
     source?: string;
@@ -280,7 +276,9 @@ export interface TelegramBotPublicConfig {
     required: boolean;
     pinConfigured: boolean;
     source: 'web' | 'environment' | 'none';
-    status: string;
+    status: 'not_configured' | 'starting' | 'ready' | 'reconnecting' | 'auth_failed' | 'error' | 'stopped';
+    runtimeReady: boolean;
+    credentialProbeOnly: boolean;
     bot: { username: string | null; displayName: string | null } | null;
     lastConnectedAt: string | null;
     lastError: string | null;

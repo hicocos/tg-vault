@@ -12,7 +12,6 @@ import { formatBytes } from '../utils/fileMetadata.js';
 import { getSetting } from '../utils/settings.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
-const YTDLP_WORK_DIR = path.resolve(process.env.YTDLP_WORK_DIR || path.join(UPLOAD_DIR, 'ytdlp'));
 const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
 const YIELD_EVERY = Math.max(25, parseInt(process.env.ORPHAN_CLEANUP_YIELD_EVERY || '250', 10) || 250);
 
@@ -23,7 +22,7 @@ export interface ScannedFile {
     mtimeMs: number;
 }
 
-export function isReservedTransientUploadPath(filePath: string, reservedDirs: string[] = [YTDLP_WORK_DIR]): boolean {
+export function isReservedTransientUploadPath(filePath: string, reservedDirs: string[] = []): boolean {
     const resolvedPath = path.resolve(filePath);
     return reservedDirs.some(directory => {
         const resolvedDirectory = path.resolve(directory);
@@ -59,7 +58,7 @@ async function yieldToEventLoop(): Promise<void> {
  */
 export async function* walkFiles(
     dirPath: string,
-    reservedDirs: string[] = [YTDLP_WORK_DIR],
+    reservedDirs: string[] = [],
     state: { visited: number } = { visited: 0 },
 ): AsyncGenerator<ScannedFile> {
     if (isReservedTransientUploadPath(dirPath, reservedDirs)) return;
@@ -96,13 +95,13 @@ export async function* walkFiles(
 }
 
 /** Compatibility helper for callers/tests that need a materialized snapshot. */
-export async function getAllFiles(dirPath: string, reservedDirs: string[] = [YTDLP_WORK_DIR]): Promise<ScannedFile[]> {
+export async function getAllFiles(dirPath: string, reservedDirs: string[] = []): Promise<ScannedFile[]> {
     const files: ScannedFile[] = [];
     for await (const file of walkFiles(dirPath, reservedDirs)) files.push(file);
     return files;
 }
 
-async function removeEmptyDirectories(dirPath: string, reservedDirs: string[] = [YTDLP_WORK_DIR]): Promise<void> {
+async function removeEmptyDirectories(dirPath: string, reservedDirs: string[] = []): Promise<void> {
     if (isReservedTransientUploadPath(dirPath, reservedDirs)) return;
     let entries;
     try {

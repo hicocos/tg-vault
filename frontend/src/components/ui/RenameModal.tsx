@@ -54,11 +54,11 @@ export const RenameModal = ({ isOpen, onClose, onConfirm, currentName, type }: R
         if (isSubmitting) return;
         const trimmed = baseName.trim();
         if (trimmed.length === 0) {
-            setError(type === "file" ? "文件名不能为空" : "文件夹名不能为空");
+            setError(t(type === 'file' ? 'files.ui.rename.fileNameRequired' : 'files.ui.rename.folderNameRequired'));
             return;
         }
         if (/[\\:*?"<>|/]/.test(trimmed)) {
-            setError("名称包含非法字符");
+            setError(t('files.ui.rename.invalidCharacters'));
             return;
         }
         const newName = type === "file" ? trimmed + extension : trimmed;
@@ -71,7 +71,7 @@ export const RenameModal = ({ isOpen, onClose, onConfirm, currentName, type }: R
         try {
             await onConfirm(newName);
         } catch (confirmError) {
-            setError(confirmError instanceof Error ? confirmError.message : "重命名失败");
+            setError(confirmError instanceof Error ? confirmError.message : t('files.ui.rename.failed'));
         } finally {
             setIsSubmitting(false);
             requestAnimationFrame(() => inputRef.current?.focus());
@@ -114,11 +114,11 @@ export const RenameModal = ({ isOpen, onClose, onConfirm, currentName, type }: R
                             </div>
                             <div>
                                 <h3 id="rename-modal-title" className="text-lg font-semibold text-foreground">
-                                    {t("file.renameTitle") || "重命名"}
+                                    {t('files.ui.rename.title')}
                                 </h3>
                                 {type === "file" && extension && (
                                     <p className="text-xs text-muted-foreground">
-                                        {t("file.renameExtHint") || "文件后缀不可修改"}
+                                        {t('files.ui.rename.extensionHint')}
                                     </p>
                                 )}
                             </div>
@@ -131,7 +131,7 @@ export const RenameModal = ({ isOpen, onClose, onConfirm, currentName, type }: R
                                     ref={inputRef}
                                     type="text"
                                     className="flex-1 px-4 py-3 text-sm bg-transparent outline-none text-foreground placeholder:text-muted-foreground"
-                                    placeholder={t("file.renamePlaceholder") || "输入新名称"}
+                                    placeholder={t('files.ui.rename.placeholder')}
                                     value={baseName}
                                     onChange={(e) => {
                                         setBaseName(e.target.value);
@@ -158,14 +158,14 @@ export const RenameModal = ({ isOpen, onClose, onConfirm, currentName, type }: R
                                 onClick={isSubmitting ? undefined : onClose}
                                 disabled={isSubmitting}
                             >
-                                {t("delete.cancel") || "取消"}
+                                {t('common.actions.cancel')}
                             </Button>
                             <Button
                                 className="rounded-xl px-5 bg-primary text-primary-foreground hover:bg-primary/90"
                                 onClick={() => void handleConfirm()}
                                 disabled={isSubmitting}
                             >
-                                {isSubmitting ? "重命名中..." : (t("file.renameConfirm") || "确认")}
+                                {isSubmitting ? t('files.ui.rename.renaming') : t('files.ui.rename.confirm')}
                             </Button>
                         </div>
                     </motion.div>

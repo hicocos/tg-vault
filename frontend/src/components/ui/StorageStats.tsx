@@ -1,5 +1,6 @@
 import { HardDrive, FileStack } from "lucide-react";
 import type { StorageStats as StorageStatsType } from "../../services/api";
+import { useTranslation } from "react-i18next";
 
 interface StorageStatsProps {
     stats: StorageStatsType;
@@ -7,6 +8,7 @@ interface StorageStatsProps {
 }
 
 export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
+    const { t } = useTranslation();
     if (compact) {
         return (
             <div className="space-y-3">
@@ -15,7 +17,7 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                     <div className="flex items-center justify-between text-xs">
                         <span className="text-muted-foreground flex items-center gap-1.5">
                             <HardDrive className="h-3.5 w-3.5" />
-                            服务器
+                            {t('files.ui.storage.server')}
                         </span>
                         <span className="font-medium">{stats.server.usedPercent}%</span>
                     </div>
@@ -37,11 +39,11 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
                             <FileStack className="h-3.5 w-3.5" />
                             TG Vault
                         </span>
-                        <span className="font-medium">{stats.tgvault.fileCount} 个文件</span>
+                        <span className="font-medium">{t('files.ui.storage.fileCount', { count: stats.tgvault.fileCount })}</span>
                     </div>
                 {/* Indexed usage deliberately has no percentage unless a remote quota exists. */}
                     <p className="text-[10px] text-muted-foreground">
-                        已用 {stats.tgvault.used}
+                        {t('files.ui.storage.used', { value: stats.tgvault.used })}
                     </p>
                 </div>
             </div>
@@ -52,13 +54,13 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
         <div className="rounded-xl border border-border bg-card p-4 space-y-4">
             <h4 className="font-semibold text-sm flex items-center gap-2">
                 <HardDrive className="h-4 w-4 text-primary" />
-                存储空间
+                {t('files.ui.storage.title')}
             </h4>
 
             {/* Server Storage */}
             <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">服务器容量</span>
+                    <span className="text-muted-foreground">{t('files.ui.storage.serverCapacity')}</span>
                     <span className="font-medium">{stats.server.used} / {stats.server.total}</span>
                 </div>
                 <div className="h-2 bg-muted rounded-full overflow-hidden">
@@ -74,11 +76,11 @@ export const StorageStats = ({ stats, compact = false }: StorageStatsProps) => {
             {/* TG Vault Usage */}
             <div className="space-y-2">
                 <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">TG Vault 使用</span>
+                    <span className="text-muted-foreground">{t('files.ui.storage.vaultUsage')}</span>
                     <span className="font-medium">{stats.tgvault.used}</span>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                    共 {stats.tgvault.fileCount} 个文件
+                    {t('files.ui.storage.fileCount', { count: stats.tgvault.fileCount })}
                 </p>
             </div>
         </div>

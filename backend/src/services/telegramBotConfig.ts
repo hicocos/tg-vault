@@ -27,6 +27,8 @@ export interface TelegramBotPublicConfig {
     pinConfigured: boolean;
     source: 'web' | 'environment' | 'none';
     status: ReturnType<typeof getTelegramBotStatus>['status'];
+    runtimeReady: boolean;
+    credentialProbeOnly: boolean;
     bot: { username: string | null; displayName: string | null } | null;
     lastConnectedAt: string | null;
     lastError: string | null;
@@ -119,6 +121,8 @@ export async function getTelegramBotPublicConfig(): Promise<TelegramBotPublicCon
         pinConfigured: await isTelegramPinConfigured(),
         source: effective.source,
         status: status.status,
+        runtimeReady: status.status === 'ready',
+        credentialProbeOnly: false,
         bot: lastBotIdentity,
         lastConnectedAt: status.lastConnectedAt,
         lastError: status.lastError,

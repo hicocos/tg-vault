@@ -41,6 +41,14 @@ test('notification settings expose direct action buttons with selected state', (
     assert.equal(rows[4][0].data, 'nt_timezone_asia_shanghai');
 });
 
+test('notification settings localize presentation without changing callback ids', () => {
+    const rows = buildNotificationSettingsButtonRows(preferences, 'en');
+    assert.match(buildNotificationSettingsText(preferences, 'en'), /Failure: immediate \| Success: digest/);
+    assert.match(rows[1][0].text, /Failure · immediate/);
+    assert.deepEqual(rows.flat().map(button => button.data), buildNotificationSettingsButtonRows(preferences).flat().map(button => button.data));
+    assert.throws(() => updateNotificationPreference(preferences, ['success', 'sometimes'], 'en'), /must be immediate, digest, or off/);
+});
+
 test('notification preference updates validate values and support disabling quiet hours', () => {
     assert.deepEqual(updateNotificationPreference(preferences, ['quiet', 'off']), {
         ...preferences,

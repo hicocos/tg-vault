@@ -1,6 +1,6 @@
 import type { SettingsSectionId } from '../components/pages/settingsSections';
 
-export type FileCategory = 'all' | 'media' | 'image' | 'video' | 'audio' | 'document' | 'ytdlp' | 'favorites';
+export type FileCategory = 'all' | 'media' | 'image' | 'video' | 'audio' | 'document' | 'favorites';
 
 export type AppRoute =
     | { kind: 'upload'; needsReplace: boolean }
@@ -16,7 +16,7 @@ const CATEGORY_PATHS: Record<FileCategory, string> = {
     video: '/files/videos',
     audio: '/files/audio',
     document: '/files/documents',
-    ytdlp: '/files/ytdlp',
+
     favorites: '/files/favorites',
 };
 

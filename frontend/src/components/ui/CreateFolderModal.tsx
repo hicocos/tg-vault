@@ -14,7 +14,7 @@ interface CreateFolderModalProps {
 }
 
 export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }: CreateFolderModalProps) => {
-    useTranslation();
+    const { t } = useTranslation();
     const [folderName, setFolderName] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [submitError, setSubmitError] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }:
                     setFolderName("");
                     onClose();
                 },
-                onFailure: error => setSubmitError(error instanceof Error ? error.message : '创建文件夹失败'),
+                onFailure: error => setSubmitError(error instanceof Error ? error.message : t('files.ui.createFolder.failed')),
                 onSettled: () => setIsSubmitting(false),
             });
         }
@@ -52,10 +52,10 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }:
                         </div>
                         <div className="flex flex-col">
                             <h3 id="create-folder-title" className="font-semibold text-lg leading-none tracking-tight">
-                                创建文件夹
+                                {t('files.ui.createFolder.title')}
                             </h3>
                             <p className="text-sm text-muted-foreground mt-1.5">
-                                将创建在：{currentFolder || '根目录'}
+                                {t('files.ui.createFolder.location', { location: currentFolder || t('files.root') })}
                             </p>
                         </div>
                     </div>
@@ -65,13 +65,13 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }:
                         <div className="space-y-4">
                             <div className="space-y-2">
                                 <label htmlFor="newFolderName" className="text-sm font-medium text-foreground">
-                                    文件夹名称
+                                    {t('files.ui.createFolder.nameLabel')}
                                 </label>
                                 <input
                                     id="newFolderName"
                                     type="text"
                                     className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-all"
-                                    placeholder="输入文件夹名称..."
+                                    placeholder={t('files.ui.createFolder.placeholder')}
                                     value={folderName}
                                     onChange={(e) => setFolderName(e.target.value)}
                                     disabled={isSubmitting}
@@ -92,7 +92,7 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }:
                             onClick={handleConfirm}
                             disabled={isSubmitting || !folderName.trim()}
                         >
-                            {isSubmitting ? '正在创建...' : '确认创建'}
+                            {isSubmitting ? t('files.ui.createFolder.creating') : t('files.ui.createFolder.confirm')}
                         </Button>
                         <Button
                             variant="outline"
@@ -100,7 +100,7 @@ export const CreateFolderModal = ({ isOpen, onClose, onConfirm, currentFolder }:
                             onClick={handleClose}
                             disabled={isSubmitting}
                         >
-                            取消
+                            {t('common.actions.cancel')}
                         </Button>
                     </div>
             </motion.div>

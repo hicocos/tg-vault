@@ -9,8 +9,9 @@ case "${1:-}" in
     cat <<'EOF'
 用法：./deploy/install.sh [--non-interactive]
 
-默认先检测服务器环境；缺少组件时由用户选择自动补全、查看提示或退出，随后交互询问 Web 前端 URL 和后端 API URL。
---non-interactive  只检测环境，不自动安装；从现有 .env 或同名环境变量读取配置，不等待输入。
+默认先检测服务器环境；缺少组件时由用户选择自动补全、查看提示或退出，随后只询问 Web 前端 URL 和后端 API URL。
+首次部署会创建 `.env` 并生成密钥；已有部署会显示当前地址，按 Enter 保留即可。
+--non-interactive  不等待输入；从现有 .env 或同名环境变量读取地址，缺少配置时退出。
 EOF
     exit 0
     ;;
@@ -306,6 +307,15 @@ fi
 
 if [[ "$NON_INTERACTIVE" == false ]]; then
   echo "TG Vault 安装向导"
+  echo
+  if [[ "$created_env" == true ]]; then
+    echo "这是首次部署。你只需要提供 Web 前端 URL 和后端 API URL。"
+    echo "数据库密码和应用密钥会自动生成。"
+  else
+    echo "检测到已有部署。请确认下面的地址仍然正确；直接按 Enter 保留。"
+    echo "本次升级只重建 backend/frontend，不删除数据库和持久化文件。"
+  fi
+  echo
   while true; do
     CORS_ORIGIN_VALUE="$(prompt_origin '请输入 Web 前端 URL' 'https://cloud.example.com' "$CORS_ORIGIN_VALUE")"
     VITE_API_URL_VALUE="$(prompt_origin '请输入后端 API URL' 'https://api.example.com' "$VITE_API_URL_VALUE")"
@@ -365,8 +375,11 @@ env IMAGE_VERSION="$RELEASE_VERSION" SOURCE_REVISION="$RELEASE_REVISION" SOURCE_
 env IMAGE_VERSION="$RELEASE_VERSION" SOURCE_REVISION="$RELEASE_REVISION" SOURCE_VERSION="$RELEASE_VERSION" docker compose up -d --no-build --no-deps backend frontend
 docker compose ps
 
-echo
-echo "TG Vault 安装完成"
+if [[ "$created_env" == true ]]; then
+  echo "TG Vault 首次部署完成"
+else
+  echo "TG Vault 升级完成"
+fi
 echo "Web：$CORS_ORIGIN_VALUE"
 echo "API：$VITE_API_URL_VALUE"
 echo

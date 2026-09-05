@@ -9,7 +9,6 @@ const tasks = [
     { id: 'failed-a', sourceType: 'web_upload', status: 'failed', dismissible: true, target: { accountId: 'a' } },
     { id: 'completed-a', sourceType: 'web_upload', status: 'completed', dismissible: true, target: { accountId: 'a' } },
     { id: 'failed-b', sourceType: 'web_upload', status: 'failed', dismissible: true, target: { accountId: 'b' } },
-    { id: 'failed-other', sourceType: 'ytdlp', status: 'failed', dismissible: true, target: { accountId: 'a' } },
 ];
 
 const key = (task: typeof tasks[number]) => `${task.sourceType}:${task.id}`;
@@ -17,7 +16,7 @@ const key = (task: typeof tasks[number]) => `${task.sourceType}:${task.id}`;
 test('task quick-filter counts use the same predicate and scheduled is active', () => {
     const summary = summarizeTaskStatuses(tasks);
     assert.equal(summary.active, 3);
-    assert.equal(summary.attention, 3);
+    assert.equal(summary.attention, 2);
     assert.equal(summary.completed, 1);
     assert.deepEqual(tasks.filter(taskQuickFilter('active')).map(task => task.status), ['scheduled', 'pending', 'completing']);
 });
@@ -36,6 +35,5 @@ test('poll refresh prunes selection to dismissible tasks still inside the curren
     assert.deepEqual(pruneSelectedTaskKeys(selected, tasks, filters, key), [
         'web_upload:failed-a',
         'web_upload:failed-b',
-        'ytdlp:failed-other',
     ]);
 });

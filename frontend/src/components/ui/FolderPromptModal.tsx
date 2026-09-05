@@ -15,7 +15,7 @@ interface FolderPromptModalProps {
 }
 
 export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot, currentFolder }: FolderPromptModalProps) => {
-    useTranslation();
+    const { t } = useTranslation();
     const [folderName, setFolderName] = useState("");
 
     if (!isOpen) return null;
@@ -51,10 +51,10 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot
                         </div>
                         <div className="flex flex-col">
                             <h3 id="folder-prompt-title" className="font-semibold text-lg leading-none tracking-tight">
-                                是否创建文件夹？
+                                {t('files.ui.folderPrompt.title')}
                             </h3>
                             <p className="text-sm text-muted-foreground mt-1.5">
-                                当前目标：{currentFolder || '根目录'}
+                                {t('files.ui.folderPrompt.target', { location: currentFolder || t('files.root') })}
                             </p>
                         </div>
                     </div>
@@ -64,13 +64,13 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot
                         <div className="space-y-4">
                             <div className="space-y-2">
                                 <label htmlFor="folderName" className="text-sm font-medium text-foreground">
-                                    自定义文件夹名称
+                                    {t('files.ui.folderPrompt.nameLabel')}
                                 </label>
                                 <input
                                     id="folderName"
                                     type="text"
                                     className="w-full h-10 px-3 rounded-lg border border-border bg-background text-sm outline-none focus:ring-2 focus:ring-primary/20 transition-all"
-                                    placeholder="输入文件夹名称..."
+                                    placeholder={t('files.ui.folderPrompt.placeholder')}
                                     value={folderName}
                                     onChange={(e) => setFolderName(e.target.value)}
                                     autoFocus
@@ -88,14 +88,14 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot
                             className="flex-1 h-10 px-5 text-sm font-medium bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
                             onClick={handleConfirm}
                         >
-                            确认创建文件夹
+                            {t('files.ui.folderPrompt.create')}
                         </Button>
                         <Button
                             variant="outline"
                             className="flex-1 h-10 px-5 text-sm font-medium border-border/80 hover:bg-muted"
                             onClick={handleNoFolder}
                         >
-                            上传到当前位置
+                            {t('files.ui.folderPrompt.uploadHere')}
                         </Button>
                         {currentFolder && onRoot && (
                             <Button
@@ -107,7 +107,7 @@ export const FolderPromptModal = ({ isOpen, onClose, onConfirm, onCancel, onRoot
                                     onClose();
                                 }}
                             >
-                                上传到根目录
+                                {t('files.ui.folderPrompt.uploadRoot')}
                             </Button>
                         )}
                     </div>

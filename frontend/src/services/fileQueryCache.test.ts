@@ -45,7 +45,7 @@ test('invalidate prevents stale results after a file mutation', () => {
 
 test('App restores cached query data before background revalidation and clears cache after mutations', () => {
     const app = fs.readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
-    const effect = app.slice(app.indexOf('// 认证和查询条件由单一 effect'), app.indexOf("if (currentCategory === 'ytdlp')"));
+    const effect = app;
     assert.match(app, /const initialFileSnapshot = useMemo/);
     assert.match(app, /useState<FileData\[\]>\(\(\) => initialFileSnapshot\?\.files \?\? \[\]\)/);
     assert.match(effect, /fileQueryCacheRef\.current\.get\(queryKey\)/);

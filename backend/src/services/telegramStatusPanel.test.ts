@@ -15,7 +15,7 @@ const input = {
 
 test('status panel presents every operational component and an operation id', () => {
     const text = buildTelegramStatusPanel(input as any);
-    for (const expected of ['req-1234', 'Bot：正常', '账号下载器：登录已过期', '当前存储：s3 · Archive', '连接检查：异常', '临时磁盘：可用 1.0 KB / 4.0 KB', '队列', '订阅', '待对账：2', '需人工：1']) {
+    for (const expected of ['req-1234', 'Bot：正常', '账号下载器：登录已过期', '当前存储：s3 · Archive', '连接检查：异常', '临时磁盘：可用 1 KB / 4 KB', '队列', '订阅', '待对账：2', '需人工：1']) {
         assert.match(text, new RegExp(expected));
     }
 });
@@ -27,4 +27,12 @@ test('status panel redacts absolute paths credentials tokens and raw provider er
     assert.doesNotMatch(text, /secret-token|token=abc/);
     assert.match(text, /已脱敏/);
     assert.equal(sanitizeTelegramStatusText('Bearer abc /home/user/x password=hunter2'), '[已脱敏]');
+});
+
+test('status panel localizes labels, dates, and byte formatting', () => {
+    const text = buildTelegramStatusPanel(input as any, 'en');
+    assert.match(text, /Bot: Healthy/);
+    assert.match(text, /Temporary disk: 1 KB free \/ 4 KB/);
+    assert.doesNotMatch(text, /2026-08-24T12:00:00Z/);
+    assert.doesNotMatch(text, /当前存储|队列/);
 });

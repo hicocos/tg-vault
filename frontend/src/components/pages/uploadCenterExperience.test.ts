@@ -26,8 +26,6 @@ test('upload center heading is at the top without a redundant home label', () =>
 });
 
 test('special file menus use context-specific headings and descriptions', () => {
-    assert.match(app, /currentCategory === "ytdlp"[\s\S]*t\("app\.ytdlpTitle"\)/);
-    assert.match(app, /t\("app\.ytdlpSubtitle"\)/);
     assert.match(app, /currentCategory === "favorites"[\s\S]*t\("sidebar\.favorites"\)/);
     assert.match(app, /t\("app\.favoritesSubtitle"\)/);
 });
@@ -35,8 +33,8 @@ test('special file menus use context-specific headings and descriptions', () => 
 test('upload center exposes destination, queue status, and resumable upload guidance', () => {
     assert.match(uploadCenter, /data-testid="upload-destination"/);
     assert.match(uploadCenter, /data-testid="upload-queue-summary"/);
-    assert.match(uploadCenter, /可续传/);
-    assert.match(uploadCenter, /自动分片/);
+    assert.match(uploadCenter, /management\.upload\.reliable\.resumable/);
+    assert.match(uploadCenter, /management\.upload\.chunkThreshold/);
 });
 
 test('my files is a file-only workspace labeled as all files', () => {

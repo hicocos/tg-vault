@@ -1,4 +1,5 @@
 import type { StorageTargetSnapshot } from './storage.js';
+import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
 
 export const TELEGRAM_SUBSCRIPTION_PAGE_SIZE = 5;
 
@@ -37,15 +38,15 @@ export type TelegramSubscriptionCallback =
 
 export type TelegramSubscriptionAction = Extract<TelegramSubscriptionCallback, { kind: 'action' }>['action'];
 
-export function buildSubscriptionOperations(row: TelegramSubscriptionRow & { enabled?: boolean }): Array<{ action: TelegramSubscriptionAction; label: string }> {
+export function buildSubscriptionOperations(row: TelegramSubscriptionRow & { enabled?: boolean }, locale: TelegramLocale = DEFAULT_LOCALE): Array<{ action: TelegramSubscriptionAction; label: string }> {
     const operations: Array<{ action: TelegramSubscriptionAction; label: string }> = [
-        { action: 'sync', label: '立即同步' },
-        { action: row.enabled ? 'pause' : 'resume', label: row.enabled ? '暂停' : '恢复' },
-        { action: 'target', label: '修改目标' },
-        { action: 'from_now', label: '从现在开始' },
-        { action: 'backfill', label: '按日期补抓' },
-        { action: 'result', label: '最近结果' },
-        { action: 'retry', label: '重试失败项' },
+        { action: 'sync', label: t(locale, 'bot.subscription.action.sync') },
+        { action: row.enabled ? 'pause' : 'resume', label: row.enabled ? t(locale, 'bot.subscription.action.pause') : t(locale, 'bot.subscription.action.resume') },
+        { action: 'target', label: t(locale, 'bot.subscription.action.target') },
+        { action: 'from_now', label: t(locale, 'bot.subscription.action.fromNow') },
+        { action: 'backfill', label: t(locale, 'bot.subscription.action.backfill') },
+        { action: 'result', label: t(locale, 'bot.subscription.action.result') },
+        { action: 'retry', label: t(locale, 'bot.subscription.action.retry') },
     ];
     return operations;
 }
