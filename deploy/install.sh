@@ -183,6 +183,9 @@ update_source() {
   after="$(git rev-parse HEAD 2>/dev/null || true)"
   if [[ "$before" != "$after" ]]; then
     echo "代码已更新，正在重新加载最新安装脚本..."
+    if [[ "$NON_INTERACTIVE" == true ]]; then
+      exec bash ./deploy/install.sh --non-interactive --after-source-update
+    fi
     exec bash ./deploy/install.sh --after-source-update
   fi
   echo "代码已是最新。"
