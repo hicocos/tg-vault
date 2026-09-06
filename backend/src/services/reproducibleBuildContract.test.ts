@@ -28,8 +28,8 @@ function assertBeginnerFriendlyInstall(source: string): void {
 }
 
 test('release images use locked dependencies, pinned bases and source labels', () => {
-    assert.equal(backendPackage.version, '2.4.2');
-    assert.equal(frontendPackage.version, '2.4.2');
+    assert.equal(backendPackage.version, '2.4.3');
+    assert.equal(frontendPackage.version, '2.4.3');
     assert.equal((backend.match(/npm ci/g) || []).length, 2);
     assert.doesNotMatch(backend, /npm install/);
     assert.match(backend, /node@sha256:/);
