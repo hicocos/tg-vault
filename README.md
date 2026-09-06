@@ -20,7 +20,6 @@ permalink: /
   <a class="doc-card" href="{{ '/quick-start.html' | relative_url }}"><strong>🚀 快速部署</strong>只改两个地址，使用安装脚本自动生成密钥并启动 Web、API 与 PostgreSQL。</a>
   <a class="doc-card" href="{{ '/telegram.html' | relative_url }}"><strong>🤖 Telegram</strong>在 Web 中连接 Bot、设置 PIN 与允许用户，并登录账号级下载器。</a>
   <a class="doc-card" href="{{ '/storage.html' | relative_url }}"><strong>☁️ 存储源配置</strong>配置本地、OneDrive、Google Drive、阿里云 OSS、S3 和 WebDAV。</a>
-
   <a class="doc-card" href="{{ '/security.html' | relative_url }}"><strong>🔐 安全说明</strong>了解首次初始化、Cookie、Origin、TOTP、凭据加密和备份边界。</a>
   <a class="doc-card" href="{{ '/operations.html' | relative_url }}"><strong>🧰 运维与恢复</strong>更新、健康检查、日志、备份、恢复验证和安全清理。</a>
   <a class="doc-card" href="{{ '/architecture.html' | relative_url }}"><strong>🧠 工作原理</strong>理解服务器中转、任务目标快照、持久化队列和存储写入流程。</a>
@@ -45,7 +44,6 @@ permalink: /
 | 让 Bot 接收文件 | 基础部署 + Web 中配置 Bot Token、API ID/Hash、Bot PIN 和允许用户 |
 | 抓取频道/群组历史媒体 | 在 Bot 配置基础上，再从 Web 登录 Telegram 用户账号 |
 | 自动同步频道新内容 | 账号级下载器 + `/tg_sub` 订阅 |
-
 | 使用 OneDrive/Google Drive | 对应平台 OAuth 应用和精确回调地址 |
 
 ## 重要边界

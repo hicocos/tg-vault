@@ -128,7 +128,7 @@ curl -i http://127.0.0.1:51947/livez
 curl -i http://127.0.0.1:51947/readyz
 ```
 
-`livez=200`、`readyz=503` 通常表示数据库、默认存储、安全密钥或必需的 Telegram 组件没有就绪。
+`livez=200`、`readyz=503` 通常表示数据库、默认存储或安全密钥没有就绪。
 
 ### PostgreSQL 连接失败
 

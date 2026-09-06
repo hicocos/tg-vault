@@ -15,7 +15,6 @@ TG Vault 提供两层 Telegram 能力：**Bot 基础能力**和可选的**账号
 | --- | :---: | :---: |
 | 私聊发送文件转存 | ✅ | ✅ |
 | 文件搜索、任务管理和存储诊断 | ✅ | ✅ |
-
 | 按日期/标签抓取频道或群组 | — | ✅ |
 | 频道订阅自动同步 | — | ✅ |
 | 通过用户账号处理大文件 | — | ✅ |
@@ -58,21 +57,6 @@ API ID/Hash 同时供 Bot 客户端和账号级下载器使用。
 永久删除 Bot 配置会立即停止 Bot，并删除已保存的凭据和 Bot session；允许用户列表会保留。此操作需要二次确认。
 </div>
 
-### 旧 `.env` 配置
-
-旧部署仍可使用：
-
-```dotenv
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_API_ID=
-TELEGRAM_API_HASH=
-TELEGRAM_REQUIRED=false
-```
-
-Web 会标记“环境变量兼容”，并提供 **迁移到网页管理**。迁移时后端直接读取环境变量并加密保存，原值不会传回浏览器；确认运行正常后可从 `.env` 删除旧凭据。网页配置存在时优先使用网页配置，且不完整的网页凭据不会静默回退到环境变量。
-
-`TELEGRAM_REQUIRED=false` 是默认值：Bot 故障显示为 degraded，但不会阻止 Web/API 的 `/readyz`。只有确实要求“Bot 不在线即判定整套服务未就绪”时才设置为 `true`。
-
 ## 3. 限制允许用户
 
 在 **设置 → Telegram → Telegram Bot 用户权限** 填写允许使用 Bot 的数字 user ID；多个值可用英文逗号、空格或换行分隔。用户可通过 `@userinfobot` 查看自己的 ID。
@@ -106,14 +90,6 @@ Web 会标记“环境变量兼容”，并提供 **迁移到网页管理**。�
 - **停用（保留登录）**：停止账号级下载，保留加密 session，之后可直接重新启用。
 - **解除绑定**：永久删除保存的账号 session，需要重新登录才能恢复。
 - 如果启用后 session 未就绪，任务会明确失败，不会悄悄回退到旧逻辑。
-
-旧部署仍可用命令行生成 session：
-
-```bash
-docker compose run --rm --no-deps backend npm run login:telegram-user
-```
-
-旧文件默认位于 `/data/telegram_user_session.txt`。新版后端会把可用的旧 session 迁移到加密设置，并在连接成功后删除旧明文文件。新安装推荐直接使用 Web 登录。
 
 账号必须已经加入要读取的频道或群组，并具有查看历史消息的权限。可用 `TELEGRAM_ALLOWED_SOURCES` 限制允许抓取的来源。
 
@@ -195,7 +171,7 @@ docker compose run --rm --no-deps backend npm run login:telegram-user
 
 Web 任务中心汇总 Telegram Bot、频道抓取、订阅和 Web 上传任务。支持按来源/状态查看，并对可操作任务执行取消或重试。删除终态任务记录需要确认，只移除任务中心记录，不会删除文件、云端对象或订阅。
 
-## 8. 故障排查
+## 7. 故障排查
 
 ```bash
 docker compose logs --tail=250 backend

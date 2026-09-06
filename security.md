@@ -77,12 +77,6 @@ TG Vault 支持 TOTP：
 
 S3 和 WebDAV 默认只允许 HTTPS 公网 Endpoint。需要连接飞牛等可信局域网 WebDAV 时，可在 **设置 → 安全 → 网络与存储安全** 开启“允许内网和不安全的 WebDAV 地址”；系统会二次确认并标记为高风险模式。
 
-旧部署或应急场景仍可使用：
-
-```dotenv
-ALLOW_INSECURE_STORAGE_ENDPOINTS=false
-```
-
 开启后只会放宽存储地址准入规则，不会绕过 Docker 网络、DNS、防火墙或服务监听限制。`127.0.0.1` 指 backend 容器自身，不是宿主机；HTTP 还会明文传输用户名、密码和文件内容。只在明确隔离、可信的局域网中使用，公网 Endpoint 始终应使用 HTTPS。
 
 建议为 OSS/S3/WebDAV 创建 TG Vault 专用账户或访问密钥，并使用服务商支持的最小 Bucket/目录权限。

@@ -104,20 +104,6 @@ VITE_API_URL=https://api.example.com \
 ./deploy/install.sh --help
 ```
 
-如果完全不使用安装脚本而手动管理 Compose，至少先创建 `.env`、生成数据库密码并填写两个 URL：
-
-```bash
-cp .env.example .env
-openssl rand -hex 32
-# 将输出填入 .env 的 DB_PASSWORD，并填写 VITE_API_URL、CORS_ORIGIN
-
-docker compose config --quiet
-docker compose up -d --build
-docker compose ps
-```
-
-缺失构建元数据时，镜像标签/版本会回退为 `source`、`unknown` 或 `worktree`。`VITE_API_URL` 会在构建时写入前端；修改后必须重新构建，只重启容器不会更新静态文件中的 API 地址。
-
 ## 4. 配置反向代理
 
 推荐使用两个 HTTPS 域名：
@@ -146,8 +132,6 @@ https://api.example.com/api/storage/google-drive/callback
 4. 在 **Telegram Bot 用户权限** 中维护允许用户 ID。
 5. 如需频道/群组抓取，再在同页使用手机号、验证码和可选两步验证密码登录账号级下载器。
 
-如果旧部署已在 `.env` 中配置 Telegram 凭据，首次初始化可能仍要求创建 Bot PIN；登录后可在设置页迁移到网页加密管理。
-
 ## 6. 验证部署
 
 ```bash
@@ -158,8 +142,8 @@ curl -I http://127.0.0.1:47832/
 ```
 
 - `/livez`：后端进程存活。
-- `/readyz`：数据库、存储、安全密钥和配置为必需的 Telegram 组件已就绪。
-- Telegram 默认是可选组件；未配置或故障不会阻断 Web/API。旧部署可用 `TELEGRAM_REQUIRED=true` 改为严格就绪检查。
+- `/readyz`：数据库、存储和安全密钥已就绪。
+- Telegram 未配置或故障不会阻断 Web/API。
 
 出现异常时查看：
 
