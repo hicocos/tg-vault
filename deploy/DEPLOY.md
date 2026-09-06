@@ -71,18 +71,16 @@ docker compose ps
 
 ## 5. 更新部署
 
-从项目目录执行完整更新：
+以后每次升级都只需进入项目目录（包含 `docker-compose.yml` 的目录）并执行：
 
 ```bash
-git fetch origin
-git status --short
-git pull --ff-only origin main
+cd /www/wwwroot/tg-vault
 ./deploy/install.sh
 ```
 
-如果 `git status --short` 显示本地改动，先人工确认，不要强制覆盖。
+安装脚本会自动检查并拉取当前 Git 分支的最新代码，然后显示已有 Web/API URL。地址不变时直接按 Enter 保留；需要修改时输入新地址，确认后才开始构建。脚本只重建并替换 `backend` 和 `frontend`，不会重建 PostgreSQL，也不会删除 Docker 持久化卷。
 
-升级时重新运行 `./deploy/install.sh`：向导会显示已有 Web/API URL，直接按 Enter 保留即可；如果地址不是本次部署要使用的地址，输入 `e` 返回修改，确认后才会开始构建。脚本只重建并替换 `backend` 和 `frontend`，不会重建 PostgreSQL，也不会删除 Docker 持久化卷。
+脚本不会强制覆盖本地内容：如果项目目录有未提交修改、当前不是 Git 分支，或 GitHub 更新无法快进，脚本会停止并提示处理。处理完后重新执行同一条命令即可。
 
 可选验证：
 

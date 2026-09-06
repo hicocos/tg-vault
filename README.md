@@ -66,7 +66,9 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-安装向导会先检测 Docker Engine、Docker Compose 插件、Python 3 和 Git；缺少组件时，由你选择自动补全、查看手动提示或退出。首次安装只需要输入 Web 前端 URL 和后端 API URL，确认后脚本会生成 `.env`、数据库密码和应用密钥，并构建启动服务。升级已有部署时，脚本会识别已有配置，直接按提示保留原地址，不会重建 PostgreSQL 或覆盖持久化数据。
+就这一条命令。安装向导会先检测 Docker Engine、Docker Compose 插件、Python 3 和 Git；缺少组件时，由你选择自动补全、查看手动提示或退出。首次安装只需要输入 Web 前端 URL 和后端 API URL，确认后脚本会生成 `.env`、数据库密码和应用密钥，并构建启动服务。
+
+以后升级也只需要进入项目目录，再执行同一条 `./deploy/install.sh`。脚本会自动从 GitHub 拉取当前分支的最新代码，检测到本地有修改或更新无法快进时会停止，不会强行覆盖；已有地址直接按 Enter 保留即可。升级只重建 `backend` 和 `frontend`，不会重建 PostgreSQL 或删除持久化数据。
 
 - **基础 Web 部署**
   只需输入 Web 前端 URL 与后端 API URL；地址必须是完整的 `http(s)` origin。
@@ -301,19 +303,17 @@ COOKIE_SECURE=true
 
 ## 🔄 维护与更新
 
-如果已经按本 README 用 Docker Compose 部署，后续想让服务器和 GitHub `main` 分支保持同步，请先进入实际部署目录（包含 `docker-compose.yml` 的目录），然后执行下面命令：
+如果已经按本 README 用 Docker Compose 部署，后续升级不需要手动执行 `git fetch`、`git pull` 或 `docker compose build`。进入实际部署目录（包含 `docker-compose.yml` 的目录），执行下面命令即可：
 
 ```bash
-git fetch origin
-git status --short
-git pull --ff-only origin main
 ./deploy/install.sh
 ```
 
 说明：
 
 - **首次部署**：运行 `./deploy/install.sh`，按提示填写两个公网地址；不要先复制一堆 Telegram 配置。
-- **后续升级**：先看 `git status --short`，确认没有未提交的本地修改，再 `git pull --ff-only origin main`；运行安装向导时已有地址会显示为当前值，按 Enter 保留即可。
+- **后续升级**：脚本自动检查并拉取当前 Git 分支的最新代码；已有地址会显示为当前值，按 Enter 保留即可。
+- **安全停止**：项目目录存在本地修改、当前不是 Git 分支，或 GitHub 更新无法快进时，脚本会停止并提示处理，不会强制覆盖你的文件。
 - 升级脚本只重建并替换 `backend`、`frontend`，不会重建 PostgreSQL；数据库、上传文件、内部密钥和 Web 中保存的 Telegram 配置位于持久化卷中。
 - 如果安装向导检测到地址变化，不要直接确认；输入 `e` 返回重新编辑，确认无误后再开始构建。
 

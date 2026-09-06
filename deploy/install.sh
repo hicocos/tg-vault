@@ -2,14 +2,16 @@
 set -euo pipefail
 
 NON_INTERACTIVE=false
+AFTER_SOURCE_UPDATE=false
 case "${1:-}" in
   "") ;;
   --non-interactive) NON_INTERACTIVE=true ;;
+  --after-source-update) AFTER_SOURCE_UPDATE=true ;;
   -h|--help)
     cat <<'EOF'
 用法：./deploy/install.sh [--non-interactive]
 
-默认先检测服务器环境；缺少组件时由用户选择自动补全、查看提示或退出，随后只询问 Web 前端 URL 和后端 API URL。
+默认会自动检查 GitHub 更新，再检测服务器环境；缺少组件时由用户选择自动补全、查看提示或退出，随后只询问 Web 前端 URL 和后端 API URL。
 首次部署会创建 `.env` 并生成密钥；已有部署会显示当前地址，按 Enter 保留即可。
 --non-interactive  不等待输入；从现有 .env 或同名环境变量读取地址，缺少配置时退出。
 EOF
@@ -153,6 +155,40 @@ if [[ ! -f docker-compose.yml ]]; then
   echo "请从包含 docker-compose.yml 的项目目录运行 deploy/install.sh。" >&2
   exit 1
 fi
+
+update_source() {
+  # 测试夹具和手工拷贝的源码可能没有 .git；真正的仓库才自动同步。
+  [[ "$AFTER_SOURCE_UPDATE" == true ]] && return 0
+  [[ "${INSTALL_TEST_SKIP_GIT_UPDATE:-false}" == true ]] && return 0
+  [[ -d .git ]] || return 0
+  command -v git >/dev/null 2>&1 || return 0
+
+  local branch before after
+  branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  if [[ -z "$branch" ]]; then
+    echo "当前不是 Git 分支（可能处于 detached HEAD），无法自动升级。" >&2
+    echo "请切换到 main 分支后重新运行：git switch main" >&2
+    exit 1
+  fi
+  before="$(git rev-parse HEAD 2>/dev/null || true)"
+
+  echo "正在检查 GitHub 更新（分支：$branch）..."
+  if ! git diff --quiet || [[ -n "$(git status --porcelain)" ]]; then
+    echo "检测到项目目录有本地修改，为避免覆盖文件，已停止升级。" >&2
+    echo "请先处理这些修改，再重新运行 ./deploy/install.sh。" >&2
+    exit 1
+  fi
+  git fetch origin
+  git pull --ff-only origin "$branch"
+  after="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [[ "$before" != "$after" ]]; then
+    echo "代码已更新，正在重新加载最新安装脚本..."
+    exec bash ./deploy/install.sh --after-source-update
+  fi
+  echo "代码已是最新。"
+}
+
+update_source
 
 check_environment
 
