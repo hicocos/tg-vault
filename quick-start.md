@@ -50,9 +50,7 @@ Web 前端 URL：https://cloud.example.com
 
 不要求预先安装 OpenSSL。安装脚本使用 Python 标准库的安全随机数生成数据库密码和应用密钥；它**不负责 SSL/TLS 证书**，证书仍由宿主机 Nginx、Caddy、宝塔面板或其他反向代理处理。
 
-脚本启动时会检查 Docker、Docker Compose、Python 3 和 Git。如果有缺失，会显示提示。
-
-按提示安装缺少的软件后，再重新执行上面的命令。
+脚本启动时会检查 Docker、Docker Compose、Python 3 和 Git。如果缺少软件，请按屏幕提示安装，然后重新执行上面的命令。
 
 默认端口仅绑定宿主机回环地址：
 

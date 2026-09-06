@@ -11,28 +11,16 @@ TG Vault 会接触 Telegram session、云存储凭据和用户文件。生产部
 
 ## 首次初始化
 
-首次访问 Web 时创建网页管理员密码；之后在 **设置 → Telegram** 配置 Bot 时创建 Bot PIN：
+首次访问 Web 时创建网页管理员密码。之后在 **设置 → Telegram** 配置 Bot，并创建 Bot PIN：
 
 - **网页管理员密码**：至少 8 位，使用 `scrypt` 加盐哈希后保存。
 - **Telegram Bot PIN**：4 位数字，用于 Bot `/start` 身份验证，使用加盐哈希保存。新安装也可以先完成网页初始化，之后在 **设置 → Telegram** 配置 Bot 时再创建 PIN。
 
 两者同时存在时不要设置成相同值。网页登录成功后使用 HttpOnly Cookie，会话 token 不写入 `localStorage`。
 
-## HTTPS、Cookie 与 Origin
+## HTTPS
 
-生产环境建议：
-
-```dotenv
-VITE_API_URL=https://api.example.com
-CORS_ORIGIN=https://cloud.example.com
-COOKIE_SECURE=true
-COOKIE_SECURE_FORCE=true
-TRUST_PROXY=loopback
-```
-
-系统会检查访问来源，生产环境请使用 HTTPS。
-
-正式安装脚本会自动设置安全的 Cookie。生产环境请使用 HTTPS。
+生产环境请使用 HTTPS。安装脚本会自动设置安全的登录 Cookie。
 
 ## 内部密钥和凭据加密
 
@@ -108,8 +96,8 @@ Compose 默认把前端和 API 绑定到 `127.0.0.1`，由宿主机反向代理�
 ## 上线检查表
 
 - [ ] Web/API 都使用 HTTPS
-- [ ] `COOKIE_SECURE=true`
-- [ ] Origin 与 OAuth 回调为精确域名
+- [ ] 登录地址使用 HTTPS
+- [ ] OAuth 回调地址填写正确
 - [ ] 管理员密码与 Bot PIN 不相同
 - [ ] 已配置 TOTP
 - [ ] 已限制 Telegram 用户和频道来源

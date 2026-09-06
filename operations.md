@@ -143,8 +143,8 @@ docker compose logs --tail=200 postgres
 
 - Web/API DNS 与证书
 - Nginx upstream 是否是 `127.0.0.1:47832` 和 `127.0.0.1:51947`
-- `VITE_API_URL`、`CORS_ORIGIN`、`OAUTH_CALLBACK_BASE_URL`、`OAUTH_FRONTEND_ORIGIN`
-- 前端是否在修改 API 地址后重新构建
+- `VITE_API_URL`、`CORS_ORIGIN` 是否填写正确
+- 修改 API 地址后是否重新运行安装脚本
 - OAuth 平台登记的回调地址是否精确一致
 
 ### 上传大文件失败
