@@ -183,8 +183,6 @@ TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐进入 **�
 
 获取 user id：让用户在 Telegram 私聊 `@userinfobot` 查看 `Id`。如果允许列表留空，并且后台还没有任何 Telegram 用户认证成功，第一个正确输入 Bot PIN 的用户可自动加入允许列表。之后应在 Web 中明确维护列表。
 
-旧部署仍可使用 `TELEGRAM_ALLOWED_USER_IDS` 环境变量；一旦设置，Web 页面会显示“由环境变量管理”，需要修改 `.env` 并重启 backend。
-
 ### 账号级下载器什么时候需要？
 
 账号级下载器会用你登录的 Telegram 用户账号读取媒体。只有下面这些场景建议启用：
