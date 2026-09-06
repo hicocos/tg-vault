@@ -303,7 +303,7 @@ COOKIE_SECURE=true
 
 ## 🔄 维护与更新
 
-如果已经按本 README 用 Docker Compose 部署，后续升级不需要手动执行 `git fetch`、`git pull` 或 `docker compose build`。进入实际部署目录（包含 `docker-compose.yml` 的目录），执行下面命令即可：
+进入项目目录（包含 `docker-compose.yml` 的目录），执行下面命令即可：
 
 ```bash
 ./deploy/install.sh
