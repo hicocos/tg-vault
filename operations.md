@@ -85,7 +85,7 @@ BACKUP_DIR=./backups ./deploy/backup.sh
 - 数据库 schema 和关键行数
 - `/data/secrets` 可读
 - 已保存存储账户可以解密
-- Web 管理的 Telegram Bot 凭据和用户 session 可解密；旧部署仍应核对遗留 session 文件
+- Web 管理的 Telegram Bot 凭据和用户 session 可解密
 - `/readyz` 可以通过
 - 文件预览和下载链路可用
 
