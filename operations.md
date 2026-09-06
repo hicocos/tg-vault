@@ -11,21 +11,13 @@ description: 更新 TG Vault，检查健康状态，备份数据并安全清理 
 
 ## 更新
 
-推荐让安装脚本同步刷新源码版本信息并重建服务：
+更新只需执行安装脚本：
 
 ```bash
-git fetch origin
-git status --short
-git pull --ff-only origin main
 ./deploy/install.sh
-docker compose ps
 ```
 
-也可手动执行 `docker compose up -d --build`，但应同时维护 `.env` 中的构建版本元数据。
-
-如果 `git status --short` 显示本地改动，先人工确认，不要强制覆盖。`docker compose up -d --build` 会重新构建前后端，同时保留 named volumes 中的数据库与文件。
-
-修改 `VITE_API_URL` 后必须重新构建前端。
+安装脚本会自动获取最新代码、构建并启动服务，同时保留数据库和文件。已有地址直接按 Enter 保留即可。
 
 ## 健康检查
 

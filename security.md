@@ -57,7 +57,7 @@ Web 管理的 Bot 凭据与 Telegram 用户 session 也由 `STORAGE_CREDENTIALS_
 
 ## Telegram 安全
 
-- 推荐在 **设置 → Telegram → Telegram Bot 用户权限** 中显式维护允许用户，不要长期依赖“第一个正确 PIN 用户”机制；旧部署若设置 `TELEGRAM_ALLOWED_USER_IDS`，网页编辑会被锁定。
+- 推荐在 **设置 → Telegram → Telegram Bot 用户权限** 中显式维护允许用户，不要长期依赖“第一个正确 PIN 用户”机制。
 - 使用 `TELEGRAM_ALLOWED_SOURCES` 限制账号级下载器可以读取的频道/群组。
 - 加密保存的 Telegram 用户 session 等同登录凭据；旧版明文 session 文件在迁移前也必须严密保护，禁止提交到 Git、公开网盘或聊天群。
 - `/logout` 可以撤销当前 Telegram 用户的 Bot 认证。

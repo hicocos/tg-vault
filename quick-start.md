@@ -17,7 +17,7 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-脚本会在同一次运行中启动交互式向导：
+脚本会在同一次运行中启动交互式向导。首次部署按提示填写 Web 地址和 API 地址即可。
 
 ```text
 TG Vault 安装向导
@@ -37,7 +37,7 @@ Web 前端 URL：https://cloud.example.com
 按 Enter 保存配置并开始安装，输入 e 重新编辑，输入 q 退出：
 ```
 
-输入两个地址并按 Enter 确认后，脚本会一次性创建 `.env`、生成密钥、写入版本信息、构建并启动服务，不再要求手动编辑 `.env` 或重复运行脚本。
+输入两个地址并按 Enter 确认后，脚本会一次性创建 `.env`、生成密钥、构建并启动服务，不需要手动编辑 `.env`。
 
 ## 1. 准备条件
 
@@ -75,8 +75,7 @@ Web 前端 URL：https://cloud.example.com
 4. 显示配置摘要；按 Enter 确认，输入 `e` 重新编辑，输入 `q` 安全退出且不创建 `.env`。
 5. 确认后创建权限为 `600` 的 `.env`。
 6. 使用 Python 安全随机数生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
-7. 写入当前源码的 `SOURCE_REVISION`、`SOURCE_VERSION` 和 `IMAGE_VERSION`。
-8. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
+7. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
 
 已有部署再次运行时，向导会显示当前 URL；直接按 Enter 即可保留。脚本不会覆盖已有密码和密钥。
 
@@ -89,7 +88,7 @@ OAUTH_FRONTEND_ORIGIN   ← CORS_ORIGIN
 
 只有多入口或特殊反向代理部署才需要显式覆盖它们。完整变量以仓库的 [`.env.example`](https://github.com/hicocos/tg-vault/blob/main/.env.example) 为准。
 
-## 3. 非交互与自动化部署
+## 3. 非交互部署
 
 在 CI、初始化脚本或没有 TTY 的环境中，使用 `--non-interactive`。地址可来自现有 `.env`，也可显式传入环境变量：
 
@@ -170,21 +169,18 @@ docker compose logs --tail=150 backend frontend postgres
 
 ## 7. 更新
 
-先确认工作区没有未处理的本地修改，再更新并重新运行安装向导：
+以后更新只需执行：
 
 ```bash
-git fetch origin
-git status --short
-git pull --ff-only origin main
 ./deploy/install.sh
 ```
 
-`deploy/install.sh` 会显示已有 URL；升级时直接按三次 Enter（保留 Web URL、保留 API URL、确认安装）即可刷新版本元数据并构建、启动服务。不要用强制拉取覆盖未确认的本地改动。
+安装脚本会自动获取最新代码。已有地址直接按 Enter 保留即可。
 
 ## 下一步
 
 - [配置 Telegram Bot 与账号级下载器](./telegram.html)
 - [配置存储源](./storage.html)
-- [使用 Web 或 Bot 创建 yt-dlp 任务](./ytdlp.html)
+
 - [生产运维、备份与恢复](./operations.html)
 - [安全说明](./security.html)
