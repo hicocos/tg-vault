@@ -29,7 +29,7 @@ curl -I http://127.0.0.1:47832/
 ```
 
 - `/livez`：后端进程存活。
-- `/readyz`：数据库、存储、安全密钥和配置为必需的 Telegram 组件已就绪。
+- `/readyz`：数据库、存储和安全密钥已就绪。
 - Web 入口：前端容器能够提供静态资源。
 
 查看日志：
@@ -150,10 +150,6 @@ docker compose logs --tail=200 postgres
 ### 上传大文件失败
 
 检查反向代理请求体限制、`proxy_request_buffering`、读写超时、临时磁盘、分片限制和后端日志。WebDAV 目标还应检查无活动与总上传超时。
-
-## 权威运维说明
-
-生产发布的完整容器标签核对、Nginx、备份一致性和恢复验证细节，以仓库的 [`deploy/DEPLOY.md`](https://github.com/hicocos/tg-vault/blob/main/deploy/DEPLOY.md) 和脚本源码为准。
 
 ---
 

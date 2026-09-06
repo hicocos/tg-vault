@@ -17,7 +17,7 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-脚本会在同一次运行中启动交互式向导。首次部署按提示填写 Web 地址和 API 地址即可。
+首次部署按提示填写 Web 地址和 API 地址即可。
 
 ```text
 TG Vault 安装向导
@@ -50,13 +50,9 @@ Web 前端 URL：https://cloud.example.com
 
 不要求预先安装 OpenSSL。安装脚本使用 Python 标准库的安全随机数生成数据库密码和应用密钥；它**不负责 SSL/TLS 证书**，证书仍由宿主机 Nginx、Caddy、宝塔面板或其他反向代理处理。
 
-脚本启动时会检测 Docker Engine、Docker Compose 插件、Python 3 和 Git。如果有缺失，会让用户选择：
+脚本启动时会检查 Docker、Docker Compose、Python 3 和 Git。如果有缺失，会显示提示。
 
-1. 自动安装缺失环境
-2. 查看手动处理提示并退出
-3. 不做修改直接退出
-
-自动补全目前支持 `apt`、`dnf` 和 `yum` 系统；无法识别包管理器时不会擅自修改服务器。
+按提示安装缺少的软件后，再重新执行上面的命令。
 
 默认端口仅绑定宿主机回环地址：
 
@@ -65,46 +61,13 @@ Web 前端 URL：https://cloud.example.com
 | Web 前端 | `127.0.0.1:47832` |
 | 后端 API | `127.0.0.1:51947` |
 
-## 2. 安装向导会做什么
+## 2. 安装向导
 
-`deploy/install.sh` 会：
+运行安装脚本后，按提示填写 Web 地址和 API 地址。脚本会自动生成密码和密钥，构建并启动服务。
 
-1. 检测 Docker Engine、Docker Compose 插件、Python 3 和 Git。
-2. 如果存在缺失项，让用户选择自动补全、查看手动提示或退出；只有明确选择自动安装后才会调用系统包管理器。
-3. 在终端依次询问 Web 前端 URL 与后端 API URL，并立即校验格式、自动去掉末尾 `/`。
-4. 显示配置摘要；按 Enter 确认，输入 `e` 重新编辑，输入 `q` 安全退出且不创建 `.env`。
-5. 确认后创建权限为 `600` 的 `.env`。
-6. 使用 Python 安全随机数生成并保留 `DB_PASSWORD`；新安装还会生成 `SESSION_SECRET` 和 `STORAGE_CREDENTIALS_SECRET`。
-7. 校验 Compose 配置，构建并启动服务，最后显示 Web/API 地址和容器状态。
+以后升级时，进入项目目录再次运行同一条命令，已有地址直接按 Enter 保留。数据库、文件和密钥不会被删除。
 
-已有部署再次运行时，向导会显示当前 URL；直接按 Enter 即可保留。脚本不会覆盖已有密码和密钥。
-
-OAuth 默认继承这两项：
-
-```text
-OAUTH_CALLBACK_BASE_URL ← VITE_API_URL
-OAUTH_FRONTEND_ORIGIN   ← CORS_ORIGIN
-```
-
-只有多入口或特殊反向代理部署才需要显式覆盖它们。完整变量以仓库的 [`.env.example`](https://github.com/hicocos/tg-vault/blob/main/.env.example) 为准。
-
-## 3. 非交互部署
-
-在 CI、初始化脚本或没有 TTY 的环境中，使用 `--non-interactive`。地址可来自现有 `.env`，也可显式传入环境变量：
-
-```bash
-CORS_ORIGIN=https://cloud.example.com \
-VITE_API_URL=https://api.example.com \
-./deploy/install.sh --non-interactive
-```
-
-非交互模式会检测环境，但不会自动安装软件；缺少组件或地址格式无效时会直接退出，不会等待输入。查看参数说明：
-
-```bash
-./deploy/install.sh --help
-```
-
-## 4. 配置反向代理
+## 3. 配置反向代理
 
 推荐使用两个 HTTPS 域名：
 
@@ -120,7 +83,7 @@ https://api.example.com/api/storage/onedrive/callback
 https://api.example.com/api/storage/google-drive/callback
 ```
 
-## 5. 首次打开 Web
+## 4. 首次打开 Web
 
 访问 Web 域名，首次初始化只要求创建至少 8 位的网页管理员密码。登录使用 HttpOnly Cookie。
 
@@ -132,7 +95,7 @@ https://api.example.com/api/storage/google-drive/callback
 4. 在 **Telegram Bot 用户权限** 中维护允许用户 ID。
 5. 如需频道/群组抓取，再在同页使用手机号、验证码和可选两步验证密码登录账号级下载器。
 
-## 6. 验证部署
+## 5. 验证部署
 
 ```bash
 docker compose ps
@@ -151,15 +114,14 @@ curl -I http://127.0.0.1:47832/
 docker compose logs --tail=150 backend frontend postgres
 ```
 
-## 7. 更新
-
-以后更新只需执行：
+## 6. 升级
 
 ```bash
+cd /www/wwwroot/tg-vault
 ./deploy/install.sh
 ```
 
-安装脚本会自动获取最新代码。已有地址直接按 Enter 保留即可。
+按提示操作即可。
 
 ## 下一步
 

@@ -34,7 +34,7 @@ https://api.example.com/api/storage/onedrive/callback
 4. 如果使用客户端密码，在 **证书和密码** 中创建 Client Secret，并立即安全保存其值。
 5. 在 TG Vault 的 OneDrive 表单中填写账户名称、Client ID、Tenant ID，以及可选的 Client Secret，然后点击 **保存并授权**。
 
-回调地址必须与 TG Vault 设置页显示的地址、`.env` 中的 `OAUTH_CALLBACK_BASE_URL` 和 Microsoft 平台登记值完全一致。
+回调地址必须与 TG Vault 设置页显示的地址和 Microsoft 平台登记值完全一致。
 
 ## Google Drive
 
@@ -76,7 +76,7 @@ https://api.example.com/api/storage/google-drive/callback
 | Bucket | 已创建的存储桶名称 |
 | Force Path Style | MinIO 或要求路径式寻址的服务通常需要勾选 |
 
-默认只允许 HTTPS Endpoint。只有可信内网测试才考虑把 `ALLOW_INSECURE_STORAGE_ENDPOINTS` 设置为 `true`。
+默认只允许 HTTPS Endpoint。只有可信内网测试才在 **设置 → 安全 → 网络与存储安全** 中开启允许内网和不安全的 WebDAV 地址。
 
 ## WebDAV
 
@@ -115,12 +115,10 @@ https://api.example.com/api/storage/google-drive/callback
 
 ## 常见问题
 
-### OAuth 授权后窗口没有完成
+### 授权后窗口没有完成
 
 检查：
 
-- `OAUTH_CALLBACK_BASE_URL` 是否是 API 的精确 HTTPS origin
-- `OAUTH_FRONTEND_ORIGIN` 是否是 Web 的精确 HTTPS origin
 - 平台登记的 callback 是否与设置页显示值逐字一致
 - 浏览器是否拦截了授权弹窗
 

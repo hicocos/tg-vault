@@ -92,11 +92,11 @@ Web 上传和 Telegram 下载都会产生可追踪的任务状态。任务支持
 - 下载、预览与分享能力按提供商实际支持情况暴露。
 - OneDrive 和 Google Drive 可报告远端配额；分享细节能力并不完全相同。
 
-因此切换系统默认存储不会让旧文件“找不到”：旧文件仍按其原账户读取。
+因此切换系统默认存储不会让已有文件“找不到”：已有文件仍按其原账户读取。
 
 ## 安全与持久化边界
 
-- PostgreSQL 不是全部状态：内部密钥和本地文件位于 `file-storage`；Telegram 用户 session 由新版后端加密保存在数据库设置中，旧版明文 session 文件会在迁移成功后删除。
+- PostgreSQL 不是全部状态：内部密钥和本地文件位于 `file-storage`；Telegram 用户 session 由后端加密保存在数据库设置中。
 - `file-storage` 也不是全部状态：文件索引、任务和账户元数据位于 PostgreSQL。
 - 可恢复备份必须在同一维护窗口同时覆盖两者。
 - 浏览器只获得会话 Cookie；云存储 Secret、Refresh Token 与 Telegram session 留在后端。
