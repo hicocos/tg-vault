@@ -3,7 +3,7 @@
 </p>
 
 <div align="center">
-  <img src="backend/logo.png" alt="TG Vault Logo" width="150" />
+  <img src="frontend/public/logo.png" alt="TG Vault Logo" width="150" />
 
   <h1>TG Vault</h1>
 
