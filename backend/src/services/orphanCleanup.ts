@@ -10,6 +10,7 @@ import { query } from '../db/index.js';
 import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 import { formatBytes } from '../utils/fileMetadata.js';
 import { getSetting } from '../utils/settings.js';
+import { cleanupPreviewOrphans } from '../utils/previewMaintenance.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
@@ -171,6 +172,21 @@ async function runCleanup(): Promise<CleanupStats> {
     console.log(`🧹 磁盘上文件数: ${scannedCount}`);
 
     await removeEmptyDirectories(UPLOAD_DIR);
+    const previews = await cleanupPreviewOrphans(
+        path.resolve(process.env.PREVIEW_DIR || './data/previews'),
+        async name => {
+            const referenced = await query(
+                `SELECT 1 FROM files WHERE preview_path = $1
+                 OR regexp_replace(preview_path, '^.*/', '') = $1
+                 OR regexp_replace(path, '^.*/', '') = $1
+                 OR regexp_replace(derivative_source_path, '^.*/', '') = $1 LIMIT 1`, [name],
+            );
+            return Boolean(referenced.rowCount);
+        },
+    );
+    stats.deletedCount += previews.deletedCount;
+    stats.freedBytes += previews.freedBytes;
+    stats.deletedFiles.push(...previews.deletedFiles);
     stats.freedSpace = formatBytes(stats.freedBytes);
     console.log(stats.deletedCount > 0
         ? `🧹 清理完成: 删除 ${stats.deletedCount} 个孤儿文件，释放 ${stats.freedSpace}`

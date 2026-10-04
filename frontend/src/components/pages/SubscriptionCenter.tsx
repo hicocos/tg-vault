@@ -62,19 +62,19 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
         step3: '恢复：在订阅管理中选择已有订阅，按向导恢复同步；已保存文件不会被删除。',
         unavailable: '未获取到可验证的 Bot 用户名，请先检查连接设置。',
     } : language.startsWith('ru') ? {
-        directory: 'Выберите канал', directoryHelp: 'Нажмите на карточку канала, чтобы открыть его настройки и записи.', current: 'Текущий канал', selected: 'Выбран', channelSettings: 'Настройки фильтра', scope: 'Настройки и записи относятся только к текущему каналу. При смене канала несохранённое правило сбрасывается.', loadFailed: 'Не удалось загрузить. Нажмите «Обновить», чтобы повторить.', zero: 'Все показатели равны нулю', stats: 'Показать статистику', attention: 'Записи на проверку',
+        directory: 'Выберите канал', directoryHelp: 'Выберите канал, чтобы открыть настройки и историю фильтрации.', current: 'Текущий канал', selected: 'Выбран', channelSettings: 'Настройки фильтра', scope: 'Настройки и история фильтрации относятся только к выбранному каналу. При переключении несохранённое правило будет сброшено.', loadFailed: 'Не удалось загрузить. Нажмите «Обновить», чтобы повторить.', zero: 'Все показатели равны нулю', stats: 'Показать статистику', attention: 'Ожидают проверки',
         bot: 'Открыть Telegram-бота', settings: 'Настройки подключения бота', steps: 'Как добавить или возобновить подписку',
         step1: 'Откройте личный чат с настроенным Telegram-ботом и отправьте /tg_sub.',
-        step2: 'Добавление: отправьте имя или ссылку канала, выберите папку и подтвердите по указаниям мастера.',
-        step3: 'Возобновление: выберите существующую подписку в управлении подписками и следуйте подсказкам. Сохранённые файлы останутся.',
-        unavailable: 'Не удалось получить проверяемое имя бота. Проверьте настройки подключения.',
+        step2: 'Чтобы добавить подписку, отправьте имя пользователя или ссылку на канал, выберите место сохранения и подтвердите выбор.',
+        step3: 'Чтобы возобновить синхронизацию, выберите существующую подписку в списке и следуйте подсказкам. Сохранённые файлы не удаляются.',
+        unavailable: 'Не удалось подтвердить имя пользователя бота. Проверьте настройки подключения.',
     } : {
-        directory: 'Choose a channel', directoryHelp: 'Select a channel card to open its settings and review records.', current: 'Current channel', selected: 'Selected', channelSettings: 'Filter settings', scope: 'Settings and review records apply only to this channel. Switching channels clears the unsaved rule.', loadFailed: 'Could not load. Use Refresh to try again.', zero: 'All statistics are zero', stats: 'Show statistics', attention: 'Pending review records',
+        directory: 'Choose a channel', directoryHelp: 'Select a channel to open its settings and filter history.', current: 'Current channel', selected: 'Selected', channelSettings: 'Filter settings', scope: 'Settings and filter history apply only to this channel. Switching channels clears the unsaved rule.', loadFailed: 'Could not load. Use Refresh to try again.', zero: 'All statistics are zero', stats: 'Show statistics', attention: 'Awaiting review',
         bot: 'Open Telegram Bot', settings: 'Bot connection settings', steps: 'How to add or resume a subscription',
         step1: 'Open a private chat with your configured Telegram Bot and send /tg_sub.',
         step2: 'To add: send the channel username or link, choose a destination folder and confirm in the wizard.',
         step3: 'To resume: select an existing subscription in subscription management and follow the prompts. Saved files are retained.',
-        unavailable: 'A verifiable Bot username is unavailable. Check the connection settings first.',
+        unavailable: 'Could not verify the Bot username. Check the connection settings first.',
     };
     const controls = language.startsWith('zh') ? {
         pause: '暂停订阅', resume: '恢复订阅', remove: '删除订阅', cancel: '取消', failed: '订阅操作失败，请重试。',
@@ -83,14 +83,14 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
         deleteHelp: '永久删除该订阅及其过滤规则、审核记录，无法撤销。不会删除已保存文件，也不会取消已开始的扫描或已创建的下载任务；请在任务中心单独管理。',
     } : language.startsWith('ru') ? {
         pause: 'Приостановить подписку', resume: 'Возобновить подписку', remove: 'Удалить подписку', cancel: 'Отмена', failed: 'Не удалось изменить подписку. Повторите попытку.',
-        pauseHelp: 'Новые сканирования не планируются. Начатые сканирования и созданные задания загрузки могут продолжаться. Сохранённые файлы остаются.',
+        pauseHelp: 'Новые проверки канала не запускаются. Уже начатые проверки и созданные задачи скачивания могут продолжаться. Сохранённые файлы не удаляются.',
         resumeHelp: 'Синхронизация продолжится с сохранённой позиции по прежнему расписанию, без сброса прогресса.',
-        deleteHelp: 'Подписка, её правила фильтрации и записи проверки будут удалены безвозвратно. Сохранённые файлы останутся. Начатые сканирования и созданные задания загрузки не отменяются; управляйте заданиями отдельно в центре задач.',
+        deleteHelp: 'Подписка, её правила и история фильтрации будут удалены безвозвратно. Сохранённые файлы не удаляются. Уже начатые проверки канала и созданные задачи скачивания не отменяются — ими можно управлять в центре задач.',
     } : {
         pause: 'Pause subscription', resume: 'Resume subscription', remove: 'Delete subscription', cancel: 'Cancel', failed: 'Subscription action failed. Please retry.',
         pauseHelp: 'Stops scheduling future scans. Scans already started and existing download jobs may continue. Saved files are retained.',
-        resumeHelp: 'Continues from the saved cursor on the existing scan schedule, without resetting progress.',
-        deleteHelp: 'Permanently deletes this subscription, its filter rules and review records. This cannot be undone. Saved files are retained. Scans already started and existing download jobs are not cancelled; manage jobs separately in the task center.',
+        resumeHelp: 'Resumes syncing from where it left off, using the existing scan schedule.',
+        deleteHelp: 'Permanently deletes this subscription, its filter rules, and filter history. This cannot be undone. Saved files are retained. Scans already started and existing download jobs are not cancelled; manage jobs separately in the task center.',
     };
     const locale = i18n.resolvedLanguage || i18n.language;
     const [botUsername, setBotUsername] = useState<string | null>(null);

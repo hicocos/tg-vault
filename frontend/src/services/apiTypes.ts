@@ -286,6 +286,12 @@ export interface TelegramBotPublicConfig {
     connected?: boolean;
     busy?: boolean;
     cleanupBlocked?: boolean;
+    lastFailureAt?: string | null;
+    startupError?: string | null;
+    cleanupError?: string | null;
+    actionCode?: string | null;
+    lastRecoveredAt?: string | null;
+    reconnectCount?: number;
     retryAllowedAt?: string | null;
     bot: { username: string | null; displayName: string | null } | null;
     lastConnectedAt: string | null;

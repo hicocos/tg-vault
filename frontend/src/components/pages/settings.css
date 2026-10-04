@@ -37,7 +37,8 @@
 .settings-form-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--tv-space-group); min-width: 0; }
 .settings-form-layout { display: grid; grid-template-areas: 'guide' 'fields'; gap: 18px; min-width: 0; padding: var(--tv-space-panel); background: hsl(var(--card)); }
 .settings-form-layout__guide { grid-area: guide; min-width: 0; padding: 14px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); background: hsl(var(--secondary) / .65); }
-.settings-form-layout__guide code { display: block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; user-select: all; }
+.settings-form-layout__guide code { max-width: 100%; white-space: normal; overflow-wrap: anywhere; user-select: all; }
+.settings-form-layout__guide code:not(.block) { display: inline; }
 .settings-form-layout__fields { grid-area: fields; display: grid; align-content: start; gap: 18px; min-width: 0; }
 .settings-save-panel { padding: 14px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); background: hsl(var(--secondary) / .6); }
 .settings-action-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
@@ -94,7 +95,12 @@
 .settings-login__method { min-width: 0; padding: 15px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); text-align: start; background: hsl(var(--card)); }
 .settings-login__method:hover, .settings-login__method[aria-pressed='true'] { border-color: hsl(var(--primary)); background: hsl(var(--accent) / .5); }
 .settings-login__method p { overflow-wrap: anywhere; }
-.settings-local { display: grid; gap: var(--tv-space-group); padding: 0 18px 18px; }
+.settings-local { display: grid; min-width: 0; gap: var(--tv-space-group); padding: 0 18px 18px; }
+.settings-local > *, .settings-local__facts > div { min-width: 0; }
+.settings-local dt { overflow-wrap: anywhere; }
+/* Keep this sentence and its link in normal text flow, including punctuation. */
+.settings-surface .settings-storage-guide a { display: inline; min-height: 0; }
+.settings-storage-guide a svg { display: inline-block; margin-inline-start: 4px; vertical-align: middle; }
 .settings-local__heading { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .settings-local__heading h4 { font-size: var(--tv-text-body); font-weight: 500; }
 .settings-local__copy { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }

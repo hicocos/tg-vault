@@ -10,14 +10,14 @@ export const redesign = {
     "loadedFileCount_other": "Загружено {{count}} файла",
     "collapseFolders": "Свернуть папки",
     "expandFolders": "Развернуть папки",
-    "moveSingleOnly": "Выберите один файл или папку для перемещения"
+    "moveSingleOnly": "Чтобы переместить объект, выберите один файл или одну папку."
   },
   "tasks": {
     "table": {
       "task": "Задача",
       "status": "Статус",
       "target": "Назначение",
-      "progress": "Прогресс",
+      "progress": "Выполнение",
       "updated": "Обновлено",
       "actions": "Действия"
     }
@@ -25,7 +25,7 @@ export const redesign = {
   "subscriptionCenter": {
     "table": {
       "subscription": "Подписка",
-      "filter": "Фильтр рекламы",
+      "filter": "Фильтрация рекламы",
       "activity": "Активность",
       "action": "Действие",
       "kind": "Тип правила",

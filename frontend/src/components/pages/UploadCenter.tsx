@@ -24,11 +24,8 @@ interface UploadCenterProps {
 }
 
 export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities, storageTarget, ready, folders, queue, recoveredUploadCount, onOpenQueue }: UploadCenterProps) => {
-    const { t, i18n } = useTranslation();
-    const language = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0];
-    const copy = language === 'zh' ? { settings: '上传设置', capabilities: '上传能力' }
-        : language === 'ru' ? { settings: 'Настройки загрузки', capabilities: 'Возможности загрузки' }
-            : { settings: 'Upload settings', capabilities: 'Upload capabilities' };
+    const { t } = useTranslation();
+
     const [destination, setDestination] = useState("");
     const activeCount = queue.filter(item => ["pending", "uploading", "processing"].includes(item.status)).length;
     const completedCount = queue.filter(item => item.status === "completed").length;
@@ -58,7 +55,7 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
             <div className="op-upload-layout">
                 <section className="tv-panel op-panel op-upload-workbench">
                     <section className="op-upload-target-first" aria-labelledby="upload-settings-title">
-                        <h2 id="upload-settings-title">{t('auditUpload.settings', { defaultValue: copy.settings })}</h2>
+                        <h2 id="upload-settings-title">{t('uiAudit.uploadSettings')}</h2>
                         <dl className="op-upload-storage"><div><dt>{t('management.upload.currentStorage')}</dt><dd data-upload-storage>{storageLabel}</dd></div></dl>
                         <label className="op-field" htmlFor="upload-destination">{t('management.upload.destination')}
                             <select id="upload-destination" data-testid="upload-destination" value={destination} onChange={event => setDestination(event.target.value)} disabled={!ready} className="tv-field op-input">
@@ -118,7 +115,7 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
                 </section>
 
                 <aside className="op-upload-settings" aria-labelledby="upload-capabilities-title">
-                    <div className="op-section-heading"><h2 id="upload-capabilities-title"><FolderOpen className="h-4 w-4" />{t('auditUpload.capabilities', { defaultValue: copy.capabilities })}</h2></div>
+                    <div className="op-section-heading"><h2 id="upload-capabilities-title"><FolderOpen className="h-4 w-4" />{t('uiAudit.uploadCapabilities')}</h2></div>
                     <dl className="op-target-details">
 
                         <div><dt><ShieldCheck className="h-4 w-4" />{t('management.upload.transferPolicy')}</dt><dd>{threshold ? t('management.upload.chunkThreshold', { size: threshold }) : t('management.upload.limitsLoading')}</dd></div>

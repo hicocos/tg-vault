@@ -18,12 +18,8 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, dest
     const [isDragActive, setIsDragActive] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const dragDepth = useRef(0);
-    const { t, i18n } = useTranslation();
-    const language = (i18n.resolvedLanguage || i18n.language || 'en').split('-')[0];
-    const copy = language === 'zh' ? { choose: '选择文件', hint: '选择后自动开始上传', drag: '也可将文件拖到此处' }
-        : language === 'ru' ? { choose: 'Выбрать файлы', hint: 'Загрузка начнётся после выбора файлов', drag: 'Или перетащите файлы сюда' }
-            : { choose: 'Choose files', hint: 'Uploads start automatically after selection', drag: 'Or drag files here' };
-    const chooseLabel = t('auditUpload.choose', { defaultValue: copy.choose });
+    const { t } = useTranslation();
+    const chooseLabel = t('uiAudit.choose');
     const progress = Math.max(0, Math.min(100, uploadProgress));
 
     const handleDragEnter = useCallback((e: React.DragEvent) => {
@@ -90,10 +86,10 @@ export const UploadZone = ({ onDrop, uploading = false, uploadProgress = 0, dest
             </div>
             <div className="op-drop-copy">
                 {uploading && <h3 role="status">{t('upload.uploading', { percent: progress })}</h3>}
-                <p>{uploading ? t('upload.keepUsing') : t('auditUpload.hint', { defaultValue: copy.hint })}</p>
+                <p>{uploading ? t('upload.keepUsing') : t('uiAudit.uploadHint')}</p>
             </div>
             <span className="op-drop-choose"><FileIcon className="h-4 w-4" />{isDragActive ? t('files.ui.uploadZone.release') : chooseLabel}</span>
-            <p className="op-drop-support">{t('upload.anyFile')}<span className="op-drop-desktop-hint"> · {t('auditUpload.drag', { defaultValue: copy.drag })}</span></p>
+            <p className="op-drop-support">{t('upload.anyFile')}<span className="op-drop-desktop-hint"> · {t('uiAudit.uploadDrag')}</span></p>
             {destinationLabel && <small className="op-drop-target">{t('files.ui.uploadZone.destination', { destination: destinationLabel })}</small>}
             {uploading && (
                 <div className="op-drop-progress op-progress" role="progressbar" aria-label={t('files.ui.uploadZone.processing')} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>

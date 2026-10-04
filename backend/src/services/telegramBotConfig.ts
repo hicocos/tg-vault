@@ -39,6 +39,12 @@ export interface TelegramBotPublicConfig {
     credentialProbeOnly: boolean;
     bot: { username: string | null; displayName: string | null } | null;
     lastConnectedAt: string | null;
+    lastRecoveredAt: string | null;
+    lastFailureAt: string | null;
+    startupError: string | null;
+    cleanupError: string | null;
+    actionCode: ReturnType<typeof getTelegramBotStatus>['actionCode'];
+    reconnectCount: number;
     lastError: string | null;
     action: string | null;
 }
@@ -141,6 +147,12 @@ export async function getTelegramBotPublicConfig(): Promise<TelegramBotPublicCon
         credentialProbeOnly: false,
         bot: lastBotIdentity,
         lastConnectedAt: status.lastConnectedAt,
+        lastRecoveredAt: status.lastRecoveredAt,
+        lastFailureAt: status.lastFailureAt,
+        startupError: status.startupError,
+        cleanupError: status.cleanupError,
+        actionCode: status.actionCode,
+        reconnectCount: status.reconnectCount,
         lastError: status.lastError,
         action: status.action,
     };

@@ -78,9 +78,8 @@ async function processJob(job: MediaDerivativeJob): Promise<void> {
         );
         const dimensions = await settleWithDeadline(getImageDimensions(job.sourcePath, job.mimeType), '媒体尺寸读取');
         if (!(dimensions.width > 0 && dimensions.height > 0)) throw new Error('媒体尺寸无效');
-        const preview = requiredResult(
-            await settleWithDeadline(generateMediaPreview(job.sourcePath, job.storedName, job.mimeType), '预览生成'),
-            '预览',
+        const preview = await settleWithDeadline(
+            generateMediaPreview(job.sourcePath, job.storedName, job.mimeType, job.fileId), '预览生成',
         );
 
         await query(
@@ -90,7 +89,7 @@ async function processJob(job: MediaDerivativeJob): Promise<void> {
                  derivative_source_path = NULL, derivative_cleanup_source = FALSE,
                  derivative_started_at = NULL, updated_at = NOW()
              WHERE id = $5`,
-            [path.basename(thumbnail), path.basename(preview), dimensions.width, dimensions.height, job.fileId],
+            [path.basename(thumbnail), preview ? path.basename(preview) : null, dimensions.width, dimensions.height, job.fileId],
         );
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

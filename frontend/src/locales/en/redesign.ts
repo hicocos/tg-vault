@@ -14,7 +14,7 @@ export const redesign = {
     "table": {
       "task": "Task",
       "status": "Status",
-      "target": "Target",
+      "target": "Destination",
       "progress": "Progress",
       "updated": "Updated",
       "actions": "Actions"

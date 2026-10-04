@@ -54,6 +54,8 @@ import {
     classifyTelegramBotStartupError,
     getTelegramBotStatus,
     markTelegramBotError,
+    markTelegramBotCleanupError,
+    markTelegramBotStopped,
     markTelegramBotReady,
     markTelegramBotStarting,
     resetTelegramBotStatus,
@@ -184,6 +186,12 @@ let nextRetryAt: number | null = null;
 let retryAttempt = 0;
 let manualRetryAfter = 0;
 let retryGeneration = 0;
+let diagnosticAttempt = 0;
+function botDiagnostic(stage: string, startedAt: number, outcome: string): void {
+    // Do not log SDK error objects: they can include token-bearing requests.
+    console.log(JSON.stringify({ event: 'telegram_bot_lifecycle', attemptId: diagnosticAttempt,
+        stage, outcome, durationMs: Date.now() - startedAt, cleanupBlocked: botSupervisor.cleanupBlocked }));
+}
 setTelegramBotRuntimeProbe(() => ({
     connected: Boolean(client?.connected), busy: botSupervisor.busy,
     cleanupBlocked: botSupervisor.cleanupBlocked, attempt: retryAttempt,
@@ -1523,6 +1531,9 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         return;
     }
     markTelegramBotStarting();
+    const startedAt = Date.now();
+    let stage = 'construct';
+    botDiagnostic('startup', startedAt, 'begin');
 
     // Bot session is intentionally not read here. TELEGRAM_SESSION_FILE is a
     // legacy/operational setting; fresh token startup prevents stale DC sessions.
@@ -1557,7 +1568,10 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         botSupervisor.own(attemptClient);
         client = attemptClient;
         console.log('🤖 Telegram Bot 正在启动...');
+        stage = 'authorize';
         await botSupervisor.operation(() => attemptClient.start({ botAuthToken: botToken }), startupTimeoutMs);
+        botDiagnostic(stage, startedAt, 'ok');
+        stage = 'initialize';
         await botSupervisor.operation(() => attemptClient.getMe(), 10_000);
 
         console.log('🤖 Telegram Bot 已连接!');
@@ -2337,6 +2351,7 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         botSupervisor.assertActive();
         botSupervisor.assertActive();
         markTelegramBotReady();
+        botDiagnostic('ready', startedAt, 'ok');
         connectionTimer = setInterval(() => {
             if (client !== attemptClient || attemptClient.connected || botSupervisor.busy || nextRetryAt) return;
             if (connectionTimer) clearInterval(connectionTimer);
@@ -2362,7 +2377,6 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         digestTimer = null;
 
         client = null;
-        try { await botSupervisor.cleanup(); } catch (cleanupError) { error = cleanupError; }
         const status = classifyTelegramBotStartupError(error);
         const message = error instanceof Error ? error.message : String(error);
         markTelegramBotError(
@@ -2370,7 +2384,11 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
             message,
             status === 'auth_failed' ? 'Telegram Bot Token 已失效，请在网页端更换凭证' : '检查网络与后端日志后重试',
         );
-        console.error('🤖 Telegram Bot 启动失败:', error);
+        botDiagnostic(stage, startedAt, 'failed');
+        let cleanupFailure: unknown;
+        try { await botSupervisor.cleanup(); } catch (cleanupError) { cleanupFailure = cleanupError; }
+        if (cleanupFailure) markTelegramBotCleanupError(cleanupFailure);
+        if (cleanupFailure) botDiagnostic('cleanup', startedAt, 'unconfirmed');
         throw error;
     }
 }
@@ -2380,6 +2398,7 @@ async function withTelegramClientDeadline<T>(operation: Promise<T>, timeoutMs: n
 }
 
 async function stopTelegramBotInternal(): Promise<void> {
+    const stoppedAt = Date.now();
     cancelTelegramBotPostStartup();
     if (connectionTimer) clearInterval(connectionTimer);
     connectionTimer = null;
@@ -2392,10 +2411,12 @@ async function stopTelegramBotInternal(): Promise<void> {
         await botSupervisor.cleanup();
     } catch (error) {
         botSupervisor.quarantine();
-        markTelegramBotError('error', 'BOT_CLEANUP_UNCONFIRMED', 'Restart process after checking Bot cleanup; user clients are unchanged');
+        markTelegramBotCleanupError(error);
+        botDiagnostic('cleanup', stoppedAt, 'unconfirmed');
         throw error;
     }
-    resetTelegramBotStatus(false);
+    markTelegramBotStopped();
+    botDiagnostic('cleanup', stoppedAt, 'ok');
 }
 
 export interface TelegramBotLifecycleControls {
@@ -2407,6 +2428,7 @@ async function restartBotInternal(credentialsOverride?: TelegramBotCredentials):
     await stopTelegramBotInternal();
     botSupervisor.assertActive();
     retryAttempt++;
+    diagnosticAttempt++;
     await initTelegramBotInternal(credentialsOverride);
     scheduleTelegramBotPostStartup();
 }

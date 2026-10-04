@@ -24,6 +24,14 @@ export const uiAudit = {
     "steps": "查看订阅步骤",
     "stepsText": "1. 打开已配置的 Telegram Bot。2. 在 Bot 中选择频道订阅，按提示新增或恢复订阅。3. 返回本页刷新并配置过滤。此页面不会自动启用订阅或下载频道。",
     "zero": "暂无订阅活动 · 展开统计",
-    "help": "了解详情"
+    "help": "了解详情",
+    "taskLabels": {"more": "记录维护", "details": "任务详情 / ID", "history": "停止时进度", "paused": "暂停时进度", "currentTarget": "当前目标：{{target}}"},
+    "punctuation": {"colon": "：", "period": "。"},
+    "uploadHint": "选择后自动开始上传",
+    "uploadDrag": "也可将文件拖到此处",
+    "taskReasons": {
+      "subscriptionPausedByUser": "用户手动暂停订阅",
+      "cancelledByWebAdmin": "Web 管理员取消任务"
+    }
   }
 };

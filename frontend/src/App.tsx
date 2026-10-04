@@ -2,6 +2,7 @@ import { AboutPage } from './components/pages/AboutPage';
 import { tr } from './i18n/runtime';
 import { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
+import { BotOfflineNotice } from "./components/layout/BotOfflineNotice";
 import { Button } from "./components/ui/Button";
 import { FilesPage } from "./components/pages/FilesPage";
 import { type FolderData } from "./components/ui/FolderCard";
@@ -1220,6 +1221,8 @@ function App() {
     <>
       <AppLayout activeCategory={currentCategory} onCategoryChange={handleCategoryChange} storageStats={storageStats} onLogout={handleLogout}>
         <div className="flex min-w-0 flex-col min-h-full">
+          <BotOfflineNotice settingsPolling={currentCategory === 'settings' && settingsSection === 'telegram'}
+            onOpenSettings={() => navigateRoute(routeForSettings('telegram'))} />
 
           {/* Main Content Area */}
           {currentCategory === "about" ? <AboutPage /> : currentCategory === "settings" ? (

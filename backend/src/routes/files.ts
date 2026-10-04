@@ -487,7 +487,7 @@ router.get('/:id([0-9a-fA-F-]{36})/preview', async (req: Request, res: Response)
         // original with Range immediately for this request.
         if (file.type === 'image' && (!preferredPreviewPath || !fs.existsSync(preferredPreviewPath))) {
             try {
-                const generatedPreview = await generateMediaPreview(filePath, file.stored_name || file.name, file.mime_type || 'application/octet-stream');
+                const generatedPreview = await generateMediaPreview(filePath, file.stored_name || file.name, file.mime_type || 'application/octet-stream', file.id);
                 if (generatedPreview) {
                     previewPath = path.basename(generatedPreview);
                     preferredPreviewPath = path.join(PREVIEW_DIR, previewPath);
@@ -497,7 +497,7 @@ router.get('/:id([0-9a-fA-F-]{36})/preview', async (req: Request, res: Response)
                 console.error('懒生成图片预览失败:', previewError);
             }
         } else if (file.type === 'video' && (!preferredPreviewPath || !fs.existsSync(preferredPreviewPath))) {
-            void generateMediaPreview(filePath, file.stored_name || file.name, file.mime_type || 'application/octet-stream')
+            void generateMediaPreview(filePath, file.stored_name || file.name, file.mime_type || 'application/octet-stream', file.id)
                 .then(async (generatedPreview) => {
                     if (!generatedPreview) return;
                     const generatedPreviewName = path.basename(generatedPreview);

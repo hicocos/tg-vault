@@ -1,4 +1,6 @@
 import { AppearanceSettings } from './AppearanceSettings';
+import { BotFaultDetails } from './BotFaultDetails';
+import { isBotQuarantined, publishBotStatus } from '../../services/botFaultPresentation';
 import { formatDateTime, formatNumber } from '../../i18n/format';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -264,6 +266,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
 
     // Telegram Bot and User Download State
     const [telegramBotConfig, setTelegramBotConfig] = useState<TelegramBotPublicConfig | null>(null);
+    useEffect(() => { if (telegramBotConfig) publishBotStatus(telegramBotConfig); }, [telegramBotConfig]);
     const [telegramBotToken, setTelegramBotToken] = useState("");
     const [telegramApiId, setTelegramApiId] = useState("");
     const [telegramApiHash, setTelegramApiHash] = useState("");
@@ -399,7 +402,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         };
     }, [activeSection, botPollEpoch, reloadTelegramBotConfig]);
 
-    const botRetryBlocked = Boolean(telegramBotConfig?.busy || telegramBotConfig?.cleanupBlocked || telegramBotConfig?.nextRetryAt
+    const botRetryBlocked = Boolean(telegramBotConfig?.busy || (telegramBotConfig && isBotQuarantined(telegramBotConfig)) || telegramBotConfig?.nextRetryAt
         || (telegramBotConfig?.retryAllowedAt && Date.parse(telegramBotConfig.retryAllowedAt) > Date.now()));
 
     const handleRetryTelegramBot = async () => {
@@ -412,8 +415,8 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         const timeout = window.setTimeout(() => controller.abort(), 20_000);
         try {
             await fileApi.retryTelegramBotConnection(controller.signal);
-        } catch (error: unknown) {
-            if (botSectionVisible.current) setBotRetryError(errorMessage(error) || t('settings.botConnection.retryFailed'));
+        } catch {
+            if (botSectionVisible.current) setBotRetryError(t('settings.botConnection.retryFailed'));
         } finally {
             window.clearTimeout(timeout);
             if (botSectionVisible.current) {
@@ -429,6 +432,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     };
 
     const botStatus = !telegramBotConfig ? 'loading'
+        : isBotQuarantined(telegramBotConfig) ? 'quarantined'
         : !telegramBotConfig.configured ? 'not_configured'
         : !telegramBotConfig.enabled ? 'disabled'
         : telegramBotConfig.status === 'ready' ? 'ready'
@@ -1442,7 +1446,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className="text-[13px] font-medium">{t('settings.remaining.copy.021')}</span>
-                                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", telegramBotConfig?.status === 'ready' ? "bg-green-500/10 settings-text-success" : telegramBotConfig?.configured ? "bg-amber-500/10 settings-text-warning" : "bg-muted text-muted-foreground")}>{t(`settings.botConnection.${botStatus}`)}</span>
+                                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", botStatus === 'ready' ? "bg-green-500/10 settings-text-success" : telegramBotConfig?.configured ? "bg-amber-500/10 settings-text-warning" : "bg-muted text-muted-foreground")}>{t(`settings.botConnection.${botStatus}`)}</span>
                                     {telegramBotConfig?.source === 'environment' && <span className="rounded-full bg-blue-500/10 px-2 py-0.5 text-[11px] font-semibold text-primary">{t('settings.remaining.copy.022')}</span>}
                                     {telegramBotConfig?.source === 'web' && <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-[11px] font-semibold settings-text-success">{t('settings.remaining.copy.023')}</span>}
                                 </div>
@@ -1450,9 +1454,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 {telegramBotConfig?.configured && <div className="mt-2 text-[12px] leading-5 text-muted-foreground">
                                     <p>{t('settings.remaining.copy.025')}</p>
                                     {telegramBotConfig.bot?.username && <p>Bot：@{telegramBotConfig.bot.username}</p>}
-                                    {telegramBotConfig.lastConnectedAt && <p>{t('settings.remaining.shared.lastConnected')}{formatDateTime(telegramBotConfig.lastConnectedAt, i18n.resolvedLanguage || i18n.language)}</p>}
-                                    {telegramBotConfig.lastError && <p className="text-destructive">{t('settings.remaining.shared.lastError')}{telegramBotConfig.lastError}</p>}
-                                    {telegramBotConfig.action && <p className="settings-text-warning">{telegramBotConfig.action}</p>}
+                                    <BotFaultDetails config={telegramBotConfig} />
                                     {telegramBotConfig.enabled && telegramBotConfig.status !== 'ready' && <p>{t('settings.remaining.shared.runtimeNotReady')}</p>}
                                     {telegramBotConfig.checkedAt && <p>{t('settings.botConnection.checkedAt')}: {formatDateTime(telegramBotConfig.checkedAt, i18n.resolvedLanguage || i18n.language)}</p>}
                                     {telegramBotConfig.nextRetryAt && telegramBotConfig.enabled && <p>{t('settings.botConnection.nextRetryAt')}: {formatDateTime(telegramBotConfig.nextRetryAt, i18n.resolvedLanguage || i18n.language)}</p>}
@@ -1480,7 +1482,6 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         <p className="settings-help">{t('settings.botConnection.scope')}</p>
                         <p className="settings-help">{t('settings.botConnection.polling')}</p>
                         <div aria-live="polite">
-                            {telegramBotConfig?.cleanupBlocked && <p className="text-destructive text-sm">{t('settings.botConnection.cleanupBlocked')}</p>}
                             {telegramBotConfig?.busy && <p className="text-sm">{t('settings.botConnection.busy')}</p>}
                             {telegramBotConfig?.retryAllowedAt && <p className="text-sm">{t('settings.botConnection.retryAllowedAt')}: {formatDateTime(telegramBotConfig.retryAllowedAt, i18n.resolvedLanguage || i18n.language)}</p>}
                             {botStatusError && <p className="text-destructive text-sm">{t('settings.botConnection.refreshFailed')}</p>}
@@ -1635,7 +1636,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             </SettingsSection>
             {/* i18n source: 存储源设置 */}
             <SettingsSection title={t('settings.storageSources.title')}>
-                <div className="settings-notice settings-status--info mx-4 my-4 flex items-center gap-3">
+                <div className="settings-notice settings-status--info settings-storage-guide mx-4 my-4 flex items-center gap-3">
                     <BookOpen className="h-4 w-4 text-primary flex-shrink-0" />
                     <p className="text-[12px] text-muted-foreground">
                         {t('settings.remaining.shared.guidePrefix')}{" "}
@@ -1647,7 +1648,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         >
                             {t('settings.remaining.shared.guideLink')}<ExternalLink className="h-3 w-3" />
                         </a>
-                        {" "}{t('settings.remaining.shared.guideSuffix')}</p>
+                        {t('settings.remaining.shared.guideSuffix')}</p>
                 </div>
                 <div className="border-b border-border/50">
                     <SettingsRow
@@ -1775,7 +1776,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         <span>{t('settings.remaining.copy.055')}</span>
                                     </div>
                                     <p className="text-[12px] text-muted-foreground leading-relaxed">
-                                        {t('settings.remaining.shared.goTo')}<a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-primary hover:underline">Google Cloud Console</a> {t('settings.remaining.copy.056')}<b>{t('settings.remaining.copy.057')}</b>{t('settings.remaining.shared.googleAppTypePrefix')}<code>{t('settings.remaining.copy.058')}</code>{t('settings.remaining.copy.059')}<b>{t('settings.remaining.copy.060')}</b>：
+                                        {t('settings.remaining.shared.goTo')}<a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer" className="text-primary hover:underline">Google Cloud Console</a> {t('settings.remaining.copy.056')}<b>{t('settings.remaining.copy.057')}</b>{t('settings.remaining.shared.googleAppTypePrefix')}<code>{t('settings.remaining.copy.058')}</code>{t('settings.remaining.copy.059')}<b>{t('settings.remaining.copy.060')}</b>{t('uiAudit.punctuation.colon')}
                                         <code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.googleDriveRedirectUri || `${window.location.origin}/api/storage/google-drive/callback`}</code>
                                     </p>
                                 </div>}>
@@ -1818,7 +1819,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                             placeholder={t('settings.remaining.copy.365')}
                                         />
                                         <p className="text-[12px] text-muted-foreground leading-relaxed">
-                                            {t('settings.remaining.shared.sharedDriveHintPrefix')}<code>folders/</code> {t('settings.remaining.shared.sharedDriveHintSuffix')}</p>
+                                            {t('settings.remaining.shared.sharedDriveHintPrefix')}<code>folders/</code>{t('settings.remaining.shared.sharedDriveHintSuffix')}</p>
                                     </SettingsField>
                                 </div>
 
@@ -1952,7 +1953,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         {t('settings.remaining.shared.goTo')}<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-primary hover:underline">{t('settings.remaining.copy.073')}</a> {t('settings.remaining.shared.entraGuideMiddle')}<b>{t('settings.remaining.copy.074')}</b> {t('settings.remaining.copy.075')}<code>Web</code>{t('settings.remaining.shared.andEnter')}<code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.redirectUri || `${import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`}</code>
                                     </p>
                                     <p className="text-[12px] settings-text-warning leading-relaxed rounded-[7px] border border-amber-500/20 bg-amber-500/5 p-3">
-                                        {t('settings.remaining.shared.azureSecretPrefix')}<b>{t('settings.remaining.copy.076')}</b>{t('settings.remaining.copy.077')}<code>AADSTS7000215 Invalid client secret</code>。
+                                        {t('settings.remaining.shared.azureSecretPrefix')}<b>{t('settings.remaining.copy.076')}</b>{t('settings.remaining.copy.077')}<code>AADSTS7000215 Invalid client secret</code>{t('uiAudit.punctuation.period')}
                                     </p>
                                 </div>}>
 

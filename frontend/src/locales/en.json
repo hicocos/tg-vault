@@ -1,10 +1,10 @@
 {
   "localStorageLocation": {
     "hostPath": "Storage path",
-    "unconfirmed": "Path unconfirmed. Ask an administrator to check the mount.",
+    "unconfirmed": "Storage path not verified. Ask an administrator to check the mount.",
     "copy": "Copy",
     "copied": "Copied",
-    "copyFailed": "Copy failed. Select the path manually.",
+    "copyFailed": "Could not copy the path. Select and copy it manually.",
     "status": "Status",
     "available": "Readable and writable",
     "read-only": "Read-only or not writable",
@@ -24,7 +24,7 @@
     "title": "TG Vault",
     "subtitle": "Browse and manage files.",
     "filesSubtitle": "Browse and manage all files and folders.",
-    "favoritesSubtitle": "View favorite files and folders.",
+    "favoritesSubtitle": "Browse your favorite files and folders.",
     "allFiles": "All files",
     "fileTypes": {
       "filter": "File type",
@@ -35,7 +35,7 @@
       "audio": "Audio",
       "other": "Other"
     },
-    "searchPlaceholder": "Search files...",
+    "searchPlaceholder": "Search files…",
     "mobileSearch": "Search files",
     "refresh": "Refresh files",
     "upload": "Upload",
@@ -43,13 +43,13 @@
     "exitSelection": "Exit selection",
     "viewAll": "View all",
     "recent": "Recent files",
-    "dropTitle": "Click or drag files to upload",
-    "dropActive": "Drop files now",
-    "dropSubtitle": "Any file is supported; files over 40 MiB use chunked upload",
-    "release": "Release to upload",
-    "syncing": "Server is uploading to {{source}}...",
+    "dropTitle": "Choose files or drag them here",
+    "dropActive": "Drop files to upload",
+    "dropSubtitle": "All file types supported. Files over 40 MiB are uploaded in chunks.",
+    "release": "Drop to upload",
+    "syncing": "Uploading to {{source}} from the server…",
     "moveTo": "Move to",
-    "moveSuccess": "Move successful",
+    "moveSuccess": "Moved successfully",
     "moveFailed": "Move failed",
     "rootDirectory": "Root directory",
     "cancel": "Cancel",
@@ -61,28 +61,28 @@
     "noOtherFolders": "No other folders"
   },
   "login": {
-    "setupTitle": "First launch: create the administrator account",
+    "setupTitle": "Create your administrator account",
     "passwordTitle": "Enter your access password",
     "totpTitle": "Two-factor authentication",
     "passwordLabel": "Access password",
     "adminPasswordLabel": "Administrator password",
     "passwordPlaceholder": "Enter your password",
-    "adminPasswordPlaceholder": "At least 8 characters; use a strong password",
+    "adminPasswordPlaceholder": "Use a strong password with at least 8 characters",
     "confirmPasswordLabel": "Confirm administrator password",
     "confirmPasswordPlaceholder": "Enter the administrator password again",
     "telegramPinLabel": "Telegram Bot PIN (4 digits)",
     "telegramPinHint": "The Bot is configured. The PIN must be exactly four digits and is stored encrypted.",
-    "create": "Create administrator and continue",
+    "create": "Create account and continue",
     "signIn": "Sign in",
-    "signingIn": "Signing in",
-    "creating": "Creating administrator",
+    "signingIn": "Signing in…",
+    "creating": "Creating administrator account…",
     "totpHeading": "Enter the authentication code",
     "totpHint": "Enter the six-digit code from your authenticator app.",
     "verify": "Verify and sign in",
-    "verifying": "Verifying authentication code",
+    "verifying": "Verifying code…",
     "back": "Back to password",
     "setupFooter": "Set an administrator password before first use. If the Bot is configured, also set a four-digit PIN.",
-    "sessionFooter": "The sign-in session is kept for seven days.",
+    "sessionFooter": "You stay signed in for seven days.",
     "showPassword": "Show password",
     "hidePassword": "Hide password",
     "errors": {
@@ -116,7 +116,7 @@
     "expand": "Expand sidebar",
     "closeNavigation": "Close navigation menu",
     "openNavigation": "Open navigation menu",
-    "logout": "Sign out on this device",
+    "logout": "Sign out of this device",
     "categories": {
       "images": "Images",
       "videos": "Videos",
@@ -142,7 +142,7 @@
     "renameCancel": "Cancel",
     "renameExtHint": "The file extension cannot be changed",
     "move": "Move file",
-    "favorite": "Favorite",
+    "favorite": "Add to favorites",
     "unfavorite": "Remove from favorites",
     "share": "Share",
     "moreActions": "More actions"
@@ -155,19 +155,19 @@
     "move": "Move folder"
   },
   "delete": {
-    "title": "Confirm deletion?",
+    "title": "Delete permanently?",
     "subtitle": "This action cannot be undone",
     "description": "This will permanently delete “{{name}}”. This action cannot be undone.",
     "cancel": "Cancel",
     "confirm": "Delete"
   },
   "upload": {
-    "anyFile": "Any file is supported",
-    "chunkHint": "Files over 40 MiB use chunked upload",
-    "speed": "Speed {{value}}",
+    "anyFile": "All file types supported",
+    "chunkHint": "Files over 40 MiB are uploaded in chunks",
+    "speed": "Speed: {{value}}",
     "eta": "About {{value}} remaining",
     "uploading": "Uploading… {{percent}}%",
-    "keepUsing": "Uploads continue in the background; you can keep browsing or add files"
+    "keepUsing": "Uploads continue in the background. You can keep browsing or add more files."
   },
   "empty": {
     "title": "No files found",
@@ -178,11 +178,11 @@
     },
     "folder": {
       "title": "This folder is empty",
-      "description": "Upload to this folder or return to its parent."
+      "description": "Upload files here or go to the parent folder."
     },
     "search": {
       "title": "No matching files",
-      "description": "Try another keyword or clear the search."
+      "description": "Try a different search term or clear your search."
     },
     "filter": {
       "title": "No files in this category",
@@ -207,22 +207,22 @@
   "updates": {
     "bannerTitle": "TG Vault v{{latest}} is available",
     "bannerCurrent": "You are using v{{current}}",
-    "viewRelease": "View release",
-    "dismiss": "Dismiss this version",
+    "viewRelease": "View release notes",
+    "dismiss": "Hide this update",
     "settingsTitle": "Version information",
     "lastChecked": "Last checked: {{time}}",
     "staleSuffix": " (showing the last successful result)",
     "disabled": "Automatic update checks are disabled",
-    "notChecked": "No version check has completed yet",
-    "current": "Current v{{version}}",
-    "latest": "Latest v{{version}}",
+    "notChecked": "No completed update checks yet",
+    "current": "Current: v{{version}}",
+    "latest": "Latest: v{{version}}",
     "upToDate": "Up to date",
-    "waiting": "Waiting for check",
+    "waiting": "Waiting to check for updates",
     "releaseNotes": "Release notes",
     "checkNow": "Check now",
-    "checking": "Checking for updates",
+    "checking": "Checking for updates…",
     "found": "TG Vault v{{version}} is available. You can view the release notes.",
-    "alreadyLatest": "Current v{{version}} is up to date."
+    "alreadyLatest": "TG Vault v{{version}} is up to date."
   },
   "settings": {
     "title": "Settings",
@@ -259,7 +259,7 @@
       "title": "OpenList native storage",
       "accounts": "OpenList storage accounts",
       "description": "Store files through the native OpenList API. Remote search, deletion, offline downloads, and share management are not included.",
-      "cancelAdd": "Cancel adding",
+      "cancelAdd": "Cancel",
       "addAccount": "Add account",
       "unnamed": "Unnamed account",
       "inUse": "In use",
@@ -267,7 +267,7 @@
       "deleteTitle": "Delete connection settings (OpenList files are kept)",
       "empty": "No OpenList native storage accounts configured",
       "accountName": "Account display name",
-      "accountPlaceholder": "Example: My OpenList",
+      "accountPlaceholder": "For example: My OpenList",
       "address": "OpenList address",
       "rootPath": "Root path",
       "rootHint": "Keep this as / if the OpenList user's base path already points to the TG Vault directory.",
@@ -282,10 +282,10 @@
       "failure": "Could not add the OpenList native storage account: {{message}}"
     },
     "probe": {
-      "available": "Connection available",
+      "available": "Connection verified",
       "failed": "Connection failed",
       "notTested": "Not tested",
-      "testing": "Testing storage connection",
+      "testing": "Testing storage connection…",
       "test": "Test connection"
     },
     "security": {
@@ -310,7 +310,7 @@
   },
   "tasks": {
     "title": "Task center",
-    "subtitle": "View and manage Web, Telegram, and channel subscription tasks.",
+    "subtitle": "View and manage web uploads, Telegram downloads, and channel subscriptions.",
     "subtitleScoped": "Only tasks or Telegram destinations using the selected storage account are shown.",
     "showAll": "Show all tasks",
     "updated": "Updated: {{time}}",
@@ -320,7 +320,7 @@
       "webUpload": "Web upload",
       "telegramFile": "Telegram file",
       "channelDownload": "Channel download",
-      "telegramTarget": "Telegram conversation target",
+      "telegramTarget": "Telegram chat destination",
       "subscription": "Channel subscription"
     },
     "statuses": {
@@ -343,8 +343,8 @@
       "downloading": "Downloading source file",
       "uploading": "Uploading to storage",
       "processing": "Processing on server",
-      "awaitingFile": "Waiting for source file selection",
-      "resumable": "Upload session can resume",
+      "awaitingFile": "Select the original file to resume",
+      "resumable": "Ready to resume upload",
       "waitingForNextScan": "Waiting for next scan",
       "waitingForNextTask": "Waiting for next task",
       "completed": "Processing completed",
@@ -356,7 +356,7 @@
       "path": "{{storage}} / {{folder}}",
       "unknownStorage": "Unknown storage",
       "root": "Root",
-      "label": "Target: {{target}}"
+      "label": "Destination: {{target}}"
     },
     "quickFilters": {
       "all": "All",
@@ -372,67 +372,67 @@
       "enter": "Select tasks",
       "exit": "Exit selection",
       "count": "{{count}} selected",
-      "selectAll": "Select all removable",
-      "clear": "Clear",
-      "delete": "Delete selected",
+      "selectAll": "Select removable tasks",
+      "clear": "Clear selection",
+      "delete": "Remove selected",
       "selectAria": "Select task",
       "deselectAria": "Deselect task"
     },
     "actions": {
       "resume": "Resume",
       "retry": "Retry",
-      "followDefault": "Follow default",
-      "clearTarget": "Clear target",
+      "followDefault": "Use default storage",
+      "clearTarget": "Clear destination",
       "cancel": "Cancel",
-      "cleanTerminal": "Clear finished task records",
+      "cleanTerminal": "Clear finished records",
       "refreshAria": "Refresh tasks",
       "refresh": "Refresh",
       "closeNotice": "Close notice",
-      "deleteRecord": "Delete record",
+      "deleteRecord": "Remove record",
       "copyId": "Copy task ID",
       "back": "Back",
       "close": "Close",
-      "confirmDeleteRecord": "Confirm deletion"
+      "confirmDeleteRecord": "Remove records"
     },
     "loading": {
       "refresh": "Refreshing tasks",
       "initial": "Loading tasks",
       "running": "Task is running",
-      "action": "Performing task action"
+      "action": "Updating task…"
     },
     "empty": {
       "title": "No matching tasks",
       "description": "Adjust the source or status filter and try again."
     },
     "progress": {
-      "speed": "Speed {{speed}}",
+      "speed": "Speed: {{speed}}",
       "eta": "About {{eta}} remaining",
-      "items": "Items {{completed}}/{{total}}",
+      "items": "Items: {{completed}} / {{total}}",
       "failed": ", {{count}} failed",
-      "data": "Data {{transferred}} / {{total}}"
+      "data": "Transferred: {{transferred}} / {{total}}"
     },
     "dialogs": {
-      "confirmAction": "Confirm {{action}}",
-      "retryTitle": "Confirm task retry",
-      "targetUnchanged": "Target remains: {{target}}",
-      "confirmRetry": "Confirm retry",
-      "dismissTitle": "Confirm removal from task center",
-      "dismissCount": "Remove {{count}} finished task records.",
-      "dismissDescription": "Hide records from Task Center only. Files, cloud objects, subscriptions, and task data are kept. Records reappear if the task status changes."
+      "confirmAction": "Confirm: {{action}}",
+      "retryTitle": "Retry this task?",
+      "targetUnchanged": "Destination unchanged: {{target}}",
+      "confirmRetry": "Retry task",
+      "dismissTitle": "Remove task records?",
+      "dismissCount": "Finished task records to remove: {{count}}.",
+      "dismissDescription": "This only hides records from the task center. Files, cloud objects, subscriptions, and task data are kept. Records reappear if a task’s status changes."
     },
     "notices": {
-      "subscriptionDefault": "Channel subscription now follows the system default storage",
-      "targetCleared": "Telegram conversation target cleared",
+      "subscriptionDefault": "Channel subscription now uses the system default storage",
+      "targetCleared": "Telegram chat destination cleared",
       "cancelled": "Task cancelled",
       "resubmitted": "Task resubmitted",
-      "dismissPartial": "Removed {{dismissed}}; {{failed}} were not removed because their state changed",
-      "dismissed": "Removed {{count}} records from the task center"
+      "dismissPartial": "Records removed: {{dismissed}}. Records not removed because their status changed: {{failed}}.",
+      "dismissed": "Task records removed from the task center: {{count}}"
     },
     "errors": {
       "load": "Could not load tasks",
       "action": "Task action failed",
-      "preview": "Could not create deletion preview",
-      "dismiss": "Could not delete task records"
+      "preview": "Could not preview record removal",
+      "dismiss": "Could not remove task records"
     }
   }
 }

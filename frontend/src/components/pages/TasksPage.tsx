@@ -1,5 +1,6 @@
 import './tasks-audit.css';
 import { formatDateTime } from '../../i18n/format';
+import { localizeTaskReason } from '../../i18n/taskReason';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertCircle, Ban, CheckCircle2, CheckSquare, Clock3, Copy,
@@ -63,12 +64,9 @@ function StatusIcon({ status, runningLabel }: { status: string; runningLabel: st
 export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initialAccountId }: TasksPageProps) => {
     const { t, i18n } = useTranslation();
     const locale = i18n.resolvedLanguage || i18n.language;
-    const audit = locale.startsWith('zh') ? {
-        more: '记录维护', details: '任务详情 / ID', history: '停止时进度', paused: '暂停时进度',
-    } : locale.startsWith('ru') ? {
-        more: 'Обслуживание записей', details: 'Подробности / ID', history: 'Прогресс при остановке', paused: 'Прогресс при паузе',
-    } : {
-        more: 'Record maintenance', details: 'Task details / ID', history: 'Progress when stopped', paused: 'Progress when paused',
+    const audit = {
+        more: t('uiAudit.taskLabels.more'), details: t('uiAudit.taskLabels.details'),
+        history: t('uiAudit.taskLabels.history'), paused: t('uiAudit.taskLabels.paused'),
     };
     const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches);
     useEffect(() => {
@@ -301,7 +299,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                         {task.counts.total > 0 && <small className="op-cell-meta">{t('tasks.progress.items', { completed: task.counts.completed, total: task.counts.total })}{task.counts.failed > 0 ? t('tasks.progress.failed', { count: task.counts.failed }) : ''}</small>}
                                         {transfer.showBytes && <small className="op-cell-meta">{t('tasks.progress.data', { transferred: transfer.transferred, total: transfer.total })}</small>}
                                         {(detailSpeed || detailEta) && <small className="op-cell-meta">{detailSpeed ? t('tasks.progress.speed', { speed: detailSpeed }) : ''}{detailSpeed && detailEta ? ' · ' : ''}{detailEta ? t('tasks.progress.eta', { eta: detailEta }) : ''}</small>}
-                                        {task.error && <p className="op-inline-error">{task.error}</p>}
+                                        {task.error && <p className="op-inline-error">{localizeTaskReason(task.error, t)}</p>}
                                     </TaskCell>
                                     <TaskCell className="op-task-date"><time dateTime={task.updatedAt}>{t('tasks.updated', { time: formatDateTime(task.updatedAt, locale) })}</time></TaskCell>
                                     <TaskCell className="op-task-actions">{!selectionMode && <div className="op-actions">
@@ -316,7 +314,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                 )}
             </section>
 
-            {pendingAction && <Dialog open onClose={() => { if (!acting) setPendingAction(null); }} labelledBy="task-action-dialog-title" closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><h3 id="task-action-dialog-title" className="font-semibold">{pendingAction.action === 'cancel' ? t('tasks.dialogs.confirmAction', { action: taskActionLabel(pendingAction.task, 'cancel') }) : t('tasks.dialogs.retryTitle')}</h3><p className="mt-2 break-words text-sm text-muted-foreground">{pendingAction.task.title}</p><p className="mt-1 text-xs text-muted-foreground">{t('tasks.dialogs.targetUnchanged', { target: taskTarget(pendingAction.task) })}</p><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setPendingAction(null)}>{t('tasks.actions.back')}</Button><Button variant={pendingAction.action === 'cancel' ? 'destructive' : 'default'} disabled={acting} onClick={() => void confirmAction()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{pendingAction.action === 'cancel' ? t('tasks.dialogs.confirmAction', { action: taskActionLabel(pendingAction.task, 'cancel') }) : t('tasks.dialogs.confirmRetry')}</Button></div></div></Dialog>}
+            {pendingAction && <Dialog open onClose={() => { if (!acting) setPendingAction(null); }} labelledBy="task-action-dialog-title" closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><h3 id="task-action-dialog-title" className="font-semibold">{pendingAction.action === 'cancel' ? t('tasks.dialogs.confirmAction', { action: taskActionLabel(pendingAction.task, 'cancel') }) : t('tasks.dialogs.retryTitle')}</h3><p className="mt-2 break-words text-sm text-muted-foreground">{pendingAction.task.title}</p><p className="mt-1 text-xs text-muted-foreground">{t(pendingAction.action === 'cancel' ? 'uiAudit.taskLabels.currentTarget' : 'tasks.dialogs.targetUnchanged', { target: taskTarget(pendingAction.task) })}</p><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setPendingAction(null)}>{t('tasks.actions.back')}</Button><Button variant={pendingAction.action === 'cancel' ? 'destructive' : 'default'} disabled={acting} onClick={() => void confirmAction()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{pendingAction.action === 'cancel' ? taskActionLabel(pendingAction.task, 'cancel') : t('tasks.dialogs.confirmRetry')}</Button></div></div></Dialog>}
 
             {dismissalPreview && <Dialog open onClose={() => { if (!acting) setDismissalPreview(null); }} labelledBy="dismiss-title" alert closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><div className="flex items-start gap-3"><Trash2 className="mt-0.5 h-5 w-5 text-destructive" /><div><h3 id="dismiss-title" className="font-semibold">{t('tasks.dialogs.dismissTitle')}</h3><p className="mt-2 text-sm">{t('tasks.dialogs.dismissCount', { count: dismissalPreview.impact.count })}</p><p className="mt-2 rounded-md bg-muted p-3 text-xs text-muted-foreground">{t('tasks.dialogs.dismissDescription')}</p></div><button className="ml-auto" disabled={acting} onClick={() => setDismissalPreview(null)} aria-label={t('tasks.actions.close')}><X className="h-5 w-5" /></button></div><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setDismissalPreview(null)}>{t('tasks.actions.back')}</Button><Button variant="destructive" disabled={acting} onClick={() => void confirmDismissal()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{t('tasks.actions.confirmDeleteRecord')}</Button></div></div></Dialog>}
         </section>
