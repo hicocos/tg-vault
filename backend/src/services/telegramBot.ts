@@ -730,7 +730,11 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
 
         if (state.kind === 'tg_tag' || state.kind === 'tg_date') {
             state.step = state.includeComments !== undefined ? (state.kind === 'tg_tag' ? 'tag' : 'start_date') : 'comments';
-            await message.reply({ message: buildTelegramWizardPrompt(state, locale), buttons: state.step === 'comments' ? buildTelegramCommentsKeyboard(locale) : undefined });
+            const reply = await message.reply({ message: buildTelegramWizardPrompt(state, locale), buttons: state.step === 'comments' ? buildTelegramCommentsKeyboard(locale) : undefined });
+            if (state.step === 'comments') {
+                // Callback validation must bind to the new buttons, not the initial wizard message.
+                refreshTelegramWizardState(senderId, chatKey, state, (reply as Api.Message).id);
+            }
             return true;
         }
         return true;
