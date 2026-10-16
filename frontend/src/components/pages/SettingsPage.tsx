@@ -287,32 +287,44 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     const [isCleaningDownloadItems, setIsCleaningDownloadItems] = useState(false);
     const [advancedTasks, setAdvancedTasks] = useState<AdvancedTaskSettings | null>(null);
 
-    const reloadAdvancedTasks = async () => {
+    const reloadAdvancedTasks = useCallback(async () => {
         const data = await fileApi.getAdvancedTaskSettings();
         setAdvancedTasks(data);
         return data;
-    };
+    }, []);
+
+    useEffect(() => {
+        if (activeSection !== 'maintenance') return;
+        void reloadAdvancedTasks().catch((error: unknown) => {
+            setActionNotice({ title: t('settings.remaining.copy.139'), message: errorMessage(error), tone: 'error' });
+        });
+    }, [activeSection, reloadAdvancedTasks, t]);
 
     const updateAdvancedTask = async (patch: Partial<Pick<AdvancedTaskSettings, 'telegramDownloadWorkers' | 'telegramFileConcurrency' | 'duplicateMode' | 'autoCleanupOrphans' | 'skipTelegramPhotosInBatch' | 'telegramDownloadHistoryPolicy'>>) => {
-        let result: { success: boolean; deletedCount?: number };
         try {
-            result = await fileApi.updateAdvancedTaskSetting(patch);
+            let result: { success: boolean; deletedCount?: number };
+            try {
+                result = await fileApi.updateAdvancedTaskSetting(patch);
+            } catch (error: unknown) {
+                if (errorCode(error) !== 'CONFIRMATION_REQUIRED') throw error;
+                const enablingPhotoFilter = patch.skipTelegramPhotosInBatch === true;
+                const confirmationMessage = enablingPhotoFilter
+                    ? t('settings.remaining.copy.129')
+                    : t('settings.remaining.copy.130');
+                const confirmationTitle = enablingPhotoFilter ? t('settings.remaining.copy.131') : t('settings.remaining.copy.132');
+                if (!(await requestConfirmation(confirmationMessage, confirmationTitle))) return;
+                result = await fileApi.updateAdvancedTaskSetting(patch, true);
+            }
+            await reloadAdvancedTasks();
+            if ('telegramDownloadHistoryPolicy' in patch) {
+                const message = patch.telegramDownloadHistoryPolicy === 'errors_only'
+                    ? t('settings.remaining.copy.133', { value1: result.deletedCount || 0 })
+                    : t('settings.remaining.copy.134');
+                await showNotice(message);
+            }
         } catch (error: unknown) {
-            if (errorCode(error) !== 'CONFIRMATION_REQUIRED') throw error;
-            const enablingPhotoFilter = patch.skipTelegramPhotosInBatch === true;
-            const confirmationMessage = enablingPhotoFilter
-                ? t('settings.remaining.copy.129')
-                : t('settings.remaining.copy.130');
-            const confirmationTitle = enablingPhotoFilter ? t('settings.remaining.copy.131') : t('settings.remaining.copy.132');
-            if (!(await requestConfirmation(confirmationMessage, confirmationTitle))) return;
-            result = await fileApi.updateAdvancedTaskSetting(patch, true);
-        }
-        await reloadAdvancedTasks();
-        if ('telegramDownloadHistoryPolicy' in patch) {
-            const message = patch.telegramDownloadHistoryPolicy === 'errors_only'
-                ? t('settings.remaining.copy.133', { value1: result.deletedCount || 0 })
-                : t('settings.remaining.copy.134');
-            await showNotice(message);
+            await showNotice(errorMessage(error) || t('telegramDownloadHistoryPolicy' in patch ? 'settings.cards.maintenance.history.updateFailed' : 'settings.remaining.shared.unknownError'), t('settings.remaining.copy.139'), 'error');
+            await reloadAdvancedTasks().catch(() => undefined);
         }
     };
 
@@ -640,7 +652,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     useEffect(() => {
         const loadConfig = async () => {
             try {
-                const [, , versionStatus] = await Promise.all([reloadStorageConfig(), reloadAdvancedTasks(), fileApi.getUpdateStatus()]);
+                const [, versionStatus] = await Promise.all([reloadStorageConfig(), fileApi.getUpdateStatus()]);
                 setUpdateStatus(versionStatus);
             } catch (error) {
                 console.error("Failed to load storage config:", error);
@@ -1364,9 +1376,9 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             {[4, 8, 12, 16].map(value => <option key={value} value={value}>{value}</option>)}
                         </select>
                     } />
-                    <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.fileConcurrency.title')} description={t('settings.cards.maintenance.fileConcurrency.description')} action={
+                    <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.fileConcurrency.title')} description={`${t('settings.cards.maintenance.fileConcurrency.description')} ${t('settings.cards.maintenance.fileConcurrency.limitDescription', { enabledAccounts: advancedTasks.telegramEnabledAccounts, limit: advancedTasks.telegramFileConcurrencyLimit })}`} action={
                         <select aria-label={t('settings.cards.maintenance.fileConcurrency.title')} className="h-10 px-3" value={advancedTasks.telegramFileConcurrency} onChange={event => void updateAdvancedTask({ telegramFileConcurrency: Number(event.target.value) })}>
-                            {[1, 2, 3, 4].map(value => <option key={value} value={value}>{value}</option>)}
+                            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(value => <option key={value} value={value} disabled={value > advancedTasks.telegramFileConcurrencyLimit}>{value}</option>)}
                         </select>
                     } />
                     <SettingsRow icon={Copy} label={t('settings.cards.maintenance.duplicateMode.title')} description={t('settings.cards.maintenance.duplicateMode.description')} action={
@@ -1396,7 +1408,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     action={advancedTasks ? (
                         <select
                             value={advancedTasks.telegramDownloadHistoryPolicy}
-                            onChange={(event) => void updateAdvancedTask({ telegramDownloadHistoryPolicy: event.target.value as AdvancedTaskSettings['telegramDownloadHistoryPolicy'] }).catch((error: any) => showNotice(errorMessage(error) || t('settings.cards.maintenance.history.updateFailed'), t('settings.remaining.copy.139')))}
+                            onChange={(event) => void updateAdvancedTask({ telegramDownloadHistoryPolicy: event.target.value as AdvancedTaskSettings['telegramDownloadHistoryPolicy'] })}
                             className="h-10 w-full px-3 sm:w-auto sm:min-w-48"
                             aria-label={t('settings.cards.maintenance.history.policyLabel')}
                         >

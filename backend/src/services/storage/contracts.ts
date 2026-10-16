@@ -1,3 +1,8 @@
+export interface PreparedStorageWrite {
+    storedPath: string;
+    save(signal?: AbortSignal): Promise<string>;
+}
+
 export interface IStorageProvider {
     id?: string; // 对于云盘，这是账户 ID
     name: string;
@@ -10,7 +15,9 @@ export interface IStorageProvider {
      * @param mimeType 文件类型
      * @returns 存储后的路径或标识符
      */
-    saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string>;
+    saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: { signal?: AbortSignal }): Promise<string>;
+    /** Allocates a stable object identity before any upload side effect. */
+    prepareSaveFile?(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<PreparedStorageWrite>;
 
     /**
      * 获取文件流（用于下载）

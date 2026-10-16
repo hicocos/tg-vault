@@ -14,12 +14,13 @@ import subscriptionsRouter from './routes/subscriptions.js';
 import authRouter, { requireAuth } from './routes/auth.js';
 import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
-import { initTelegramBot, sendUpdateNotificationToUser } from './services/telegramBot.js';
+import { initTelegramBot, stopTelegramBot, sendUpdateNotificationToUser } from './services/telegramBot.js';
 import { applyEffectiveTelegramBotConfig } from './services/telegramBotConfig.js';
 import { classifyTelegramBotStartupError, getTelegramBotStatus, markTelegramBotError, resetTelegramBotStatus, telegramBotBlocksReadiness } from './services/telegramBotStatus.js';
 import { createInitialTelegramRecovery } from './services/telegramInitialRecovery.js';
 import { isTelegramUserClientReady, restoreEnabledTelegramUserAccountsAfterRestart } from './services/telegramUserClient.js';
 import { installTelegramMultiAccountRuntimeAdapters } from './services/telegramMultiAccountRuntime.js';
+import { shutdownTelegramUserClientPool, getTelegramUserClientPoolState } from './services/telegramUserClientPool.js';
 import { isInitialSetupRequired } from './utils/authSettings.js';
 import { get2FAReadiness } from './utils/security.js';
 import { ensureDatabaseInitialized, pool } from './db/index.js';
@@ -30,6 +31,7 @@ import { markTransferTasksAfterRestart } from './services/transferTasks.js';
 
 import { recoverMediaDerivativeJobs } from './services/mediaDerivatives.js';
 import { applyPersistedOrphanCleanupSetting, startPeriodicCleanup } from './services/orphanCleanup.js';
+import { loadFileDownloadConcurrencySetting } from './services/telegramFileConcurrency.js';
 import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
 import { APP_VERSION } from './services/appVersion.js';
 import { createUpdateChecker } from './services/updateChecker.js';
@@ -208,7 +210,7 @@ app.get('/readyz', (_req, res) => {
         res.json({
             status: bot.degraded ? 'degraded' : 'ready',
             timestamp: new Date().toISOString(),
-            components: { dependencies: dependencyReadiness, telegramBot: bot },
+            components: { dependencies: dependencyReadiness, telegramBot: bot, telegramUsers: getTelegramUserClientPoolState() },
         });
     } catch (error) {
         res.status(503).json({ status: 'not_ready', error: error instanceof Error ? error.message : String(error) });
@@ -221,7 +223,7 @@ app.get('/deepz', async (_req, res) => {
     res.status(ready ? 200 : 503).json({
         status: ready ? (bot.degraded ? 'degraded' : 'ready') : 'not_ready',
         timestamp: new Date().toISOString(),
-        components: { dependencies, telegramBot: bot },
+        components: { dependencies, telegramBot: bot, telegramUsers: getTelegramUserClientPoolState() },
     });
 });
 // Backward-compatible liveness alias. Deployments should route traffic based on /readyz.
@@ -270,6 +272,7 @@ async function startTelegramRuntime(telegramConfig: Awaited<ReturnType<typeof ap
 
 async function initializeApplication(): Promise<void> {
     await ensureDatabaseInitialized();
+    await loadFileDownloadConcurrencySetting();
     const telegramConfig = await applyEffectiveTelegramBotConfig();
     const telegramEnabled = telegramConfig.configured && telegramConfig.enabled;
     await installTelegramMultiAccountRuntimeAdapters();
@@ -350,6 +353,7 @@ async function shutdown(signal: string) {
     readinessProbeTimer = null;
     const forceTimer = setTimeout(() => process.exit(1), 30_000);
     forceTimer.unref();
+    await Promise.allSettled([stopTelegramBot(), shutdownTelegramUserClientPool()]);
     if (server) {
         server.close(async () => {
             try {

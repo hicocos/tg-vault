@@ -3,6 +3,7 @@ import type {
     TaskDismissalInput,
     TaskDismissalPreview,
     TaskDismissalResult,
+    TaskFailurePage,
     TaskFilters,
     UnifiedTaskList,
     UnifiedTaskSource,
@@ -27,6 +28,17 @@ export class TasksClient {
             const payload = await response.json().catch(() => ({}));
             throw new Error(payload.error || tr('errors.services.tasks.getListFailed'));
         }
+        return response.json();
+    }
+
+    async getTaskFailures(sourceType: UnifiedTaskSource, id: string, offset = 0, signal?: AbortSignal): Promise<TaskFailurePage> {
+        const params = new URLSearchParams({ offset: String(offset), limit: '10' });
+        const response = await apiRequest(`/api/tasks/${encodeURIComponent(sourceType)}/${encodeURIComponent(id)}/failures?${params}`, {
+            credentials: 'include',
+            headers: getApiHeaders(),
+            signal,
+            fallback: tr('tasks.failures.loadFailed'),
+        });
         return response.json();
     }
 

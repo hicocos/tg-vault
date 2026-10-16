@@ -7,6 +7,7 @@ yarn-error.log*
 # Build output
 dist/
 build/
+*.tsbuildinfo
 
 # Environment files
 .env
@@ -28,10 +29,32 @@ Thumbs.db
 # Tests
 coverage/
 .nyc_output/
+**/__tests__/
+**/*.test.*
+**/*.spec.*
 
 # Logs
 logs/
 *.log
+
+# Local credentials and backup artifacts
+data/
+secrets/
+.hermes/
+backups/
+*.session
+*.session-journal
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.backup
+*.bak
+*.tar
+*.tar.gz
+*.tgz
+*.zip
 
 # Git
 .git/

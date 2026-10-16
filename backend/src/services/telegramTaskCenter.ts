@@ -2,10 +2,11 @@ import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 import type { TransferTaskRecord } from './transferTasks.js';
 import { telegramChannelJobTaskState, telegramChannelJobCounts } from './unifiedTaskMapper.js';
 import { DEFAULT_LOCALE, TELEGRAM_LOCALES, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
+import { getProviderDisplayName } from '../utils/providerMetadata.js';
 
 export type TaskCenterSourceType = 'memory' | 'channel';
 export type TaskCenterKind = 'single' | 'album' | 'channel';
-export type TaskCenterState = 'running' | 'waiting' | 'pausing' | 'paused' | 'cooling' | 'failed';
+export type TaskCenterState = 'running' | 'waiting' | 'awaiting_selection' | 'pausing' | 'paused' | 'cooling' | 'failed';
 
 export type TaskCenterProtection = {
     kind: 'disk_pressure' | 'storage_cooldown' | 'telegram_flood_wait';
@@ -33,6 +34,7 @@ export interface TaskCenterItem {
     userId?: number;
     source?: string;
     targetFolder?: string | null;
+    storageLabel?: string;
     reason?: string;
     protection?: TaskCenterProtection;
     scanProgressText?: string;
@@ -106,6 +108,7 @@ function stateMeta(state: TaskCenterState, locale: TelegramLocale = DEFAULT_LOCA
     switch (state) {
         case 'running': return { icon: '🟢', label: t(locale, 'taskCenter.state.running'), bucket: 'running' };
         case 'waiting': return { icon: '⏳', label: t(locale, 'taskCenter.state.waiting'), bucket: 'waiting' };
+        case 'awaiting_selection': return { icon: '☑', label: t(locale, 'taskCenter.state.awaitingSelection'), bucket: 'waiting' };
         case 'pausing': return { icon: '⏸', label: t(locale, 'taskCenter.state.pausing'), bucket: 'paused' };
         case 'paused': return { icon: '⏸', label: t(locale, 'taskCenter.state.paused'), bucket: 'paused' };
         case 'cooling': return { icon: '🧊', label: t(locale, 'taskCenter.state.cooling'), bucket: 'cooling' };
@@ -114,7 +117,7 @@ function stateMeta(state: TaskCenterState, locale: TelegramLocale = DEFAULT_LOCA
 }
 
 function stateOrder(state: TaskCenterState): number {
-    return ({ running: 0, waiting: 1, pausing: 2, paused: 3, cooling: 4, failed: 5 } as const)[state];
+    return ({ running: 0, awaiting_selection: 1, waiting: 2, pausing: 3, paused: 4, cooling: 5, failed: 6 } as const)[state];
 }
 
 function sourceCode(sourceType: TaskCenterSourceType): string {
@@ -158,7 +161,7 @@ function progressLine(item: TaskCenterItem, locale: TelegramLocale): string {
 
 export function sortTaskCenterItems(items: TaskCenterItem[]): TaskCenterItem[] {
     return items
-        .filter(item => ['running', 'waiting', 'pausing', 'paused', 'cooling', 'failed'].includes(item.state))
+        .filter(item => ['running', 'waiting', 'awaiting_selection', 'pausing', 'paused', 'cooling', 'failed'].includes(item.state))
         .sort((a, b) => stateOrder(a.state) - stateOrder(b.state) || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
 
@@ -222,6 +225,7 @@ export function buildTaskCenterDetail(
     const source = item.source?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const currentFileName = item.currentFileName?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const targetFolder = item.targetFolder?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
+    const storageLabel = item.storageLabel?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const reason = item.reason?.replace(/[\u0000-\u001F\u007F]/g, ' ').trim();
     const lines = [
         `${meta.icon} **${meta.label}**`,
@@ -232,6 +236,7 @@ export function buildTaskCenterDetail(
         t(locale, 'taskCenter.detail.progress', { value: markdownText(progressLine(item, locale)) }),
         ...(item.scanProgressText ? [item.scanProgressText] : []),
         ...(currentFileName ? [t(locale, 'taskCenter.detail.currentFile', { value: markdownText(currentFileName) })] : []),
+        ...(storageLabel ? [t(locale, 'taskCenter.detail.storage', { value: markdownText(storageLabel) })] : []),
         ...(targetFolder ? [t(locale, 'taskCenter.detail.targetFolder', { value: markdownText(targetFolder) })] : []),
         ...(reason ? [t(locale, 'taskCenter.detail.reason', { value: markdownText(reason) })] : []),
         t(locale, 'taskCenter.detail.created', { value: formatAge(item.createdAt, now, locale) }),
@@ -253,6 +258,7 @@ export function buildTaskCenterDetail(
     if (item.state === 'pausing') lines.push('', t(locale, 'taskCenter.note.pausing'));
     if (item.state === 'failed') lines.push('', t(locale, 'taskCenter.note.failed'));
     if (item.state === 'waiting') lines.push('', t(locale, 'taskCenter.note.start'));
+    if (item.state === 'awaiting_selection') lines.push('', t(locale, 'taskCenter.note.awaitingSelection'));
     if (item.state === 'running') lines.push('', t(locale, 'taskCenter.note.pause'));
 
     const actionRow: TaskCenterButton[] = [];
@@ -318,7 +324,7 @@ export function parseTaskCenterCallback(data: string): ParsedTaskCenterCallback 
     return { view: 'action', action, sourceType, id: match[3], page: Number(match[4]) };
 }
 
-export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot): TaskCenterItem | null {
+export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot & { targetAccountName?: string | null }, locale: TelegramLocale = DEFAULT_LOCALE): TaskCenterItem | null {
     if (group.hidden || group.kind === 'channel' || group.state === 'completed' || group.state === 'cancelled' || group.state === 'cancelling') return null;
     const state: TaskCenterState = group.systemPause
         ? 'cooling'
@@ -340,7 +346,10 @@ export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot): TaskCe
         chatId: group.chatId,
         userId: group.userId,
         source: group.source,
-        targetFolder: group.targetFolder,
+        targetFolder: group.targetFolder === '' ? '/' : group.targetFolder ?? (group.targetProvider ? t(locale, 'bot.wizard.folder.defaultValue') : undefined),
+        storageLabel: group.targetProvider === 'local' ? t(locale, 'commands.localStorage') : group.targetProvider
+            ? `${getProviderDisplayName(group.targetProvider)} / ${group.targetAccountName
+                || (group.targetAccountId ? group.targetAccountId.slice(0, 8) : t(locale, 'commands.unnamedAccount'))}` : undefined,
         reason: group.reason,
         protection: group.systemPause,
         createdAt: group.createdAt,
@@ -381,21 +390,23 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
         }
         : undefined;
     const channelState = telegramChannelJobTaskState(row);
-    const state: TaskCenterState = row.status === 'paused'
-        ? (active > 0 ? 'pausing' : 'paused')
-        : inCooldown
-            ? 'cooling'
-            : channelState.status === 'cancelled'
-                ? 'failed'
-                : channelState.status === 'completed'
-                    ? 'waiting'
-                    : channelState.status === 'failed'
-                        ? 'failed'
-                        : channelState.status === 'pending'
-                            ? 'waiting'
-                            : active > 0 || channelState.stage === 'scanning' || channelState.stage === 'downloading' || row.is_actively_running
-                                ? 'running'
-                                : 'waiting';
+    const state: TaskCenterState = row.status === 'awaiting_selection'
+        ? 'awaiting_selection'
+        : row.status === 'paused'
+            ? (active > 0 ? 'pausing' : 'paused')
+            : inCooldown
+                ? 'cooling'
+                : channelState.status === 'cancelled'
+                    ? 'failed'
+                    : channelState.status === 'completed'
+                        ? 'waiting'
+                        : channelState.status === 'failed'
+                            ? 'failed'
+                            : channelState.status === 'pending'
+                                ? 'waiting'
+                                : active > 0 || channelState.stage === 'scanning' || channelState.stage === 'downloading' || row.is_actively_running
+                                    ? 'running'
+                                    : 'waiting';
     const optionsSource = row.options ?? row.params ?? {};
     let options: Record<string, any>;
     if (typeof optionsSource === 'string') {
@@ -418,9 +429,11 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
     const scan = checkpoint.progress || checkpoint;
     const scanProgressText = ['date_range', 'tag_download'].includes(String(row.kind)) ? [
         t(locale, 'bot.legacy.channelScan', { scanned: safeNumber(scan.channelMessagesScanned), found: safeNumber(scan.channelMediaFound) }),
+        safeNumber(scan.waitUntil) > Date.now() ? t(locale, 'channelCard.scanWait', { time: formatDate(new Date(Number(scan.waitUntil)), locale) }) : '',
         safeNumber(scan.commentMessagesScanned) > 0 || safeNumber(scan.commentMediaFound) > 0
             ? t(locale, 'bot.legacy.commentScan', { scanned: safeNumber(scan.commentMessagesScanned), found: safeNumber(scan.commentMediaFound) }) : '',
         scan.lastMessageDate ? t(locale, 'channelCard.scanDate', { time: formatDate(scan.lastMessageDate, locale) }) : '',
+        safeNumber(options.excludedCount) > 0 ? t(locale, 'channelCard.excluded', { count: safeNumber(options.excludedCount) }) : '',
     ].filter(Boolean).join('\n') : undefined;
     return {
         sourceType: 'channel',
@@ -438,7 +451,12 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
         chatId,
         userId,
         source,
-        targetFolder: row.folder_override || options.folderOverride || null,
+        targetFolder: row.folder_override || options.folderOverride || t(locale, 'bot.wizard.folder.defaultValue'),
+        storageLabel: options.storageProvider === 'local' ? t(locale, 'commands.localStorage') : [
+            options.storageProvider ? getProviderDisplayName(options.storageProvider) : t(locale, 'fileBrowser.unknown'),
+            options.storageAccountName || row.storage_account_name || (options.storageAccountId
+                ? String(options.storageAccountId).slice(0, 8) : t(locale, 'commands.unnamedAccount')),
+        ].join(' / '),
         reason: protection?.reason ?? (row.status === 'paused' ? t(locale, 'taskCenter.reason.userPaused') : row.error || undefined),
         protection,
         scanProgressText,

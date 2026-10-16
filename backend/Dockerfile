@@ -10,8 +10,7 @@ RUN npm ci
 
 # 复制源代码并构建
 COPY . .
-RUN npm run build \
-    && npx esbuild src/scripts/login_telegram_user.ts --bundle --platform=node --format=esm --outfile=dist/scripts/login_telegram_user.js --packages=external
+RUN npm run build
 
 
 # Production stage
@@ -35,6 +34,7 @@ RUN npm ci --omit=dev
 
 # 复制构建产物
 COPY --from=builder /app/dist ./dist
+COPY scripts/runtime-supervisor.mjs ./runtime-supervisor.mjs
 # 复制数据库方案文件 (esbuild 模式下与 index.js 同级)
 COPY --from=builder /app/src/db/schema.sql ./dist/schema.sql
 COPY --from=builder /app/src/db/migrations ./dist/migrations
@@ -49,4 +49,4 @@ USER node
 
 EXPOSE 51947
 
-CMD ["node", "dist/index.js"]
+CMD ["node", "runtime-supervisor.mjs"]

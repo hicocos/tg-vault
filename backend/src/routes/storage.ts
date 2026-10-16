@@ -48,7 +48,7 @@ import { withTelegramBotLifecycle, retryTelegramBot } from '../services/telegram
 import { maintenanceImpact } from '../utils/maintenanceActions.js';
 import { buildStorageCapabilities, buildStorageScopeForTarget, buildStorageStatsPayload } from '../utils/storageProductContract.js';
 import { buildAdvancedSettings, normalizeAdvancedSettingsPatch } from '../utils/advancedSettings.js';
-import { getFileDownloadConcurrency, setFileDownloadConcurrency } from '../services/telegramUpload.js';
+import { assertFileConcurrencyCapacity, FileConcurrencyLimitError, getFileConcurrencyCapacity, loadFileDownloadConcurrencySetting, setFileDownloadConcurrency } from '../services/telegramFileConcurrency.js';
 import { startPeriodicCleanup, stopPeriodicCleanup } from '../services/orphanCleanup.js';
 import {
     compactTelegramDownloadHistory,
@@ -81,7 +81,7 @@ const telegramPinChangeLimiter = rateLimit({
 const telegramUserLoginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Telegram 用户账号登录请求过于频繁，请稍后再试' }, standardHeaders: true, legacyHeaders: false });
 const telegramUserLoginStatusLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, message: { error: 'Telegram 登录状态查询过于频繁，请稍后再试' }, standardHeaders: true, legacyHeaders: false });
 function getTelegramUserLoginSessionKey(req: Request): string { const token = getAuthToken(req); if (!token) throw new Error('UNAUTHORIZED'); return crypto.createHash('sha256').update(token).digest('base64url'); }
-function sendTelegramUserLoginError(res: Response, error: unknown): void { const candidate = error as { code?: string; message?: string }; const status = candidate.code === 'ACCOUNT_ALREADY_BOUND' ? 409 : candidate.code === 'FLOW_NOT_FOUND' || candidate.code === 'FLOW_EXPIRED' ? 404 : candidate.code === 'TOO_MANY_ERRORS' ? 429 : 400; res.status(status).json({ error: candidate.message || 'Telegram 登录失败', code: candidate.code || 'TELEGRAM_ERROR' }); }
+function sendTelegramUserLoginError(res: Response, error: unknown): void { const candidate = error as { code?: string; message?: string }; const status = candidate.code === 'ACCOUNT_ALREADY_BOUND' || candidate.code === 'ACCOUNT_MISMATCH' ? 409 : candidate.code === 'ACCOUNT_NOT_FOUND' || candidate.code === 'FLOW_NOT_FOUND' || candidate.code === 'FLOW_EXPIRED' ? 404 : candidate.code === 'TOO_MANY_ERRORS' ? 429 : 400; res.status(status).json({ error: candidate.message || 'Telegram 登录失败', code: candidate.code || 'TELEGRAM_ERROR' }); }
 
 function noStore(res: Response): void {
     res.setHeader('Cache-Control', 'no-store');
@@ -301,9 +301,12 @@ router.get('/config', requireAuth, async (req: Request, res: Response) => {
 
 router.get('/config/advanced-tasks', requireAuth, async (_req: Request, res: Response) => {
     try {
+        const concurrency = await loadFileDownloadConcurrencySetting();
         res.json(buildAdvancedSettings({
             telegramDownloadWorkers: await getSetting('telegram_download_workers', process.env.TELEGRAM_DOWNLOAD_WORKERS || '4'),
-            telegramFileConcurrency: await getSetting('telegram_file_download_concurrency', String(getFileDownloadConcurrency())),
+            telegramFileConcurrency: concurrency.current,
+            telegramFileConcurrencyLimit: concurrency.maxConcurrency,
+            telegramEnabledAccounts: concurrency.enabledAccounts,
             duplicateMode: await getSetting('duplicate_file_mode', process.env.DUPLICATE_FILE_MODE || 'copy'),
             autoCleanupOrphans: await getSetting('auto_cleanup_orphans', process.env.AUTO_CLEANUP_ORPHANS || 'true'),
             skipTelegramPhotosInBatch: await getSetting('skip_telegram_photos_in_batch', 'false'),
@@ -322,6 +325,9 @@ router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Re
     try {
         const { confirmed, ...requestedPatch } = req.body || {};
         const patch = normalizeAdvancedSettingsPatch(requestedPatch);
+        if ('telegramFileConcurrency' in patch) {
+            assertFileConcurrencyCapacity(Number(patch.telegramFileConcurrency), await getFileConcurrencyCapacity());
+        }
         if (patch.highRisk && confirmed !== true) {
             const photoFilter = patch.skipTelegramPhotosInBatch === true;
             return res.status(409).json({
@@ -333,8 +339,7 @@ router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Re
             await setSetting('telegram_download_workers', String(patch.telegramDownloadWorkers));
             process.env.TELEGRAM_DOWNLOAD_WORKERS = String(patch.telegramDownloadWorkers);
         } else if ('telegramFileConcurrency' in patch) {
-            await setSetting('telegram_file_download_concurrency', String(patch.telegramFileConcurrency));
-            setFileDownloadConcurrency(Number(patch.telegramFileConcurrency));
+            await setFileDownloadConcurrency(Number(patch.telegramFileConcurrency));
         } else if ('duplicateMode' in patch) {
             await setSetting('duplicate_file_mode', String(patch.duplicateMode));
             process.env.DUPLICATE_FILE_MODE = String(patch.duplicateMode);
@@ -353,7 +358,7 @@ router.patch('/config/advanced-tasks', requireAuth, async (req: Request, res: Re
         }
         return res.json({ success: true, ...patch });
     } catch (error) {
-        res.status(400).json({ error: (error as Error).message });
+        res.status(400).json({ error: (error as Error).message, ...(error instanceof FileConcurrencyLimitError ? { code: error.code, maxConcurrency: error.maxConcurrency, enabledAccounts: error.enabledAccounts } : {}) });
     }
 });
 
@@ -594,18 +599,18 @@ function normalizeMultiAccountLoginPayload(payload: any): any {
 }
 
 // QR/phone aliases consumed by the current Web multi-account panel.
-router.post('/config/telegram-user/accounts/login/qr', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req)))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
-router.post('/config/telegram-user/login/qr', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req)))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
+router.post('/config/telegram-user/accounts/login/qr', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req), req.body?.accountId))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
+router.post('/config/telegram-user/login/qr', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req), req.body?.accountId))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
 router.get('/config/telegram-user/login/:flowId', requireAuth, telegramUserLoginStatusLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.getQrStatus(getTelegramUserLoginSessionKey(req), req.params.flowId))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
 router.delete('/config/telegram-user/login/:flowId', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(await telegramMultiAccountLoginFlows.cancel(getTelegramUserLoginSessionKey(req), req.params.flowId)); } catch (error) { return sendTelegramUserLoginError(res, error); } });
-router.post('/config/telegram-user/login/phone', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { const started = await telegramMultiAccountLoginFlows.startPhone(getTelegramUserLoginSessionKey(req), req.body?.phone); return res.json({ ...started, status: 'code_required', message: started.delivery === 'app' ? '验证码已发送到 Telegram 应用' : '验证码已通过短信发送' }); } catch (error) { return sendTelegramUserLoginError(res, error); } });
+router.post('/config/telegram-user/login/phone', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { const started = await telegramMultiAccountLoginFlows.startPhone(getTelegramUserLoginSessionKey(req), req.body?.phone, req.body?.accountId); return res.json({ ...started, status: 'code_required', message: started.delivery === 'app' ? '验证码已发送到 Telegram 应用' : '验证码已通过短信发送' }); } catch (error) { return sendTelegramUserLoginError(res, error); } });
 router.post('/config/telegram-user/login/:flowId/code', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.submitCode(getTelegramUserLoginSessionKey(req), req.params.flowId, req.body?.code))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
 router.post('/config/telegram-user/login/:flowId/password', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => { noStore(res); try { return res.json(normalizeMultiAccountLoginPayload(await telegramMultiAccountLoginFlows.submitPassword(getTelegramUserLoginSessionKey(req), req.params.flowId, req.body?.password))); } catch (error) { return sendTelegramUserLoginError(res, error); } });
 
 router.post('/config/telegram-accounts/login/phone', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => {
     noStore(res);
     try {
-        return res.json(await telegramMultiAccountLoginFlows.startPhone(getTelegramUserLoginSessionKey(req), req.body?.phone));
+        return res.json(await telegramMultiAccountLoginFlows.startPhone(getTelegramUserLoginSessionKey(req), req.body?.phone, req.body?.accountId));
     } catch (error) {
         return sendTelegramUserLoginError(res, error);
     }
@@ -629,7 +634,7 @@ router.post('/config/telegram-accounts/login/password', requireAuth, telegramUse
 router.post('/config/telegram-accounts/login/qr', requireAuth, telegramUserLoginLimiter, async (req: Request, res: Response) => {
     noStore(res);
     try {
-        return res.json(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req)));
+        return res.json(await telegramMultiAccountLoginFlows.startQr(getTelegramUserLoginSessionKey(req), req.body?.accountId));
     } catch (error) {
         return sendTelegramUserLoginError(res, error);
     }
@@ -717,7 +722,7 @@ router.post('/maintenance/download-items/cleanup', requireAuth, async (req: Requ
         const retentionDays = Math.min(365, Math.max(1, parseInt(String(req.body?.retentionDays ?? '7'), 10) || 7));
         const preview = await query(
             `SELECT COUNT(*)::int AS count FROM telegram_download_items
-             WHERE status IN ('success', 'failed', 'skipped')
+             WHERE status IN ('success', 'failed', 'skipped', 'excluded')
                AND COALESCE(completed_at, updated_at, created_at) < NOW() - ($1::int * INTERVAL '1 day')`,
             [retentionDays]
         );
@@ -727,7 +732,7 @@ router.post('/maintenance/download-items/cleanup', requireAuth, async (req: Requ
         }
         const result = await query(
             `DELETE FROM telegram_download_items
-             WHERE status IN ('success', 'failed', 'skipped')
+             WHERE status IN ('success', 'failed', 'skipped', 'excluded')
                AND COALESCE(completed_at, updated_at, created_at) < NOW() - ($1::int * INTERVAL '1 day')`,
             [retentionDays]
         );

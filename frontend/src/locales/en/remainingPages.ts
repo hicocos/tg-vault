@@ -25,7 +25,7 @@ export const securityCards = {
 
 export const maintenanceCards = {
   chunkConcurrency: { title: 'Concurrent chunks per file', description: 'Also controlled by the Bot command /download_workers.' },
-  fileConcurrency: { title: 'Concurrent file downloads', description: 'Also controlled by the Bot command /file_concurrency.' },
+  fileConcurrency: { title: 'Concurrent file downloads', description: 'Also controlled by the Bot command /file_concurrency.', limitDescription: 'Enabled Telegram user accounts: {{enabledAccounts}}. Current limit: {{limit}}. The limit is twice the enabled account count, with a fallback of 2 when no accounts are enabled and a maximum of 10.' },
   duplicateMode: { title: 'Duplicate-file handling', description: 'Choose how to handle files with the same name and size in the same folder.', copy: 'Create a copy', skip: 'Skip duplicates' },
   skipPhotos: { title: 'Skip photo messages', description: "Subscriptions and batch downloads by date or tag skip photo messages, but still download images sent as files and all other files. Use this only if you need original image files. No images will be downloaded from channels that only send photos." },
   cleanupOrphans: { title: 'Auto-clean unindexed temporary files', description: "Delete only local temporary files that are past the protection period and are not referenced in the index. File index entries and cloud files are kept." },

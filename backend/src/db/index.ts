@@ -115,6 +115,10 @@ async function initializeDatabase(): Promise<void> {
         if (!exists.rows[0]?.ledger) await bootstrapNewDatabase(client);
         await ensureMigrationLedger(client);
         await applyMigrations(client);
+        // Initialization precedes worker creation; no previous-process attempt can still be live.
+        await client.query(`UPDATE telegram_download_attempts
+            SET status = 'cancelled', error = '服务重启，旧下载执行已结束', finished_at = NOW()
+            WHERE status = 'running'`);
         console.log('✅ 数据库表结构初始化完成');
     } catch (error) {
         console.error('❌ 数据库初始化失败:', error);

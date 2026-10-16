@@ -64,37 +64,203 @@ export function messageGroupId(message: Api.Message | undefined): string | undef
     return groupedId ? groupedId.toString() : undefined;
 }
 
+export interface TelegramAlbumScanProgress {
+    batchesRead: number;
+    idsRead: number;
+    mediaFound: number;
+    boundaryGroups?: number;
+    uncertainGroups?: number;
+    expandedGroups?: number;
+}
+
+export interface TelegramAlbumScanOptions {
+    onMedia?: (messages: Api.Message[], progress: TelegramAlbumScanProgress) => Promise<void>;
+}
+
 export async function expandTelegramMediaGroups(
     messages: Api.Message[],
     pageMessages: Api.Message[],
     getMessages: (ids: number[]) => Promise<Array<Api.Message | undefined>>,
     hasMedia: (message: Api.Message) => boolean,
+    options: TelegramAlbumScanOptions = {},
 ): Promise<Api.Message[]> {
     const byId = new Map<number, Api.Message>();
-    const groups = new Set<string>();
-    const nearbyIds = new Set<number>();
-    const pageIds = new Set(pageMessages.map(message => message.id));
+    const cache = new Map(pageMessages.map(message => [message.id, message]));
+    let discovered: Api.Message[] = [];
+    let batchesRead = 0;
+    let idsRead = 0;
+    const maximumId = 2_147_483_647;
+    const groups = new Map<string, {
+        members: Set<number>;
+        minimum: number;
+        maximum: number;
+        lower: number;
+        upper: number;
+        lowerLimit: number;
+        upperLimit: number;
+        lowerClosed: boolean;
+        upperClosed: boolean;
+        expanded: boolean;
+        uncertain: boolean;
+    }>();
     for (const message of messages) {
-        pageIds.add(message.id);
-        if (hasMedia(message)) byId.set(message.id, message);
+        cache.set(message.id, message);
+        if (hasMedia(message) && !byId.has(message.id)) { byId.set(message.id, message); discovered.push(message); }
         const groupId = messageGroupId(message);
         if (!groupId || groups.has(groupId)) continue;
-        groups.add(groupId);
-        for (let id = Math.max(1, message.id - 20); id <= message.id + 20; id++) {
-            nearbyIds.add(id);
-        }
+        groups.set(groupId, {
+            members: new Set(), minimum: message.id, maximum: message.id,
+            lower: message.id, upper: message.id, lowerLimit: message.id, upperLimit: message.id,
+            lowerClosed: false, upperClosed: false, expanded: false, uncertain: false,
+        });
     }
     const addGroupMember = (message: Api.Message | undefined) => {
-        if (!message || !hasMedia(message)) return;
+        if (!message) return;
         const groupId = messageGroupId(message);
-        if (groupId && groups.has(groupId)) byId.set(message.id, message);
+        const group = groupId ? groups.get(groupId) : undefined;
+        if (!group) return;
+        if (message.id < group.minimum) group.lowerClosed = false;
+        if (message.id > group.maximum) group.upperClosed = false;
+        group.minimum = Math.min(group.minimum, message.id);
+        group.maximum = Math.max(group.maximum, message.id);
+        if (!hasMedia(message)) return;
+        group.members.add(message.id);
+        if (!byId.has(message.id)) discovered.push(message);
+        byId.set(message.id, message);
     };
-    for (const message of pageMessages) addGroupMember(message);
-    const ids = Array.from(nearbyIds).filter(id => !pageIds.has(id)).sort((a, b) => a - b);
-    // GramJS paginates IDs internally above 100; bound every account-wrapped request.
-    for (let offset = 0; offset < ids.length; offset += 100) {
-        const nearby = await getMessages(ids.slice(offset, offset + 100));
-        for (const message of nearby) addGroupMember(message);
+    for (const message of cache.values()) addGroupMember(message);
+    for (const group of groups.values()) {
+        // All caption seeds and cached siblings contribute to the fixed bounds.
+        group.lowerLimit = Math.max(1, group.minimum - 20);
+        group.upperLimit = Math.min(maximumId, group.maximum + 20);
+        group.lower = Math.max(1, group.minimum - 2);
+        group.upper = Math.min(maximumId, group.maximum + 2);
+    }
+    const visited = new Set(cache.keys());
+    // Ten distinct media members prove completion. Foreign guards only provide
+    // heuristic boundaries: unseen siblings beyond them can be skipped under
+    // arbitrary interleaving; ambiguous groups get fixed, not exhaustive, bounds.
+    const albumLimit = 10;
+    const refreshGroups = () => {
+        for (const [groupId, group] of groups) {
+            if (group.members.size >= albumLimit) continue;
+            const expand = () => {
+                group.expanded = true;
+                group.lower = group.lowerLimit;
+                group.upper = group.upperLimit;
+                group.lowerClosed = false;
+                group.upperClosed = false;
+            };
+            if (!group.expanded) {
+                // Reuse evidence from other groups' requests, including after a
+                // heuristic stop. A known foreign message between siblings is
+                // interleaving even when those siblings have no readable media.
+                for (const message of cache.values()) {
+                    if (message.id > group.minimum && message.id < group.maximum
+                        && messageGroupId(message) !== groupId) { expand(); break; }
+                }
+                if (group.minimum < group.lower) {
+                    group.lower = Math.max(group.lowerLimit, group.minimum - 2);
+                    group.lowerClosed = false;
+                }
+                if (group.maximum > group.upper) {
+                    group.upper = Math.min(group.upperLimit, group.maximum + 2);
+                    group.upperClosed = false;
+                }
+            }
+            while (true) {
+                let ready = true;
+                for (let id = group.lower; id <= group.upper; id++) {
+                    if (!visited.has(id)) { ready = false; break; }
+                }
+                if (!ready) break;
+                if (group.expanded) {
+                    group.uncertain = true;
+                    group.lowerClosed = true;
+                    group.upperClosed = true;
+                    break;
+                }
+                let missing = 0;
+                for (let id = group.minimum; id <= group.maximum; id++) {
+                    missing = cache.has(id) ? 0 : missing + 1;
+                    if (missing > 2) { expand(); break; }
+                }
+                if (group.expanded) continue;
+                const advance = (direction: -1 | 1) => {
+                    if (direction === -1 ? group.lowerClosed : group.upperClosed) return;
+                    const edge = direction === -1 ? group.lower : group.upper;
+                    const member = direction === -1 ? group.minimum : group.maximum;
+                    const limit = direction === -1 ? group.lowerLimit : group.upperLimit;
+                    let foreign = false;
+                    for (let id = member + direction; direction === -1 ? id >= edge : id <= edge; id += direction) {
+                        if (cache.has(id)) { foreign = true; break; }
+                    }
+                    if (foreign || edge === (direction === -1 ? 1 : maximumId)) {
+                        if (direction === -1) group.lowerClosed = true;
+                        else group.upperClosed = true;
+                    } else if (Math.abs(edge - member) > 2) {
+                        expand();
+                    } else if (edge === limit) {
+                        // Same-group evidence at the fixed boundary cannot prove
+                        // that no additional sibling exists beyond it.
+                        expand();
+                    } else if (direction === -1) {
+                        group.lower--;
+                    } else {
+                        group.upper++;
+                    }
+                };
+                const previousLower = group.lower;
+                const previousUpper = group.upper;
+                advance(-1);
+                if (!group.expanded) advance(1);
+                if (group.expanded) continue;
+                if (previousLower === group.lower && previousUpper === group.upper) break;
+            }
+        }
+    };
+    const publish = async () => {
+        let boundaryGroups = 0;
+        let uncertainGroups = 0;
+        let expandedGroups = 0;
+        for (const group of groups.values()) {
+            if (group.expanded) expandedGroups++;
+            if (group.members.size >= albumLimit) continue;
+            if (group.uncertain) uncertainGroups++;
+            else if (group.lowerClosed && group.upperClosed) boundaryGroups++;
+        }
+        await options.onMedia?.(discovered, {
+            batchesRead, idsRead, mediaFound: byId.size, boundaryGroups, uncertainGroups, expandedGroups,
+        });
+        discovered = [];
+    };
+    refreshGroups();
+    await publish();
+    while (true) {
+        const pending = new Set<number>();
+        for (const group of groups.values()) {
+            if (group.members.size >= albumLimit || (group.lowerClosed && group.upperClosed)) continue;
+            for (let id = group.lower; id <= group.upper; id++) {
+                if (!visited.has(id)) pending.add(id);
+            }
+        }
+        if (!pending.size) break;
+        // Rebuild after every successful batch so new edges join the remaining
+        // frontier instead of forcing a separate short request next round.
+        const batch = Array.from(pending).slice(0, 100);
+        const nearby = await getMessages(batch);
+        // The caller owns retries. Commit IDs, including deleted ones, only on success.
+        for (const id of batch) visited.add(id);
+        for (const message of nearby) {
+            if (!message) continue;
+            cache.set(message.id, message);
+            visited.add(message.id);
+            addGroupMember(message);
+        }
+        batchesRead++;
+        idsRead += batch.length;
+        refreshGroups();
+        await publish();
     }
     return Array.from(byId.values()).sort((a, b) => a.id - b.id);
 }

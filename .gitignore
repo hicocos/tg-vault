@@ -1,26 +1,45 @@
+# Private configuration (only sanitized examples belong in Git)
 .env
 .env.*
-**/.env
 !.env.example
+!**/.env.example
 
 node_modules/
 **/node_modules/
 
-# runtime data
+# Runtime data and credentials
 data/
-**/data/
+uploads/
+thumbnails/
+previews/
+chunks/
+secrets/
+*.session
+*.session-journal
+telegram_session*.txt
+telegram_user_session*.txt
+*.pem
+*.key
+*.p12
+*.pfx
 
-# build artifacts
-backend/dist/*
-frontend/dist/
+# Build artifacts
 dist/
+build/
+*.tsbuildinfo
 
 # local agent workspace and reports
 .hermes/
 /audit-report-*.md
 
-# archives, local backups, and release-note drafts
+# Archives, database dumps, and local backups
+*.tar
 *.tar.gz
+*.tgz
+*.zip
+*.dump
+*.backup
+*.bak
 backups/
 /RELEASE_NOTES_v*.md
 
@@ -35,8 +54,17 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local-only automated tests
+# Local-only tests, coverage, and tool caches
 **/*.test.*
 **/*.spec.*
 **/__tests__/
-**/coverage/
+coverage/
+.nyc_output/
+.pytest_cache/
+.eslintcache
+.vite/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

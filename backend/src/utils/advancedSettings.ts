@@ -4,6 +4,8 @@ export type TelegramDownloadHistoryPolicySetting = 'errors_only' | 'all';
 export interface AdvancedSettings {
     telegramDownloadWorkers: number;
     telegramFileConcurrency: number;
+    telegramFileConcurrencyLimit: number;
+    telegramEnabledAccounts: number;
     duplicateMode: DuplicateModeSetting;
     autoCleanupOrphans: boolean;
     skipTelegramPhotosInBatch: boolean;
@@ -12,7 +14,6 @@ export interface AdvancedSettings {
 }
 
 const WORKERS = new Set([4, 8, 12, 16]);
-const FILE_CONCURRENCY = new Set([1, 2, 3, 4]);
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
     if (value === undefined || value === null || value === '') return fallback;
@@ -22,6 +23,8 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 export function buildAdvancedSettings(input: {
     telegramDownloadWorkers: unknown;
     telegramFileConcurrency: unknown;
+    telegramFileConcurrencyLimit: number;
+    telegramEnabledAccounts: number;
     duplicateMode: unknown;
     autoCleanupOrphans: unknown;
     skipTelegramPhotosInBatch: unknown;
@@ -33,7 +36,9 @@ export function buildAdvancedSettings(input: {
     const telegramDownloadHistoryPolicy: TelegramDownloadHistoryPolicySetting = input.telegramDownloadHistoryPolicy === 'all' ? 'all' : 'errors_only';
     return {
         telegramDownloadWorkers: WORKERS.has(workers) ? workers : 4,
-        telegramFileConcurrency: FILE_CONCURRENCY.has(fileConcurrency) ? fileConcurrency : 2,
+        telegramFileConcurrency: Number.isInteger(fileConcurrency) && fileConcurrency >= 1 && fileConcurrency <= 10 ? fileConcurrency : 2,
+        telegramFileConcurrencyLimit: input.telegramFileConcurrencyLimit,
+        telegramEnabledAccounts: input.telegramEnabledAccounts,
         duplicateMode,
         autoCleanupOrphans: booleanValue(input.autoCleanupOrphans, true),
         skipTelegramPhotosInBatch: booleanValue(input.skipTelegramPhotosInBatch, false),
@@ -53,7 +58,7 @@ export function normalizeAdvancedSettingsPatch(input: Record<string, unknown>): 
     }
     if (key === 'telegramFileConcurrency') {
         const parsed = Number(value);
-        if (!FILE_CONCURRENCY.has(parsed)) throw new Error('telegramFileConcurrency 必须是 1/2/3/4');
+        if (!Number.isInteger(parsed) || parsed < 1 || parsed > 10) throw new Error('telegramFileConcurrency 必须是 1–10 的整数');
         return { telegramFileConcurrency: parsed, highRisk: parsed >= 4 };
     }
     if (key === 'duplicateMode') {

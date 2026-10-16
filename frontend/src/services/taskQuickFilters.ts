@@ -1,7 +1,7 @@
 export type TaskQuickFilter = 'all' | 'active' | 'attention' | 'completed';
 
 const FILTER_STATUSES: Record<Exclude<TaskQuickFilter, 'all'>, readonly string[]> = {
-    active: ['scheduled', 'pending', 'running', 'pausing', 'paused', 'waiting', 'completing'],
+    active: ['scheduled', 'pending', 'running', 'pausing', 'paused', 'waiting', 'awaiting_selection', 'completing'],
     attention: ['failed', 'interrupted', 'retry_required'],
     completed: ['completed'],
 };

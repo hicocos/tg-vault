@@ -64,12 +64,13 @@ function channelStatus(status: string): string {
 
 /** Both clients count settled items, including failures and skips, as processed. */
 export function telegramChannelJobCounts(row: Record<string, unknown>) {
-    const total = Math.max(safeNumber(row?.total_count), safeNumber(row?.item_count));
+    const params = parseTaskOptions(row?.params);
+    const total = Math.max(safeNumber(row?.total_count), safeNumber(row?.item_count) + safeNumber(params.compactedItemCount));
     const failed = safeNumber(row?.failed_items ?? row?.failed_count);
-    const skipped = safeNumber(row?.skipped_count_items ?? row?.skipped_count);
+    const skipped = Math.max(safeNumber(row?.skipped_count_items) + safeNumber(params.compactedSkippedCount), safeNumber(row?.skipped_count));
     const pending = safeNumber(row?.pending_count);
     const active = safeNumber(row?.downloading_count ?? row?.active_items);
-    const completed = safeNumber(row?.completed_items ?? row?.success_count)
+    const completed = (safeNumber(row?.completed_items ?? row?.success_count) + safeNumber(params.compactedSuccessCount))
         || (['completed', 'completed_with_errors'].includes(String(row?.status))
             ? Math.max(0, total - failed - skipped - active - pending) : 0);
     return { total, completed, failed, skipped, pending, active, processed: completed + failed + skipped };
@@ -79,6 +80,7 @@ export function telegramChannelJobTaskState(row: Record<string, unknown>): Teleg
     let status = String(row.runtime_status || channelStatus(String(row?.status || 'pending')));
     const scanStatus = String(row?.scan_status || 'pending');
     const counts = telegramChannelJobCounts(row);
+    if (status === 'awaiting_selection') return { status, stage: 'awaiting_selection' };
     if (status === 'running' && scanStatus === 'done' && counts.active === 0 && counts.pending > 0) status = 'pending';
     const stage = status === 'completed'
         ? 'completed'
@@ -121,22 +123,25 @@ export function mapTelegramChannelJob(row: any, accountNames: ReadonlyMap<string
         target: {
             provider,
             accountId,
-            accountName: accountId ? accountNames.get(accountId) || null : (provider === 'local' ? '服务器本地目录' : null),
+            accountName: accountId ? params.storageAccountName || accountNames.get(accountId) || null : (provider === 'local' ? '服务器本地目录' : null),
             folder: params.folderOverride == null ? null : String(params.folderOverride),
         },
         counts: { total, completed, failed },
-        bytes: { total: safeNumber(row?.total_bytes), transferred: Math.max(safeNumber(row?.completed_bytes), safeNumber(params.completedBytes)) },
+        bytes: { total: safeNumber(row?.total_bytes) + safeNumber(params.compactedTotalBytes),
+            transferred: safeNumber(row?.completed_bytes) + safeNumber(params.completedBytes) },
         detail: { scanStatus: row?.scan_status, downloadStatus: row?.download_status,
             scan: ['date_range', 'tag_download'].includes(String(row?.kind)) ? scan : undefined,
             skipped, pending, active, processed,
+            excluded: Number(params.excludedCount || 0), fileSelectionConfirmed: Boolean(params.fileSelectionConfirmed),
             speedBytesPerSecond: safeNumber(row?.speed_bytes_per_second), currentFileName: row?.current_file_name,
-            savedUnknownCount: Math.max(safeNumber(row?.completed_unknown_size_count), safeNumber(params.savedUnknownCount)),
-            bytesKnown: safeNumber(row?.item_count) >= total && safeNumber(row?.unknown_size_count) === 0,
+            savedUnknownCount: safeNumber(row?.completed_unknown_size_count) + safeNumber(params.savedUnknownCount),
+            bytesKnown: safeNumber(row?.item_count) + safeNumber(params.compactedItemCount) >= total
+                && safeNumber(row?.unknown_size_count) + safeNumber(params.compactedUnknownSizeCount) === 0,
             savedBytesKnown: safeNumber(row?.completed_unknown_size_count) === 0 && safeNumber(params.savedUnknownCount) === 0 },
         speedBytesPerSecond: safeNumber(row?.speed_bytes_per_second),
         error: row?.error == null ? null : String(row.error),
         retryable: ['failed', 'completed_with_errors'].includes(String(row?.status)),
-        cancellable: ['queued', 'running', 'paused', 'cooling'].includes(String(row?.status)),
+        cancellable: ['queued', 'running', 'paused', 'cooling', 'awaiting_selection'].includes(String(row?.status)),
         createdAt: row?.created_at,
         updatedAt: row?.progress_updated_at || row?.updated_at,
         finishedAt: row?.finished_at || null,

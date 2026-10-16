@@ -35,6 +35,7 @@ import type {
     TaskDismissalPreview,
     TaskDismissalResult,
     TaskFilters,
+    TaskFailurePage,
     TelegramBotPublicConfig,
     TelegramAdDecisionList,
     TelegramAdFilterMode,
@@ -237,6 +238,10 @@ class FileAPI {
 
     async getTasks(filters: TaskFilters = {}): Promise<UnifiedTaskList> {
         return tasksClient.getTasks(filters);
+    }
+
+    async getTaskFailures(sourceType: UnifiedTaskSource, id: string, offset = 0, signal?: AbortSignal): Promise<TaskFailurePage> {
+        return tasksClient.getTaskFailures(sourceType, id, offset, signal);
     }
 
     async controlTask(sourceType: UnifiedTaskSource, id: string, action: 'cancel' | 'retry' | 'pause' | 'resume'): Promise<void> {
@@ -761,8 +766,8 @@ class FileAPI {
         return this.telegramUserRequest('/api/storage/config/telegram-user/accounts', 'GET');
     }
 
-    async startTelegramUserQrLogin(): Promise<TelegramUserQrLoginStarted> {
-        const payload = await this.telegramUserRequest('/api/storage/config/telegram-user/login/qr', 'POST');
+    async startTelegramUserQrLogin(accountId?: string): Promise<TelegramUserQrLoginStarted> {
+        const payload = await this.telegramUserRequest('/api/storage/config/telegram-user/login/qr', 'POST', accountId === undefined ? undefined : { accountId });
         return this.normalizeTelegramUserLoginStatus(payload) as TelegramUserQrLoginStarted;
     }
 
@@ -775,8 +780,8 @@ class FileAPI {
         return this.telegramUserRequest(`/api/storage/config/telegram-user/login/${encodeURIComponent(flowId)}`, 'DELETE');
     }
 
-    async startTelegramUserPhoneLogin(phone: string): Promise<TelegramUserPhoneLoginStarted> {
-        const payload = await this.telegramUserRequest('/api/storage/config/telegram-accounts/login/phone', 'POST', { phone });
+    async startTelegramUserPhoneLogin(phone: string, accountId?: string): Promise<TelegramUserPhoneLoginStarted> {
+        const payload = await this.telegramUserRequest('/api/storage/config/telegram-accounts/login/phone', 'POST', { phone, ...(accountId === undefined ? {} : { accountId }) });
         return this.normalizeTelegramUserLoginStatus(payload) as TelegramUserPhoneLoginStarted;
     }
 
@@ -844,7 +849,7 @@ class FileAPI {
             ...(qrCode ? { qrCode, qrExpiresAt: String(payload?.qrExpiresAt || payload?.expiresAt || '') } : {}),
             ...(payload?.expiresAt ? { expiresAt: String(payload.expiresAt) } : {}),
             ...(payload?.account ? { account: payload.account } : {}),
-            ...(payload?.delivery ? { delivery: payload.delivery, message: payload.delivery === 'sms' ? tr('errors.services.telegram.deliverySms') : tr('errors.services.telegram.deliveryApp') } : payload?.message ? { message: String(payload.message) } : {}),
+            ...(payload?.error ? { message: String(payload.error) } : payload?.delivery ? { delivery: payload.delivery, message: payload.delivery === 'sms' ? tr('errors.services.telegram.deliverySms') : tr('errors.services.telegram.deliveryApp') } : payload?.message ? { message: String(payload.message) } : {}),
         } as TelegramUserLoginStatus;
     }
 

@@ -11,6 +11,7 @@ import { cancelTelegramBackgroundJob, retryTelegramBackgroundJob, pauseTelegramB
 import { filterDismissedTasks, isTaskDismissible, loadTaskCenterDismissals, saveTaskCenterDismissals } from '../services/taskCenterDismissals.js';
 import { mapTelegramChannelJob, mapTransferTask } from '../services/unifiedTaskMapper.js';
 import { channelRuntimeView } from '../services/telegramChannelRuntimeView.js';
+import { getTelegramTaskFailures, parseTaskFailurePage } from '../services/telegramTaskFailures.js';
 import crypto from 'node:crypto';
 
 const router = Router();
@@ -34,7 +35,7 @@ async function collectUnifiedTasks(limit: number, accountId?: string): Promise<a
                         COUNT(i.id) FILTER (WHERE i.status = 'success' AND COALESCE(i.total_size, 0) <= 0)::int AS completed_unknown_size_count,
                         GREATEST(j.updated_at, MAX(i.updated_at)) AS progress_updated_at
                  FROM telegram_background_jobs j
-                 LEFT JOIN telegram_download_items i ON i.job_id = j.id
+                 LEFT JOIN telegram_download_items i ON i.job_id = j.id AND i.status <> 'excluded'
                  WHERE ($2::uuid IS NULL OR (j.params->>'storageAccountId') = $2::text)
                  GROUP BY j.id
                  ORDER BY j.updated_at DESC LIMIT $1`,
@@ -246,6 +247,26 @@ router.post('/dismissals/confirm', requireAuth, async (req: Request, res: Respon
         return res.status(failed.length ? 207 : 200).json(payload);
     } catch (error) {
         return res.status(400).json({ error: '删除快照无效' });
+    }
+});
+
+router.get('/:sourceType/:id/failures', requireAuth, async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (String(req.params.sourceType) !== 'telegram_channel') {
+        return res.status(400).json({ error: '该任务类型暂不支持逐条失败明细' });
+    }
+    const id = String(req.params.id);
+    const page = parseTaskFailurePage(req.query.offset, req.query.limit);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id) || !page) {
+        return res.status(400).json({ error: '无效的任务 ID 或分页参数' });
+    }
+    try {
+        const failures = await getTelegramTaskFailures(id, page, query);
+        if (!failures) return res.status(404).json({ error: '任务不存在' });
+        return res.json(failures);
+    } catch (error) {
+        console.error('获取任务失败明细失败:', error);
+        return res.status(500).json({ error: '获取任务失败明细失败' });
     }
 });
 

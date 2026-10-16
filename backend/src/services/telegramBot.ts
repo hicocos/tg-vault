@@ -1,3 +1,4 @@
+import { normalizeHashtag } from './telegramHashtag.js';
 import { ownBotTransport } from './telegramBotTransport.js';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
@@ -12,7 +13,8 @@ import { buildSecurityLoginNotification, type TelegramLoginDetails } from './tel
 import { registerProgressCard } from './telegramProgressControls.js';
 import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../utils/security.js';
 import { handleStart, handleHelp, handleNotifications, handleNotificationsCallback, handleStatus, handleStorage, handleStorageSwitch, handleStorageSwitchCallback, handleTarget, handleTargetCallback, handleDelete, handleDeleteConfirmCallback, handleTelegramFileBrowserCallback, applyPendingTelegramFileMutation, handleTasks, handleTaskCenterCallback, handleBulkTaskCancelCallback, handleStopTasks, handlePauseTasks, handleResumeTasks, handleCancelTask, handleChannelTaskQueueCallback, handleRetryFailedTasks, handleDownloadWorkers, handleDownloadWorkersCallback, handleFileConcurrency, handleFileConcurrencyCallback, handleStorageCleanupCallback, handlePathRules, handlePathOnce, handlePathSession, handlePathClear, handlePathRulesCallback, handleDuplicateMode, handleDuplicateModeCallback, handleCleanupSettings, handleCleanupSettingsCallback } from './telegramCommands.js';
-import { handleFileUpload, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, getTaskControlJobIds, listFailedDownloadTaskDetails, retryFailedDownloadTasks, loadFileDownloadConcurrencySetting } from './telegramUpload.js';
+import { handleFileUpload, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, getTaskControlJobIds, listFailedDownloadTaskDetails, retryFailedDownloadTasks } from './telegramUpload.js';
+import { loadFileDownloadConcurrencySetting } from './telegramFileConcurrency.js';
 
 import { enqueueTelegramNotification, flushTelegramNotificationDigest, listTelegramNotificationDigestScopes, resolveNotificationOwnerUserId } from './telegramNotificationDelivery.js';
 import { getTaskReceipt, taskReceiptFailures } from './telegramTaskReceipts.js';
@@ -22,7 +24,6 @@ import {
     enqueueTelegramDateDownload,
     enqueueTelegramTagDownload,
     validateTelegramSourceInput,
-    normalizeHashtag,
     findTelegramSubscription,
     listTelegramSubscriptions,
     type TelegramJobProgressSummary,
@@ -37,6 +38,7 @@ import {
     setTelegramSubscriptionFromNow,
     requestTelegramSubscriptionSync,
     retryTelegramBackgroundJob,
+    updateTelegramJobFileSelection,
     TELEGRAM_COMMENTS_MAX_PER_POST,
 } from './telegramChannelJobs.js';
 import { buildStartPrompt, buildAuthSuccess, build2FASetupCaption, buildHelp, getProviderDisplayName } from '../utils/telegramMessages.js';
@@ -46,6 +48,8 @@ import { assertPublicHttpUrl } from '../utils/networkSecurity.js';
 import { peekTelegramTargetState, consumeConfirmedTelegramTargetState, type TelegramTargetSelection } from '../utils/telegramTargetStateStore.js';
 import { cancelTelegramWizard, submitTelegramWizard, type TelegramWizardSubmissionState } from './telegramWizardSubmission.js';
 import { BOT_COMMANDS, buildBotCommandMenu, normalizeBotCommandText } from '../utils/telegramCommandRegistry.js';
+import { TELEGRAM_BATCH_FILE_TYPES, type TelegramBatchFileType } from '../utils/telegramBatchMediaFilter.js';
+import { syncTelegramChannelCards } from './telegramChannelProgress.js';
 import { sanitizeCustomStoragePath, rememberRecentTelegramPathPersistent, buildPathPreviewLine, applyPendingTelegramPathInputPersistent, getPendingTelegramPathInput, clearPendingTelegramPathInput } from '../utils/telegramPathSettings.js';
 import { isTelegramSubscriptionVisibleInManagement } from './telegramSubscriptionVisibility.js';
 import { buildTelegramSubscriptionPage, buildSubscriptionOperations, parseTelegramSubscriptionCallback } from './telegramSubscriptionManagement.js';
@@ -289,6 +293,7 @@ function buildTelegramDownloadConfirmKeyboard(state: TelegramWizardState, locale
     });
 }
 
+
 function buildTelegramWizardKeyboard(state: TelegramWizardState, locale: TelegramLocale): Api.ReplyInlineMarkup {
     if (state.step === 'mode') return buildTelegramDownloadModeKeyboard(locale);
     if (state.step === 'confirm') return buildTelegramDownloadConfirmKeyboard(state, locale);
@@ -470,6 +475,7 @@ function buildTelegramWizardPrompt(state: TelegramWizardState, locale: TelegramL
     }
 
 
+
     if (state.step === 'confirm') {
         const range = state.kind === 'tg_tag'
             ? t(locale, 'bot.wizard.confirmTagRange', { tag: state.tag })
@@ -486,6 +492,8 @@ function buildTelegramWizardPrompt(state: TelegramWizardState, locale: TelegramL
             t(locale, 'bot.wizard.confirmFolder', { folder: state.customFolder || t(locale, 'bot.wizard.folder.defaultValue') }),
             t(locale, 'bot.wizard.confirmStorage', { provider: state.targetProvider === 'local' ? t(locale, 'commands.localStorage') : state.targetProvider ? getProviderDisplayName(state.targetProvider) : t(locale, 'bot.wizard.storage.current'), account: state.targetAccountName || t(locale, 'bot.wizard.storage.currentAccount') }),
             '', t(locale, 'bot.wizard.confirmNote'),
+            t(locale, 'bot.wizard.typeCategoryNote'),
+            t(locale, 'bot.wizard.imageTypeNote'),
             t(locale, 'bot.wizard.confirmInput')].join('\n');
     }
 
@@ -508,6 +516,7 @@ function isDateOnly(text: string): boolean {
         return false;
     }
 }
+
 
 
 
@@ -705,6 +714,7 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
     }
 
 
+
     if (state.step === 'confirm') {
         if (!/^(确认|confirm|yes|y|подтвердить)$/i.test(input) || (callbackMessageId === undefined && replyToId !== lookup.record.originMessageId)) {
             await message.reply({ message: t(locale, 'bot.wizard.confirmInput') });
@@ -731,7 +741,14 @@ async function handleTelegramWizardMessage(message: Api.Message, senderId: numbe
                 if (telegramWizardStates.get(senderId, chatKey)?.value === state) telegramWizardStates.delete(senderId, chatKey);
                 const effects = await Promise.allSettled([
                     consumeConfirmedTelegramTargetState(chatKey, state.targetSelection),
-                    editConfirmation(t(locale, 'bot.wizard.submitted', { jobId })),
+                    editConfirmation([
+                        t(locale, 'bot.wizard.submitted', { jobId }),
+                        t(locale, 'bot.wizard.confirmStorage', {
+                            provider: state.targetProvider === 'local' ? t(locale, 'commands.localStorage') : getProviderDisplayName(state.targetProvider || ''),
+                            account: state.targetAccountName || state.targetAccountId?.slice(0, 8) || t(locale, 'commands.localStorage'),
+                        }),
+                        t(locale, 'bot.wizard.confirmFolder', { folder: state.customFolder || t(locale, 'bot.wizard.folder.defaultValue') }),
+                    ].join('\n')),
                     ...(state.customFolder ? [rememberRecentTelegramPathPersistent(chatKey, state.customFolder, locale)] : []),
                 ]);
                 if (effects.some(result => result.status === 'rejected')) console.warn('Telegram wizard post-creation update failed', { jobId });
@@ -1252,6 +1269,36 @@ async function handleTaskQueueCallback(update: Api.UpdateBotCallbackQuery, data:
     }
 }
 
+async function handleTelegramFileSelectionCallback(update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
+    if (!client) return;
+    const userId = update.userId.toJSNumber();
+    const locale = await getTelegramUserLocaleOrDefault(userId);
+    if (!(await isAuthenticatedAsync(userId))) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'auth.required'), alert: true }));
+        return;
+    }
+    const match = data.match(/^tgfs_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_([a-z-]+)$/i);
+    const action = match?.[2];
+    const fileType = TELEGRAM_BATCH_FILE_TYPES.find(value => value === action);
+    if (!match || (action !== 'all' && action !== 'confirm' && !fileType)) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'channelCard.selectionExpired'), alert: true }));
+        return;
+    }
+    try {
+        const updated = await updateTelegramJobFileSelection(userId, match[1], callbackChatKey(update, userId), Number(update.msgId), (fileType || action) as TelegramBatchFileType | 'all' | 'confirm');
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({
+            queryId: update.queryId,
+            message: updated ? t(locale, action === 'confirm' ? 'channelCard.selectionStarted' : 'channelCard.selectionUpdated')
+                : t(locale, 'channelCard.selectionExpired'),
+            alert: !updated,
+        }));
+        if (updated) await syncTelegramChannelCards(client);
+    } catch (error) {
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId,
+            message: t(locale, 'bot.callback.operationFailed', { error: error instanceof Error ? error.message : String(error) }), alert: true }));
+    }
+}
+
 async function handleTelegramDownloadModeCallback(update: Api.UpdateBotCallbackQuery, data: string): Promise<void> {
     if (!client) return;
     const userId = update.userId.toJSNumber();
@@ -1295,7 +1342,8 @@ async function handleTelegramDownloadModeCallback(update: Api.UpdateBotCallbackQ
             return;
         }
         await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId }));
-        await handleTelegramWizardMessage(prompt, userId, action === 'confirm' ? 'confirm' : 'skip', Number(update.msgId), expectedStep);
+        const input = action === 'confirm' ? 'confirm' : 'skip';
+        await handleTelegramWizardMessage(prompt, userId, input, Number(update.msgId), expectedStep);
         return;
     }
     if (action.startsWith('edit_')) {
@@ -1622,7 +1670,7 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         }
 
         try {
-            const fileConcurrency = await loadFileDownloadConcurrencySetting();
+            const { current: fileConcurrency } = await loadFileDownloadConcurrencySetting();
             console.log(`🤖 Telegram 文件级并发: ${fileConcurrency}`);
         } catch (e) {
             console.warn('🤖 读取文件级并发设置失败，使用环境变量默认值:', e);
@@ -2304,6 +2352,11 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
                 // 处理频道下载模式选择回调
                 if (data.startsWith('tgd_')) {
                     await handleTelegramDownloadModeCallback(callbackUpdate, data);
+                    return;
+                }
+
+                if (data.startsWith('tgfs_')) {
+                    await handleTelegramFileSelectionCallback(callbackUpdate, data);
                     return;
                 }
 

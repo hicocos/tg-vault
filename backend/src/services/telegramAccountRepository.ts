@@ -2,6 +2,7 @@ import { query } from '../db/index.js';
 import { encryptCredential } from '../utils/credentialCrypto.js';
 import type { TelegramAccountHealthState, TelegramSourceAccessState } from './telegramAccountScheduler.js';
 import { normalizeTelegramAccountSourceKey } from './telegramAccountScheduler.js';
+import { loadFileDownloadConcurrencySetting } from './telegramFileConcurrency.js';
 
 export type TelegramAccountSourceScope = 'download' | 'scan' | 'metadata';
 export type TelegramDownloadAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -43,6 +44,10 @@ export interface TelegramAccountSourceAccessRecord {
 // Read legacy aliases too; the latest probe wins until all keys are rewritten.
 const canonicalSourceKeySql = `CASE
     WHEN BTRIM(source_key) ~ '^-100[0-9]+$' THEN SUBSTRING(BTRIM(source_key) FROM 5)
+    WHEN BTRIM(source_key) ~* '^(?:https?://)?t[.]me/c/([0-9]+)(?:/[0-9]+)?/?$'
+        THEN SUBSTRING(LOWER(BTRIM(source_key)) FROM '^(?:https?://)?t[.]me/c/([0-9]+)(?:/[0-9]+)?/?$')
+    WHEN BTRIM(source_key) ~* '^(?:https?://)?t[.]me/(?:s/)?(?!joinchat(?:/|$))([a-z][a-z0-9_]*)(?:/[0-9]+)?/?$'
+        THEN SUBSTRING(LOWER(BTRIM(source_key)) FROM '^(?:https?://)?t[.]me/(?:s/)?(?!joinchat(?:/|$))([a-z][a-z0-9_]*)(?:/[0-9]+)?/?$')
     WHEN BTRIM(source_key) ~ '^@?[A-Za-z0-9_]+$' THEN LOWER(LTRIM(BTRIM(source_key), '@'))
     ELSE BTRIM(source_key) END`;
 
@@ -64,19 +69,31 @@ function mapAccount(row: any): TelegramUserAccountRecord {
     };
 }
 
-function mapAccess(row: any): TelegramAccountSourceAccessRecord {
+function mapAccess(row: {
+    account_id: string;
+    source_key: string;
+    scope: TelegramAccountSourceScope;
+    access_state: TelegramSourceAccessState;
+    last_error?: string | null;
+    checked_at?: Date | string | null;
+}, now: number): TelegramAccountSourceAccessRecord {
+    const checkedAt = row.checked_at ? new Date(row.checked_at) : null;
+    const recent = checkedAt !== null && now - checkedAt.getTime() <= 15 * 60 * 1000;
     return {
         accountId: String(row.account_id),
         sourceKey: String(row.source_key),
         scope: row.scope,
-        accessState: row.access_state,
+        accessState: recent ? row.access_state : 'unknown',
         lastError: row.last_error || null,
-        checkedAt: row.checked_at || null,
+        checkedAt,
     };
 }
 
 export class TelegramAccountRepository {
-    constructor(private readonly db: TelegramAccountQueryClient = { query }) {}
+    constructor(
+        private readonly db: TelegramAccountQueryClient = { query },
+        private readonly now: () => Date = () => new Date(),
+    ) {}
 
     async migrateLegacySystemSettings(): Promise<string | null> {
         const result = await this.db.query(`
@@ -131,6 +148,7 @@ export class TelegramAccountRepository {
             encryptCredential(input.session), input.enabled ?? true, Math.max(0.01, input.weight ?? 1),
             input.priority ?? 0, Math.max(1, input.maxConnections ?? 4), input.isLegacy ?? false,
         ]);
+        if (input.enabled === false) await loadFileDownloadConcurrencySetting();
         return mapAccount(result.rows[0]);
     }
 
@@ -161,6 +179,7 @@ export class TelegramAccountRepository {
             `UPDATE telegram_user_accounts SET enabled = $2, updated_at = NOW()
              WHERE id = $1 AND deleted_at IS NULL`, [accountId, enabled],
         );
+        if (result.rowCount === 1 && !enabled) await loadFileDownloadConcurrencySetting();
         return result.rowCount === 1;
     }
 
@@ -173,6 +192,7 @@ export class TelegramAccountRepository {
              WHERE id = $1 AND deleted_at IS NULL`,
             [accountId],
         );
+        if (result.rowCount === 1) await loadFileDownloadConcurrencySetting();
         return result.rowCount === 1;
     }
 
@@ -191,8 +211,9 @@ export class TelegramAccountRepository {
             WHERE account_id = ANY($1::uuid[])
             ORDER BY account_id, checked_at DESC NULLS LAST, source_key, scope
         `, [accountIds]);
+        const now = this.now().getTime();
         for (const row of result.rows) {
-            const permission = mapAccess(row);
+            const permission = mapAccess(row, now);
             const access = accessByAccount.get(permission.accountId);
             if (!access) continue;
             access.permissions.push(permission);
@@ -210,10 +231,32 @@ export class TelegramAccountRepository {
         return accessByAccount;
     }
 
+    async reauthenticateAccount(input: {
+        accountId: string;
+        telegramUserId: string;
+        username: string | null;
+        displayName: string | null;
+        session: string;
+    }): Promise<TelegramUserAccountRecord | null> {
+        const result = await this.db.query(`
+            UPDATE telegram_user_accounts SET session_ciphertext = $3,
+                username = $4, display_name = $5,
+                health_state = CASE WHEN cooldown_until > NOW() THEN 'degraded' ELSE 'healthy' END,
+                session_expired_at = NULL,
+                last_error = CASE WHEN cooldown_until > NOW() THEN last_error ELSE NULL END,
+                updated_at = NOW()
+            WHERE id = $1 AND telegram_user_id = $2 AND deleted_at IS NULL
+            RETURNING *
+        `, [input.accountId, input.telegramUserId, encryptCredential(input.session), input.username, input.displayName]);
+        return result.rows[0] ? mapAccount(result.rows[0]) : null;
+    }
+
     async updateSession(accountId: string, session: string): Promise<boolean> {
         const result = await this.db.query(`
-            UPDATE telegram_user_accounts SET session_ciphertext = $2, health_state = 'healthy',
-                session_expired_at = NULL, last_error = NULL, updated_at = NOW()
+            UPDATE telegram_user_accounts SET session_ciphertext = $2,
+                health_state = CASE WHEN cooldown_until > NOW() THEN 'degraded' ELSE 'healthy' END,
+                session_expired_at = NULL,
+                last_error = CASE WHEN cooldown_until > NOW() THEN last_error ELSE NULL END, updated_at = NOW()
             WHERE id = $1 AND deleted_at IS NULL
         `, [accountId, encryptCredential(session)]);
         return result.rowCount === 1;
@@ -221,7 +264,9 @@ export class TelegramAccountRepository {
 
     async recordHealthy(accountId: string): Promise<boolean> {
         const result = await this.db.query(`
-            UPDATE telegram_user_accounts SET health_state = 'healthy', last_error = NULL,
+            UPDATE telegram_user_accounts SET
+                health_state = CASE WHEN cooldown_until > NOW() THEN 'degraded' ELSE 'healthy' END,
+                last_error = CASE WHEN cooldown_until > NOW() THEN last_error ELSE NULL END,
                 last_connected_at = NOW(), updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL
         `, [accountId]);
         return result.rowCount === 1;
@@ -235,13 +280,14 @@ export class TelegramAccountRepository {
         return result.rowCount === 1;
     }
 
-    async markCooldown(accountId: string, seconds: number, error: string | null = null): Promise<boolean> {
+    async markCooldown(accountId: string, seconds: number, error: string | null = null, until?: Date): Promise<boolean> {
         const cooldownSeconds = Number.isFinite(seconds) ? Math.max(1, Math.ceil(seconds)) : 60;
         const result = await this.db.query(`
-            UPDATE telegram_user_accounts SET cooldown_until = NOW() + ($2::double precision * INTERVAL '1 second'),
+            UPDATE telegram_user_accounts SET cooldown_until = GREATEST(cooldown_until,
+                COALESCE($4::timestamptz, NOW() + ($2::double precision * INTERVAL '1 second'))),
                 health_state = 'degraded', last_error = $3, last_failure_at = NOW(), updated_at = NOW()
             WHERE id = $1 AND deleted_at IS NULL
-        `, [accountId, cooldownSeconds, error]);
+        `, [accountId, cooldownSeconds, error, until || null]);
         return result.rowCount === 1;
     }
 
@@ -270,7 +316,7 @@ export class TelegramAccountRepository {
                 checked_at = NOW(), updated_at = NOW()
             RETURNING *
         `, [accountId, normalizeTelegramAccountSourceKey(sourceKey), scope, accessState, error]);
-        return mapAccess(result.rows[0]);
+        return mapAccess(result.rows[0], this.now().getTime());
     }
 
     async probeSourceAccess(
@@ -289,7 +335,7 @@ export class TelegramAccountRepository {
             WHERE account_id = $1 AND ${canonicalSourceKeySql} = $2 AND scope = $3
             ORDER BY checked_at DESC NULLS LAST, (source_key = $2) DESC LIMIT 1
         `, [accountId, normalizeTelegramAccountSourceKey(sourceKey), scope]);
-        return result.rows[0] ? mapAccess(result.rows[0]) : null;
+        return result.rows[0] ? mapAccess(result.rows[0], this.now().getTime()) : null;
     }
 
     async listSourceAccess(sourceKey: string, scope: TelegramAccountSourceScope): Promise<TelegramAccountSourceAccessRecord[]> {
@@ -298,7 +344,8 @@ export class TelegramAccountRepository {
             WHERE ${canonicalSourceKeySql} = $1 AND scope = $2
             ORDER BY account_id, checked_at DESC NULLS LAST, (source_key = $1) DESC
         `, [normalizeTelegramAccountSourceKey(sourceKey), scope]);
-        return result.rows.map(mapAccess);
+        const now = this.now().getTime();
+        return result.rows.map(row => mapAccess(row, now));
     }
 
     async getLatestAccessCheckForAccount(accountId: string): Promise<Date | null> {

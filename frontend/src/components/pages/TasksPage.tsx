@@ -1,6 +1,5 @@
 import './tasks-audit.css';
 import { formatDateTime } from '../../i18n/format';
-import { localizeTaskReason } from '../../i18n/taskReason';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertCircle, Ban, CheckCircle2, CheckSquare, Clock3, Copy,
@@ -17,6 +16,7 @@ import { dismissibleTaskSnapshot, pruneSelectedTaskKeys, scopeTasks, summarizeTa
 import { createSerialPoller } from '../../services/serialPoller';
 import { Dialog } from '../ui/Dialog';
 import { errorMessage } from '../../services/unknownError';
+import { TaskFailureDetails } from './TaskFailureDetails';
 
 interface TasksPageProps { onUnauthorized?: () => void; onOpenUploads?: () => void; onShowAllTasks?: () => void; initialAccountId?: string | null; }
 interface TaskNotice { message: string; sequence: number; }
@@ -31,6 +31,7 @@ const STATUS_OPTIONS = [
     { value: '', labelKey: 'tasks.statuses.all' }, { value: 'pending', labelKey: 'tasks.statuses.pending' },
     { value: 'running', labelKey: 'tasks.statuses.running' }, { value: 'paused', labelKey: 'tasks.statuses.paused' },
     { value: 'waiting', labelKey: 'tasks.statuses.waiting' }, { value: 'failed', labelKey: 'tasks.statuses.failed' },
+    { value: 'awaiting_selection', labelKey: 'tasks.statuses.awaitingSelection' },
     { value: 'pausing', labelKey: 'tasks.statuses.pausing' },
     { value: 'interrupted', labelKey: 'tasks.statuses.interrupted' }, { value: 'retry_required', labelKey: 'tasks.statuses.retryRequired' },
     { value: 'completed', labelKey: 'tasks.statuses.completed' }, { value: 'cancelled', labelKey: 'tasks.statuses.cancelled' },
@@ -40,6 +41,7 @@ const SOURCE_LABELS: Record<string, string> = Object.fromEntries(SOURCE_OPTIONS.
 const STATUS_LABELS: Record<string, string> = Object.fromEntries(STATUS_OPTIONS.filter(o => o.value).map(o => [o.value, o.labelKey]));
 const STAGE_LABELS: Record<string, string> = {
     waiting: 'tasks.stages.queued', queued: 'tasks.stages.queued', scanning: 'tasks.stages.scanning', downloading: 'tasks.stages.downloading',
+    awaiting_selection: 'tasks.statuses.awaitingSelection',
     uploading: 'tasks.stages.uploading', processing: 'tasks.stages.processing', awaiting_file: 'tasks.stages.awaitingFile',
     resumable: 'tasks.stages.resumable', waiting_for_next_scan: 'tasks.stages.waitingForNextScan', waiting_for_next_task: 'tasks.stages.waitingForNextTask', completed: 'tasks.stages.completed',
     failed: 'tasks.stages.failed', cancelled: 'tasks.statuses.cancelled', interrupted: 'tasks.stages.interrupted',
@@ -89,6 +91,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
         folder: task.target.folder || t('tasks.target.root'),
     });
     const [tasks, setTasks] = useState<UnifiedTask[]>([]);
+    const [tasksObservedAt, setTasksObservedAt] = useState(0);
     const tasksRef = useRef<UnifiedTask[]>([]);
     const [source, setSource] = useState('');
     const [status, setStatus] = useState('');
@@ -123,6 +126,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                 : result.tasks;
             tasksRef.current = relevantTasks;
             setTasks(relevantTasks); setError(null);
+            setTasksObservedAt(Date.now());
             setSelected(previous => pruneSelectedTaskKeys(previous, relevantTasks, scopeFilters, taskKey));
         } catch (loadError: unknown) {
             if (generation !== requestGeneration.current) return;
@@ -288,7 +292,11 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                             </tr></thead>}
                             <TaskBody>{visibleTasks.map(task => {
                                 const stageLabel = STAGE_LABELS[task.stage] ? t(STAGE_LABELS[task.stage]) : task.stage;
-                                const statusLabel = STATUS_LABELS[task.status] ? t(STATUS_LABELS[task.status]) : task.status;
+                                const noMatches = task.status === 'completed' && task.sourceType === 'telegram_channel'
+                                    && task.detail.scan && typeof task.detail.scan === 'object'
+                                    && 'outcome' in task.detail.scan && task.detail.scan.outcome === 'no_matches';
+                                const statusLabel = noMatches ? t('tasks.statuses.noMatches')
+                                    : STATUS_LABELS[task.status] ? t(STATUS_LABELS[task.status]) : task.status;
                                 const stopped = ['cancelled', 'failed', 'interrupted', 'retry_required', 'disabled'].includes(task.status);
                                 const progress = Number.isFinite(task.progress) ? Math.max(0, Math.min(100, task.progress)) : 0;
                                 const progressLabel = stopped ? audit.history : task.status === 'paused' ? audit.paused : t('tasks.table.progress');
@@ -309,22 +317,25 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                         <h3 title={task.title}>{task.title}</h3>
                                         {!mobile && <details className="op-task-details"><summary>{audit.details}</summary><span className="op-task-id" title={task.id}><code>{task.id}</code><button type="button" className="op-icon-button" title={t('tasks.actions.copyId')} aria-label={t('tasks.actions.copyId')} onClick={() => void navigator.clipboard.writeText(task.id)}><Copy className="h-3.5 w-3.5" /></button></span></details>}
                                     </TaskCell>
-                                    <TaskCell className="audit-task-status"><span className={cn('op-badge', statusTone(task.status))}><StatusIcon status={task.status} runningLabel={t('tasks.loading.running')} />{statusLabel}</span>{showStage && <small className="op-cell-meta">{stageLabel}</small>}</TaskCell>
+                                    <TaskCell className="audit-task-status"><span className={cn('op-badge', noMatches ? 'op-badge--muted' : statusTone(task.status))}><StatusIcon status={noMatches ? 'cancelled' : task.status} runningLabel={t('tasks.loading.running')} />{statusLabel}</span>{showStage && <small className="op-cell-meta">{stageLabel}</small>}</TaskCell>
                                     <TaskCell className="op-task-target" title={taskTarget(task)}>{t('tasks.target.label', { target: taskTarget(task) })}</TaskCell>
                                     <TaskCell className="op-task-transfer">
                                         {(progress > 0 || stopped || ['running', 'paused'].includes(task.status)) && <div className={cn('audit-task-progress', (stopped || task.status === 'paused') && 'is-historical')}><span className="audit-progress-label">{progressLabel}</span><div className="op-progress-line"><div className="op-progress" role="progressbar" aria-label={`${task.title}: ${progressLabel}`} aria-valuetext={`${progressLabel}: ${Math.round(progress)}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><span>{Math.round(progress)}%</span></div></div>}
                                         {task.counts.total > 0 && <small className="op-cell-meta">{task.sourceType === 'telegram_channel'
                                             ? t('tasks.progress.channelItems', { processed: task.detail.processed ?? task.counts.completed, total: task.counts.total, completed: task.counts.completed, failed: task.counts.failed, skipped: task.detail.skipped ?? 0 })
                                             : <>{t('tasks.progress.items', { completed: task.counts.completed, total: task.counts.total })}{task.counts.failed > 0 ? t('tasks.progress.failed', { count: task.counts.failed }) : ''}</>}</small>}
+                                        {task.sourceType === 'telegram_channel' && Number(task.detail.excluded) > 0 && <small className="op-cell-meta">{t('tasks.progress.excluded', { count: Number(task.detail.excluded) })}</small>}
                                         {task.sourceType === 'telegram_channel' && task.status !== 'completed' && !stopped && <small className="op-cell-meta">{t('tasks.progress.channelQueue', { active: task.detail.active ?? 0, pending: task.detail.pending ?? 0 })}</small>}
                                         {scan && <small className="op-cell-meta">{t('tasks.progress.channelScan', { messages: Number(scan.channelMessagesScanned ?? 0), files: Number(scan.channelMediaFound ?? 0) })}</small>}
+                                        {scan && Number(scan.waitUntil || 0) > tasksObservedAt && <small className="op-cell-meta">{t('tasks.progress.scanWait', { time: formatDateTime(new Date(Number(scan.waitUntil)).toISOString(), locale) })}</small>}
                                         {scan && (commentMessagesScanned > 0 || commentMediaFound > 0) && <small className="op-cell-meta">{t('tasks.progress.commentScan', { messages: commentMessagesScanned, files: commentMediaFound })}</small>}
                                         {lastMessageDate && <small className="op-cell-meta">{t('tasks.progress.scanDate', { time: formatDateTime(lastMessageDate, locale) })}</small>}
                                         {task.sourceType === 'telegram_channel' && task.detail.scanStatus !== 'done' && !stopped && <small className="op-cell-meta">{t('tasks.progress.scanningHint')}</small>}
-                                        {transfer.showBytes && <small className="op-cell-meta">{t(task.sourceType === 'telegram_channel' ? 'tasks.progress.savedData' : 'tasks.progress.data', { transferred: transfer.transferred, total: transfer.total })}</small>}
+                                        {task.status === 'awaiting_selection' && <small className="op-cell-meta">{t('tasks.progress.selectionHint')}</small>}
+                                        {transfer.showBytes && <small className="op-cell-meta">{t(task.sourceType === 'telegram_channel' ? (task.detail.fileSelectionConfirmed ? 'tasks.progress.selectedData' : 'tasks.progress.savedData') : 'tasks.progress.data', { transferred: transfer.transferred, total: transfer.total })}</small>}
                                         {Number(task.detail.savedUnknownCount) > 0 && <small className="op-cell-meta">{t('tasks.progress.unknownSizes', { count: Number(task.detail.savedUnknownCount) })}</small>}
                                         {(detailSpeed || detailEta) && <small className="op-cell-meta">{detailSpeed ? t('tasks.progress.speed', { speed: detailSpeed }) : ''}{detailSpeed && detailEta ? ' · ' : ''}{detailEta ? t('tasks.progress.eta', { eta: detailEta }) : ''}</small>}
-                                        {task.error && <p className="op-inline-error">{localizeTaskReason(task.error, t)}</p>}
+                                        {(task.counts.failed > 0 || task.error) && <TaskFailureDetails task={task} onUnauthorized={onUnauthorized} />}
                                     </TaskCell>
                                     <TaskCell className="op-task-date"><time dateTime={task.updatedAt}>{t('tasks.updated', { time: formatDateTime(task.updatedAt, locale) })}</time></TaskCell>
                                     <TaskCell className="op-task-actions">{!selectionMode && <div className="op-actions">

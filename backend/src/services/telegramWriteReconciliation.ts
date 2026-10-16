@@ -23,6 +23,7 @@ export interface TelegramWriteReconciliationInput {
     childLeaseToken: string;
     provider: string;
     accountId: string | null;
+    storedPath?: string;
 }
 
 export interface ClaimedTelegramWriteReconciliation {
@@ -43,15 +44,15 @@ export async function beginTelegramWriteReconciliation(db: Queryable, input: Tel
     const operationId = crypto.randomUUID();
     const result = await db.query(
         `INSERT INTO telegram_write_reconciliations
-         (operation_id, job_id, item_id, child_lease_token, provider, account_id,
+         (operation_id, job_id, item_id, child_lease_token, provider, account_id, stored_path,
           object_state, index_state, reason, status, created_at, updated_at)
-         SELECT $1,$2,$3,$4,$5,$6,'unknown','unknown','Telegram 外部写进行中','pending',NOW(),NOW()
+         SELECT $1,$2,$3,$4,$5,$6,$7,'unknown','unknown','Telegram 外部写进行中','pending',NOW(),NOW()
          WHERE EXISTS (
              SELECT 1 FROM telegram_download_items i
              WHERE i.id = $3::uuid AND i.job_id = $2::uuid AND i.status = 'downloading' AND i.lease_token = $4::uuid
          )
          RETURNING operation_id`,
-        [operationId, input.jobId, input.itemId, input.childLeaseToken, input.provider, input.accountId],
+        [operationId, input.jobId, input.itemId, input.childLeaseToken, input.provider, input.accountId, input.storedPath || null],
     ) as { rowCount?: number | null };
     if (result.rowCount !== 1) throw new Error('Telegram write journal 创建失败或 child lease 已丢失');
     return operationId;
@@ -115,6 +116,12 @@ export async function claimTelegramWriteReconciliations(db: Queryable, leaseToke
              WHERE r.status = 'pending'
                AND r.resolution IS DISTINCT FROM 'operator_required'
                AND (r.lease_expires_at IS NULL OR r.lease_expires_at <= NOW())
+               AND NOT EXISTS (
+                   SELECT 1 FROM telegram_download_items active
+                   WHERE active.id = r.item_id AND active.status = 'downloading'
+                     AND active.lease_token = r.child_lease_token
+                     AND active.lease_expires_at > NOW()
+               )
              ORDER BY r.created_at
              FOR UPDATE SKIP LOCKED
              LIMIT $2

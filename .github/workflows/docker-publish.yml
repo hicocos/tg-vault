@@ -13,9 +13,14 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
+    outputs:
+      publish_enabled: ${{ steps.publish-config.outputs.enabled }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -25,9 +30,21 @@ jobs:
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
+      - name: Check Docker Hub publishing configuration
+        id: publish-config
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+        run: |
+          if [[ -n "$DOCKER_USERNAME" && -n "$DOCKER_PASSWORD" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Docker Hub credentials are not configured; publishing is skipped."
+          fi
       - name: Verify backend
         working-directory: backend
-        run: npm ci && npm audit --omit=dev --audit-level=high && npm run typecheck && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=high && npm run schema:check && npm run typecheck && npm run build
       - name: Verify frontend
         working-directory: frontend
         run: npm ci && npm audit --omit=dev --audit-level=high && npm run lint && npm run build
@@ -47,6 +64,7 @@ jobs:
   # 构建 Backend 镜像
   build-backend:
     needs: quality
+    if: github.event_name == 'pull_request' || needs.quality.outputs.publish_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -106,6 +124,7 @@ jobs:
   # 构建 Frontend 镜像
   build-frontend:
     needs: quality
+    if: github.event_name == 'pull_request' || needs.quality.outputs.publish_enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

@@ -19,7 +19,7 @@ const NUMBER_SPECS: NumberSpec[] = [
     { name: 'ORPHAN_CLEANUP_MIN_AGE_MS', fallback: 600_000, min: 60_000, max: 2_592_000_000 },
     { name: 'SQL_LOG_SLOW_MS', fallback: 500, min: 0, max: 3_600_000 },
     { name: 'TELEGRAM_DOWNLOAD_WORKERS', fallback: 4, min: 1, max: 16 },
-    { name: 'TELEGRAM_FILE_DOWNLOAD_CONCURRENCY', fallback: 2, min: 1, max: 4 },
+    { name: 'TELEGRAM_FILE_DOWNLOAD_CONCURRENCY', fallback: 2, min: 1, max: 10 },
     { name: 'TELEGRAM_RATE_WINDOW_MS', fallback: 60_000, min: 10_000, max: 86_400_000 },
     { name: 'TELEGRAM_RATE_MAX', fallback: 30, min: 5, max: 10_000 },
     { name: 'TELEGRAM_HEAVY_RATE_WINDOW_MS', fallback: 600_000, min: 60_000, max: 86_400_000 },

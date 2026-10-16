@@ -169,7 +169,10 @@ export async function probeTelegramAccountSource(
         const entity = await input.client.getEntity(input.source);
         const [latest] = await input.client.getMessages(entity, { limit: 1 });
         const latestMessageId = typeof latest?.id === 'number' ? latest.id : null;
-        if (input.scope === 'comments' && latestMessageId !== null) {
+        if (latestMessageId === null) {
+            return failureResult(input, new Error('TELEGRAM_HISTORY_UNVERIFIED'), now);
+        }
+        if (input.scope === 'comments') {
             // GramJS's replyTo history lookup accepts the original source;
             // this mirrors telegramChannelJobs and resolves linked discussions.
             await input.client.getMessages(input.source, { limit: 1, replyTo: latestMessageId });

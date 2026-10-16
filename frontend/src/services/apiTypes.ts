@@ -143,6 +143,23 @@ export interface UnifiedTaskList {
     generatedAt: string;
 }
 
+export interface TaskFailure {
+    id: string;
+    fileName: string | null;
+    error: string | null;
+    messageId: number | null;
+    messageUrl: string | null;
+    attempts: number;
+    updatedAt: string | null;
+}
+
+export interface TaskFailurePage {
+    items: TaskFailure[];
+    total: number;
+    offset: number;
+    limit: number;
+}
+
 export type TelegramAdFilterMode = 'off' | 'conservative' | 'aggressive';
 export type TelegramAdRuleKind = 'keyword' | 'domain' | 'username' | 'template' | 'media';
 export type TelegramAdRuleAction = 'allow' | 'block';
@@ -492,6 +509,8 @@ export type { BatchDeleteResult };
 export interface AdvancedTaskSettings {
     telegramDownloadWorkers: number;
     telegramFileConcurrency: number;
+    telegramFileConcurrencyLimit: number;
+    telegramEnabledAccounts: number;
     duplicateMode: 'copy' | 'skip';
     autoCleanupOrphans: boolean;
     skipTelegramPhotosInBatch: boolean;

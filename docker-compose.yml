@@ -13,6 +13,8 @@ services:
         - SOURCE_REVISION=${SOURCE_REVISION:-unknown}
         - SOURCE_VERSION=${SOURCE_VERSION:-worktree}
     container_name: tg-vault-frontend
+    environment:
+      - PORT=${PORT:-51947}
     ports:
       - "127.0.0.1:47832:80"
     networks:
@@ -86,6 +88,8 @@ services:
       - SQL_LOG_SLOW_MS=${SQL_LOG_SLOW_MS:-500}
       - SQL_LOG_ALL=${SQL_LOG_ALL:-false}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - UPDATE_CHECK_ENABLED=${UPDATE_CHECK_ENABLED:-true}
+      - UPDATE_CHECK_REPOSITORY=${UPDATE_CHECK_REPOSITORY:-hicocos/tg-vault}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
       - TELEGRAM_REQUIRED=${TELEGRAM_REQUIRED:-false}
       - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}

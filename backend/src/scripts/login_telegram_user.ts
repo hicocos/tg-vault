@@ -3,6 +3,7 @@ import path from 'path';
 import readline from 'readline';
 import { TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
+import { ownUserTransport } from '../services/telegramUserTransport.js';
 
 async function main() {
   const apiId = parseInt(process.env.TELEGRAM_API_ID || '0');
@@ -21,10 +22,10 @@ async function main() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = (question: string) => new Promise<string>(resolve => rl.question(question, resolve));
 
-  const client = new TelegramClient(new StringSession(''), apiId, apiHash, {
-    connectionRetries: 5,
+  const client = ownUserTransport(new TelegramClient(new StringSession(''), apiId, apiHash, {
+    connectionRetries: 1,
     useWSS: false,
-  });
+  }), { accountId: 'cli-login' });
 
   try {
     await client.start({

@@ -10,6 +10,18 @@ export interface TelegramLoginCredentials {
     apiId: number;
     apiHash: string;
 }
+export interface TelegramUserLoginTarget {
+    accountId: string;
+    telegramUserId: string;
+}
+
+export interface TelegramAuthorizedLogin {
+    session: string;
+    credentials: TelegramLoginCredentials;
+    account: TelegramUserLoginAccount;
+    target: TelegramUserLoginTarget | null;
+}
+
 
 export type TelegramQrExportResult =
     | { kind: 'token'; token: Buffer; expiresAt: number }
@@ -37,6 +49,8 @@ export type TelegramUserLoginFlowErrorCode =
     | 'FLOW_EXPIRED'
     | 'TOO_MANY_ERRORS'
     | 'API_NOT_CONFIGURED'
+    | 'ACCOUNT_NOT_FOUND'
+    | 'ACCOUNT_MISMATCH'
     | 'TELEGRAM_ERROR';
 
 export class TelegramUserLoginFlowError extends Error {
@@ -50,6 +64,7 @@ interface BaseFlow<C> {
     id: string;
     owner: string;
     credentials: TelegramLoginCredentials;
+    target: TelegramUserLoginTarget | null;
     expiresAt: number;
     errors: number;
     client: C | null;
@@ -90,11 +105,7 @@ interface QrFlow<C> extends BaseFlow<C> {
 
 type LoginFlow<C> = PhoneFlow<C> | QrFlow<C>;
 
-type AuthorizedCallback = (input: {
-    session: string;
-    credentials: TelegramLoginCredentials;
-    account: TelegramUserLoginAccount;
-}) => Promise<void>;
+type AuthorizedCallback = (input: TelegramAuthorizedLogin) => Promise<void>;
 
 function telegramErrorName(error: unknown): string {
     if (!error || typeof error !== 'object') return '';
@@ -113,12 +124,13 @@ function normalizeAccount(me: { id: unknown; username?: string; firstName?: stri
 /**
  * Ephemeral, admin-session-bound Telegram login coordinator.
  *
- * Login tokens, phone-code hashes and StringSessions live only in memory. The
- * injected callback is the integration seam for a multi-account repository and
- * client pool; it should upsert by account.userId and activate/reload that user.
+ * Login tokens, phone-code hashes and StringSessions live only in memory.
+ * Reauthentication pins the original identity before contacting Telegram; only
+ * a matching authorized identity may replace the persistent session.
  */
 export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginClient> {
     private readonly flows = new Map<string, LoginFlow<C>>();
+    private readonly unclosedClients = new Set<C>();
     private readonly ttlMs: number;
     private readonly maxErrors: number;
     private readonly now: () => number;
@@ -127,6 +139,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         credentials(): Promise<TelegramLoginCredentials | null>;
         createClient(credentials: TelegramLoginCredentials): C;
         onAuthorized: AuthorizedCallback;
+        getTargetAccount?(accountId: string): Promise<TelegramUserLoginTarget | null>;
         now?: () => number;
         ttlMs?: number;
         maxErrors?: number;
@@ -141,11 +154,12 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         return this.startPhone(owner, rawPhone);
     }
 
-    async startPhone(owner: string, rawPhone: string): Promise<{ flowId: string; delivery: 'app' | 'sms'; expiresAt: string }> {
+    async startPhone(owner: string, rawPhone: string, accountId?: unknown): Promise<{ flowId: string; delivery: 'app' | 'sms'; expiresAt: string }> {
         const phone = String(rawPhone || '').replace(/[\s()-]/g, '');
         if (!/^\+[1-9]\d{6,14}$/.test(phone)) {
             throw new TelegramUserLoginFlowError('INVALID_PHONE', '请输入含国家区号的有效手机号');
         }
+        const target = await this.resolveTarget(accountId);
         await this.removeOwnerFlows(owner);
         const credentials = await this.requireCredentials();
         const client = this.deps.createClient(credentials);
@@ -158,6 +172,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
                 id,
                 owner,
                 credentials,
+                target,
                 expiresAt,
                 errors: 0,
                 client,
@@ -179,7 +194,8 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         }
     }
 
-    async startQr(owner: string): Promise<TelegramQrLoginStatusResponse> {
+    async startQr(owner: string, accountId?: unknown): Promise<TelegramQrLoginStatusResponse> {
+        const target = await this.resolveTarget(accountId);
         await this.removeOwnerFlows(owner);
         const credentials = await this.requireCredentials();
         const client = this.deps.createClient(credentials);
@@ -189,6 +205,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
             id,
             owner,
             credentials,
+            target,
             expiresAt,
             errors: 0,
             client,
@@ -289,6 +306,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
             return { step: 'complete', account };
         } catch (error) {
             const failure = this.publicError(error);
+            if (flow.kind === 'qr' && failure.code !== 'INVALID_PASSWORD' && !flow.client) await this.failQr(flow, failure);
             if (failure.code === 'INVALID_PASSWORD') await this.recordError(flow);
             throw failure;
         }
@@ -359,8 +377,12 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
     private async authorize(flow: LoginFlow<C>): Promise<TelegramUserLoginAccount> {
         const client = this.requireClient(flow);
         const account = normalizeAccount(await client.getMe());
+        await this.requireFlow(flow.owner, flow.id);
         if (!account.userId) throw new TelegramUserLoginFlowError('TELEGRAM_ERROR', 'Telegram 登录未返回用户身份');
-        await this.deps.onAuthorized({ session: client.saveSession(), credentials: flow.credentials, account });
+        if (flow.target && flow.target.telegramUserId !== account.userId) {
+            throw new TelegramUserLoginFlowError('ACCOUNT_MISMATCH', '当前登录账号与待恢复账号不一致，请使用原账号重新登录。添加其他账号请使用“添加账号”。');
+        }
+        await this.deps.onAuthorized({ session: client.saveSession(), credentials: flow.credentials, account, target: flow.target });
         return account;
     }
 
@@ -416,6 +438,7 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
     }
 
     private async removeOwnerFlows(owner: string): Promise<void> {
+        if (this.unclosedClients.size) throw new Error('TELEGRAM_LOGIN_CLEANUP_UNCONFIRMED');
         for (const flow of [...this.flows.values()]) {
             if (flow.owner === owner) await this.deleteAndClose(flow);
         }
@@ -449,6 +472,16 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
         return flow.client;
     }
 
+    private async resolveTarget(accountId: unknown): Promise<TelegramUserLoginTarget | null> {
+        if (accountId === undefined) return null;
+        if (typeof accountId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) {
+            throw new TelegramUserLoginFlowError('ACCOUNT_NOT_FOUND', '待重新登录的账号不存在');
+        }
+        const target = await this.deps.getTargetAccount?.(accountId);
+        if (!target) throw new TelegramUserLoginFlowError('ACCOUNT_NOT_FOUND', '待重新登录的账号不存在或已删除');
+        return target;
+    }
+
     private async requireCredentials(): Promise<TelegramLoginCredentials> {
         const credentials = await this.deps.credentials();
         if (!credentials?.apiId || !credentials.apiHash) {
@@ -477,7 +510,8 @@ export class TelegramMultiAccountLoginFlows<C extends TelegramMultiAccountLoginC
     }
 
     private async closeClient(client: C): Promise<void> {
-        try { await client.disconnect(); } catch { /* best effort */ }
-        try { await client.destroy(); } catch { /* best effort */ }
+        this.unclosedClients.add(client);
+        await client.destroy();
+        this.unclosedClients.delete(client);
     }
 }

@@ -40,7 +40,7 @@ export const BOT_COMMANDS: BotCommandDefinition[] = [
     { command: 'tg_retry', description: '重试失败任务', helpDescription: '重试最近失败的 Telegram 下载任务', category: 'channels', usage: '[数量] [任务 ID]', help: true },
     { command: 'stop_tasks', description: '停止当前聊天任务', helpDescription: '预览并停止当前聊天下载任务', category: 'settings', aliases: ['stop', 'cancel_tasks'], help: true },
     { command: 'download_workers', description: '单文件分片并发', helpDescription: '设置单文件分片下载并发', category: 'settings', aliases: ['workers'], help: true },
-    { command: 'file_concurrency', description: '文件级下载并发', helpDescription: '设置同时下载的文件数：1 / 2 / 3 / 4', category: 'settings', aliases: ['file_workers', 'download_files'], menu: false, help: true },
+    { command: 'file_concurrency', description: '文件级下载并发', helpDescription: '设置同时下载的文件数：1–10，上限为启用账号数的两倍，无账号时最多 2', category: 'settings', aliases: ['file_workers', 'download_files'], menu: false, help: true },
     { command: 'status', description: '系统诊断状态', helpDescription: '查看 Bot、账号下载器、存储、磁盘、队列、订阅和对账状态', category: 'settings', menu: true, help: true },
     { command: 'notifications', description: '通知偏好', helpDescription: '设置成功/失败/订阅摘要、时区和安静时段；安全告警始终即时', category: 'settings', menu: true, help: true },
     { command: 'duplicate_mode', description: '重复文件处理', helpDescription: '设置重复文件处理策略', category: 'settings', aliases: ['duplicate', 'dup'], help: true },

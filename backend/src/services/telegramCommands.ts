@@ -15,7 +15,8 @@ import {
     getProviderDisplayName,
 } from '../utils/telegramMessages.js';
 import { authenticatedUsers, passwordInputState, isAuthenticatedAsync } from './telegramState.js';
-import { forceStopDownloadTasksForScope, getDownloadQueueStats, getTaskStatus, getDownloadTaskScopeStatus, pauseDownloadTasks, resumeDownloadTasks, retryFailedDownloadTasks, getFileDownloadConcurrency, setFileDownloadConcurrency, listDownloadTaskGroups, getDownloadTaskGroup, prioritizeDownloadTaskGroup, pauseDownloadTaskGroup, resumeDownloadTaskGroup, cancelDownloadTaskGroup, getChannelExecutionGroup, prioritizeChannelExecutionGroup, refreshSilentProgress, refreshDownloadProgress } from './telegramUpload.js';
+import { forceStopDownloadTasksForScope, getDownloadQueueStats, getTaskStatus, getDownloadTaskScopeStatus, pauseDownloadTasks, resumeDownloadTasks, retryFailedDownloadTasks, listDownloadTaskGroups, getDownloadTaskGroup, prioritizeDownloadTaskGroup, pauseDownloadTaskGroup, resumeDownloadTaskGroup, cancelDownloadTaskGroup, getChannelExecutionGroup, prioritizeChannelExecutionGroup, refreshSilentProgress, refreshDownloadProgress } from './telegramUpload.js';
+import { assertFileConcurrencyCapacity, FileConcurrencyLimitError, getFileConcurrencyCapacity, loadFileDownloadConcurrencySetting, setFileDownloadConcurrency, type FileConcurrencySettings } from './telegramFileConcurrency.js';
 import { storageManager } from './storage.js';
 import { cancelTelegramBackgroundJob, listTelegramActiveTaskQueues, pauseTelegramBackgroundJob, resumeTelegramBackgroundJob, retryTelegramBackgroundJob } from './telegramChannelJobs.js';
 import { getSetting, setSetting } from '../utils/settings.js';
@@ -66,7 +67,6 @@ import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
 // ESM compatibility
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
 const DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
-const FILE_CONCURRENCY_OPTIONS = [1, 2, 3, 4];
 const STORAGE_TYPE_ORDER = ['local', 'onedrive', 'google_drive', 'aliyun_oss', 's3', 'webdav'];
 const ON_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
@@ -365,17 +365,8 @@ function buildDownloadWorkersText(current: number, locale: TelegramLocale = DEFA
     ].join('\n');
 }
 
-function normalizeFileConcurrency(value: unknown): number {
-    const parsed = parseInt(String(value ?? '2'), 10);
-    return FILE_CONCURRENCY_OPTIONS.includes(parsed) ? parsed : 2;
-}
 
-async function getCurrentFileConcurrency(): Promise<number> {
-    const value = await getSetting('telegram_file_download_concurrency', process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY || String(getFileDownloadConcurrency()));
-    return normalizeFileConcurrency(value);
-}
-
-function buildFileConcurrencyKeyboard(current: number, confirmValue?: number, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
+function buildFileConcurrencyKeyboard(current: number, limit: number, confirmValue?: number, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
     if (confirmValue) {
         return new Api.ReplyInlineMarkup({
             rows: [
@@ -390,32 +381,24 @@ function buildFileConcurrencyKeyboard(current: number, confirmValue?: number, lo
     }
 
     return new Api.ReplyInlineMarkup({
-        rows: [
-            new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${current === 1 ? '✅ ' : ''}1`, data: Buffer.from('fc_set_1') }),
-                    new Api.KeyboardButtonCallback({ text: `${current === 2 ? '✅ ' : ''}2`, data: Buffer.from('fc_set_2') }),
-                ],
-            }),
-            new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${current === 3 ? '✅ ' : ''}3`, data: Buffer.from('fc_set_3') }),
-                    new Api.KeyboardButtonCallback({ text: `${current === 4 ? '✅ ' : ''}4 ⚠️`, data: Buffer.from('fc_set_4') }),
-                ],
-            }),
-        ],
+        rows: Array.from({ length: 5 }, (_, row) => new Api.KeyboardButtonRow({
+            buttons: [row * 2 + 1, row * 2 + 2].map(value => new Api.KeyboardButtonCallback({
+                text: `${current === value ? '✅ ' : ''}${value}${value > limit ? ' 🔒' : value >= 4 ? ' ⚠️' : ''}`,
+                data: Buffer.from(`fc_set_${value}`),
+            })),
+        })),
     });
 }
 
-function buildFileConcurrencyText(current: number, locale: TelegramLocale = DEFAULT_LOCALE): string {
+function buildFileConcurrencyText(settings: FileConcurrencySettings, locale: TelegramLocale = DEFAULT_LOCALE): string {
     const stats = getDownloadQueueStats();
     return [
         t(locale, 'commands.auto005'),
         '',
-        t(locale, 'commands.auto006', { value0: current }),
+        t(locale, 'commands.auto006', { value0: settings.current }),
         t(locale, 'commands.auto007', { value0: stats.active, value1: stats.pending }),
         '',
-        t(locale, 'commands.auto008'),
+        t(locale, 'commands.fileConcurrencyCapacity', { count: settings.enabledAccounts, limit: settings.maxConcurrency }),
         '',
         t(locale, 'commands.auto009'),
         '',
@@ -1283,8 +1266,13 @@ async function loadVisibleChannelTaskRows(chatId: string, userId: number) {
 }
 
 async function loadTaskCenterItems(chatId: string, userId: number): Promise<TaskCenterItem[]> {
-    const ordinaryItems = listDownloadTaskGroups(chatId, userId)
-        .map(ordinaryTaskCenterItem)
+    const locale = await getTelegramUserLocaleOrDefault(userId);
+    const groups = listDownloadTaskGroups(chatId, userId);
+    const accountIds = Array.from(new Set(groups.map(group => group.targetAccountId).filter(Boolean)));
+    const accountRows = accountIds.length ? await query('SELECT id, name FROM storage_accounts WHERE id=ANY($1::uuid[])', [accountIds]) : { rows: [] };
+    const accountNames = new Map<string, string>(accountRows.rows.map(account => [String(account.id), String(account.name)]));
+    const ordinaryItems = groups
+        .map(group => ordinaryTaskCenterItem({ ...group, targetAccountName: group.targetAccountId ? accountNames.get(group.targetAccountId) : undefined }, locale))
         .filter((item): item is TaskCenterItem => Boolean(item));
     const channelRows = await loadVisibleChannelTaskRows(chatId, userId);
     const channelItems = channelRows
@@ -1294,7 +1282,7 @@ async function loadTaskCenterItems(chatId: string, userId: number): Promise<Task
                 ? (() => { try { const parsed = JSON.parse(paramsSource); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })()
                 : (paramsSource && typeof paramsSource === 'object' && !Array.isArray(paramsSource) ? paramsSource : {});
             const folder = row.folder_override || params.folderOverride || null;
-            return mergeChannelExecutionState(channelTaskCenterItem({ ...row, folder_override: folder }), row);
+            return mergeChannelExecutionState(channelTaskCenterItem({ ...row, folder_override: folder }, locale), row);
         })
         .filter((item): item is TaskCenterItem => Boolean(item));
     return [...ordinaryItems, ...channelItems];
@@ -1308,7 +1296,9 @@ async function findTaskCenterItem(
 ): Promise<TaskCenterItem | null> {
     if (sourceType === 'memory') {
         const group = getDownloadTaskGroup(id, chatId, userId);
-        return group ? ordinaryTaskCenterItem(group) : null;
+        if (!group) return null;
+        const account = group.targetAccountId ? await query('SELECT name FROM storage_accounts WHERE id=$1', [group.targetAccountId]) : { rows: [] };
+        return ordinaryTaskCenterItem({ ...group, targetAccountName: account.rows[0]?.name }, await getTelegramUserLocaleOrDefault(userId));
     }
     const rows = await loadVisibleChannelTaskRows(chatId, userId);
     const matches = rows.filter(job => String(job.id).toLowerCase().startsWith(id.toLowerCase()));
@@ -1320,7 +1310,7 @@ async function findTaskCenterItem(
         ? (() => { try { const parsed = JSON.parse(paramsSource); return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })()
         : (paramsSource && typeof paramsSource === 'object' && !Array.isArray(paramsSource) ? paramsSource : {});
     if (!row.folder_override && params.folderOverride) row.folder_override = params.folderOverride;
-    return mergeChannelExecutionState(channelTaskCenterItem(row), row);
+    return mergeChannelExecutionState(channelTaskCenterItem(row, await getTelegramUserLocaleOrDefault(userId)), row);
 }
 
 async function editTaskCenterView(
@@ -1569,7 +1559,7 @@ export async function handleTaskCenterCallback(
 
 async function getBulkTaskImpact(userId: number, chatId: string): Promise<BulkTaskImpact> {
     const ordinaryGroups = listDownloadTaskGroups(chatId, userId)
-        .map(ordinaryTaskCenterItem)
+        .map(group => ordinaryTaskCenterItem(group))
         .filter((item): item is TaskCenterItem => Boolean(item));
     const channelRows = await listTelegramActiveTaskQueues(userId, 1000);
     return {
@@ -1627,7 +1617,7 @@ async function cancelTasksForScope(userId: number, chatId: string): Promise<Bulk
         channelTasks += 1;
     }
     const ordinaryTasks = listDownloadTaskGroups(chatId, userId)
-        .map(ordinaryTaskCenterItem)
+        .map(group => ordinaryTaskCenterItem(group))
         .filter((item): item is TaskCenterItem => Boolean(item)).length;
     const ordinary = forceStopDownloadTasksForScope(chatId, userId, '用户确认取消当前聊天全部任务');
     return {
@@ -1881,12 +1871,11 @@ export async function handleDownloadWorkers(message: Api.Message, locale?: Teleg
 
 export async function handleFileConcurrency(message: Api.Message, locale?: TelegramLocale): Promise<void> {
     try {
-        const current = await getCurrentFileConcurrency();
+        const settings = await loadFileDownloadConcurrencySetting();
         const resolvedLocale = locale || await getTelegramUserLocaleOrDefault(message.senderId?.toJSNumber() || 0);
-        setFileDownloadConcurrency(current);
         await message.reply({
-            message: buildFileConcurrencyText(current, resolvedLocale),
-            buttons: buildFileConcurrencyKeyboard(current, undefined, resolvedLocale),
+            message: buildFileConcurrencyText(settings, resolvedLocale),
+            buttons: buildFileConcurrencyKeyboard(settings.current, settings.maxConcurrency, undefined, resolvedLocale),
         });
     } catch (error) {
         console.error('🤖 获取文件级并发设置失败:', error);
@@ -2151,66 +2140,55 @@ export async function handleFileConcurrencyCallback(client: TelegramClient, upda
 
     try {
         if (data === 'fc_cancel') {
-            const current = await getCurrentFileConcurrency();
-            setFileDownloadConcurrency(current);
+            const settings = await loadFileDownloadConcurrencySetting();
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: buildFileConcurrencyText(current, locale),
-                buttons: buildFileConcurrencyKeyboard(current, undefined, locale),
+                text: buildFileConcurrencyText(settings, locale),
+                buttons: buildFileConcurrencyKeyboard(settings.current, settings.maxConcurrency, undefined, locale),
             });
             await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.cancelled') }));
             return;
         }
 
-        const setMatch = data.match(/^fc_set_(1|2|3|4)$/);
-        if (setMatch) {
-            const concurrency = Number(setMatch[1]);
-            if (concurrency === 4) {
-                await client.editMessage(update.peer, {
-                    message: Number(update.msgId),
-                    text: [
-                        t(locale, 'commands.auto138'),
-                        '',
-                        t(locale, 'commands.auto139'),
-                        t(locale, 'commands.auto140'),
-                        t(locale, 'commands.auto141'),
-                        t(locale, 'commands.auto142'),
-                        '',
-                        t(locale, 'commands.auto143'),
-                    ].join('\n'),
-                    buttons: buildFileConcurrencyKeyboard(concurrency, concurrency, locale),
-                });
-                await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.secondConfirm') }));
-                return;
-            }
-
-            await setSetting('telegram_file_download_concurrency', String(concurrency));
-            const normalized = setFileDownloadConcurrency(concurrency);
+        const match = data.match(/^fc_(set|confirm)_([1-9]|10)$/);
+        if (!match) return;
+        const concurrency = Number(match[2]);
+        const capacity = await getFileConcurrencyCapacity();
+        assertFileConcurrencyCapacity(concurrency, capacity);
+        if (match[1] === 'set' && concurrency >= 4) {
             await client.editMessage(update.peer, {
                 message: Number(update.msgId),
-                text: `${buildFileConcurrencyText(normalized, locale)}\n\n${t(locale, 'commands.auto144', { value0: '', value1: normalized })}`,
-                buttons: buildFileConcurrencyKeyboard(normalized, undefined, locale),
+                text: [
+                    t(locale, 'commands.auto138', { value0: concurrency }),
+                    '',
+                    t(locale, 'commands.auto139'),
+                    t(locale, 'commands.auto140'),
+                    t(locale, 'commands.auto141'),
+                    t(locale, 'commands.auto142'),
+                    '',
+                    t(locale, 'commands.auto143'),
+                ].join('\n'),
+                buttons: buildFileConcurrencyKeyboard(concurrency, capacity.maxConcurrency, concurrency, locale),
             });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto145', { value0: normalized }) }));
+            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.secondConfirm') }));
             return;
         }
 
-        const confirmMatch = data.match(/^fc_confirm_4$/);
-        if (confirmMatch) {
-            await setSetting('telegram_file_download_concurrency', '4');
-            const normalized = setFileDownloadConcurrency(4);
-            await client.editMessage(update.peer, {
-                message: Number(update.msgId),
-                text: `${buildFileConcurrencyText(normalized, locale)}\n\n${t(locale, 'commands.auto146', { value0: '', value1: normalized })}`,
-                buttons: buildFileConcurrencyKeyboard(normalized, undefined, locale),
-            });
-            await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto147'), alert: true }));
-        }
+        await setFileDownloadConcurrency(concurrency);
+        const settings = await loadFileDownloadConcurrencySetting();
+        await client.editMessage(update.peer, {
+            message: Number(update.msgId),
+            text: `${buildFileConcurrencyText(settings, locale)}\n\n${t(locale, match[1] === 'confirm' ? 'commands.auto146' : 'commands.auto144', { value0: '', value1: settings.current })}`,
+            buttons: buildFileConcurrencyKeyboard(settings.current, settings.maxConcurrency, undefined, locale),
+        });
+        await client.invoke(new Api.messages.SetBotCallbackAnswer({ queryId: update.queryId, message: t(locale, 'commands.auto145', { value0: settings.current }) }));
     } catch (error) {
         console.error('🤖 设置文件级并发失败:', error);
         await client.invoke(new Api.messages.SetBotCallbackAnswer({
             queryId: update.queryId,
-            message: t(locale, 'commands.settingFailedRetry'),
+            message: error instanceof FileConcurrencyLimitError
+                ? t(locale, 'commands.fileConcurrencyLimit', { count: error.enabledAccounts, limit: error.maxConcurrency })
+                : t(locale, 'commands.settingFailedRetry'),
             alert: true,
         }));
     }

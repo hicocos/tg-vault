@@ -82,7 +82,7 @@ export async function withTelegramAccount<T>(
     sourceKey: string,
     scope: 'download' | 'scan' | 'metadata',
     operation: (client: TelegramClient, accountId: string) => Promise<T>,
-    options: { signal?: AbortSignal } = {},
+    options: Pick<TelegramAccountSelectionOptions, 'signal' | 'preferredAccountId' | 'excludeAccountIds' | 'onFloodWait' | 'onScanRequest'> = {},
 ): Promise<T> {
     await waitForInitialTelegramRecovery(options.signal);
     return telegramUserClientPool.withAccount(sourceKey, scope, operation, options);

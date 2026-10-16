@@ -59,5 +59,9 @@ export function selectWeightedLeastConnectedTelegramAccount<T extends TelegramAc
 export function normalizeTelegramAccountSourceKey(sourceKey: string): string {
     const key = sourceKey.trim();
     if (/^-100\d+$/.test(key)) return key.slice(4);
+    const peerLink = key.match(/^(?:https?:\/\/)?t\.me\/c\/([0-9]+)(?:\/[0-9]+)?\/?$/i);
+    if (peerLink) return peerLink[1];
+    const publicLink = key.match(/^(?:https?:\/\/)?t\.me\/(?:s\/)?(?!joinchat(?:\/|$))([a-z][a-z0-9_]*)(?:\/[0-9]+)?\/?$/i);
+    if (publicLink) return publicLink[1].toLowerCase();
     return /^@?[a-z\d_]+$/i.test(key) ? key.replace(/^@/, '').toLowerCase() : key;
 }

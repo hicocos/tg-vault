@@ -37,3 +37,12 @@
   .op-tasks-page .audit-task-card .op-task-id { font-size: var(--tv-text-meta); }
   .op-tasks-page .op-more-actions > summary { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; }
 }
+.op-tasks-page .op-task-failures { min-width: 0; max-width: 100%; font-size: var(--tv-text-meta); }
+.op-tasks-page .op-task-failures > summary { cursor: pointer; padding: 8px 0; color: hsl(var(--destructive)); overflow-wrap: anywhere; }
+.op-tasks-page .op-task-failure-body { max-height: 20rem; overflow: auto; overscroll-behavior: contain; padding: 8px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-panel); }
+.op-tasks-page .op-task-failure-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.op-tasks-page .op-task-failure-list li { min-width: 0; padding-bottom: 10px; border-bottom: 1px solid hsl(var(--border)); }
+.op-tasks-page .op-task-failure-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.op-tasks-page .op-task-failure-reason { max-height: 8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: hsl(var(--destructive)); margin: 6px 0; }
+.op-tasks-page .op-task-failure-link { display: block; overflow-wrap: anywhere; color: hsl(var(--primary)); text-decoration: underline; }
+.op-tasks-page .op-task-failure-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 8px; }

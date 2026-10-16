@@ -585,6 +585,7 @@ CREATE TABLE IF NOT EXISTS telegram_download_items (
     channel_post_id INT,
     file_name TEXT,
     mime_type TEXT,
+    file_category TEXT,
     generated_name BOOLEAN DEFAULT false,
     total_size BIGINT DEFAULT 0,
     folder_override TEXT,
@@ -608,6 +609,7 @@ ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS origin TEXT DEFAULT
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS channel_post_id INT;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS file_name TEXT;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS file_category TEXT;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS generated_name BOOLEAN DEFAULT false;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS total_size BIGINT DEFAULT 0;
 ALTER TABLE telegram_download_items ADD COLUMN IF NOT EXISTS folder_override TEXT;

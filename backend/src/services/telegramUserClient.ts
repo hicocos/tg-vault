@@ -14,6 +14,8 @@ import {
     upsertTelegramUserAccountWithoutRuntimeRefresh,
 } from './telegramUserClientPool.js';
 import { initializeTelegramMultiAccountRuntime } from './telegramMultiAccountRuntime.js';
+import { ownUserTransport } from './telegramUserTransport.js';
+import { TelegramUserWorkerClient } from './telegramUserWorkerClient.js';
 
 export const TELEGRAM_USER_SESSION_SETTING = 'telegram_user_session';
 const TELEGRAM_USER_ENABLED_SETTING = 'telegram_user_download_enabled';
@@ -37,11 +39,8 @@ function getSessionFilePath(): string {
 
 async function stopLegacyClient(): Promise<void> {
     const current = userClient;
+    if (current) await current.destroy();
     userClient = null;
-    if (current) {
-        try { await current.disconnect(); } catch { /* best effort */ }
-        try { await current.destroy(); } catch { /* best effort */ }
-    }
 }
 
 export async function migrateLegacyTelegramUserSession(): Promise<string> {
@@ -56,15 +55,16 @@ export async function migrateLegacyTelegramUserSession(): Promise<string> {
 }
 
 function makeClient(session: string, credentials: { apiId: number; apiHash: string }): TelegramClient {
-    return new TelegramClient(new StringSession(session), credentials.apiId, credentials.apiHash, {
-        connectionRetries: 15,
-        retryDelay: 2000,
+    if (session) return new TelegramUserWorkerClient(session, credentials, 'legacy');
+    return ownUserTransport(new TelegramClient(new StringSession(session), credentials.apiId, credentials.apiHash, {
+        connectionRetries: 1,
+        retryDelay: 0,
         useWSS: false,
         deviceModel: 'TG Vault User Downloader',
         systemVersion: '1.0.0',
         appVersion: '1.0.0',
-        floodSleepThreshold: 120,
-    });
+        floodSleepThreshold: 0,
+    }), { accountId: 'web-login' });
 }
 
 export async function initTelegramUserClient(credentials?: { apiId: number; apiHash: string }): Promise<void> {
@@ -108,8 +108,7 @@ export async function initTelegramUserClient(credentials?: { apiId: number; apiH
         const legacyPath = getSessionFilePath();
         if (fs.existsSync(legacyPath)) fs.rmSync(legacyPath, { force: true });
     } catch (error) {
-        try { await client.disconnect(); } catch { /* best effort */ }
-        try { await client.destroy(); } catch { /* best effort */ }
+        await client.destroy();
         recordTelegramUserClientFailure(String((error as Error).message).includes('EXPIRED') ? 'expired' : 'error', 'Telegram 用户账号连接失败');
     }
 }

@@ -2,29 +2,23 @@ import { Api, TelegramClient } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { Raw } from 'telegram/events/index.js';
 import { getEffectiveTelegramBotConfig } from './telegramBotConfig.js';
+import { ownUserTransport } from './telegramUserTransport.js';
+import { telegramAccountRepository } from './telegramAccountRepository.js';
 import {
     TelegramMultiAccountLoginFlows,
     type TelegramLoginCredentials,
     type TelegramMultiAccountLoginClient,
     type TelegramQrExportResult,
-    type TelegramUserLoginAccount,
+    type TelegramAuthorizedLogin,
 } from './telegramMultiAccountLoginFlows.js';
 
 export interface TelegramAuthorizedAccountAdapter {
-    upsertByTelegramUserId(input: {
-        session: string;
-        credentials: TelegramLoginCredentials;
-        account: TelegramUserLoginAccount;
-    }): Promise<void>;
+    upsertByTelegramUserId(input: TelegramAuthorizedLogin): Promise<void>;
 }
 
 let adapter: TelegramAuthorizedAccountAdapter | null = null;
 
-/**
- * The future multi-account repository/pool registers one thin adapter here.
- * Keeping this module independent prevents the login routes from importing a
- * pool API that may not exist yet.
- */
+/** The runtime registers persistence and account activation after startup. */
 export function registerTelegramMultiAccountAuthorizedAdapter(next: TelegramAuthorizedAccountAdapter | null): void {
     adapter = next;
 }
@@ -40,15 +34,15 @@ async function getCredentials(): Promise<TelegramLoginCredentials | null> {
 }
 
 function makeClient(credentials: TelegramLoginCredentials): TelegramClient {
-    return new TelegramClient(new StringSession(''), credentials.apiId, credentials.apiHash, {
-        connectionRetries: 15,
-        retryDelay: 2000,
+    return ownUserTransport(new TelegramClient(new StringSession(''), credentials.apiId, credentials.apiHash, {
+        connectionRetries: 1,
+        retryDelay: 0,
         useWSS: false,
         deviceModel: 'TG Vault Multi-Account Login',
         systemVersion: '1.0.0',
         appVersion: '1.0.0',
-        floodSleepThreshold: 120,
-    });
+        floodSleepThreshold: 0,
+    }), { accountId: 'multi-account-login' });
 }
 
 export class GramJsMultiAccountLoginClient implements TelegramMultiAccountLoginClient {
@@ -146,7 +140,7 @@ export class GramJsMultiAccountLoginClient implements TelegramMultiAccountLoginC
     }
 }
 
-async function onAuthorized(input: { session: string; credentials: TelegramLoginCredentials; account: TelegramUserLoginAccount }): Promise<void> {
+async function onAuthorized(input: TelegramAuthorizedLogin): Promise<void> {
     if (!adapter) {
         throw new Error('Telegram 多账号仓库尚未注册，无法保存登录账号');
     }
@@ -157,4 +151,8 @@ export const telegramMultiAccountLoginFlows = new TelegramMultiAccountLoginFlows
     credentials: getCredentials,
     createClient: credentials => new GramJsMultiAccountLoginClient(makeClient(credentials), credentials),
     onAuthorized,
+    getTargetAccount: async accountId => {
+        const account = await telegramAccountRepository.getAccount(accountId);
+        return account ? { accountId: account.id, telegramUserId: account.telegramUserId } : null;
+    },
 });

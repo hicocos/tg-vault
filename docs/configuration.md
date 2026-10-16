@@ -1,193 +1,151 @@
 # 配置与使用指南
 
-[返回首页](../README.md) · [部署指南](../deploy/DEPLOY.md)
+[返回首页](../README.md) · [部署指南](../deploy/DEPLOY.md) · [本地存储位置](local-storage.md)
 
-## 🛠️ 环境变量配置
+## 环境变量
 
-常用变量如下，完整模板见 [`.env.example`](../.env.example)。
+完整模板见 [`.env.example`](../.env.example)，容器实际接收的变量和默认值见 [`docker-compose.yml`](../docker-compose.yml)。安装器会生成 `.env`；新安装不要预先复制模板，否则会按已有部署处理存储位置。`.env` 是部署配置，不是应提交的源码。
 
-<details open>
-<summary><strong>新手只需填写（2 项）</strong></summary>
+### 地址、数据库与密钥
 
-- **`VITE_API_URL`** — 前端访问后端的公网地址；示例：`https://api.example.com`
-- **`CORS_ORIGIN`** — 允许跨域的前端来源；示例：`https://cloud.example.com`
+| 变量 | 默认值或来源 | 用途 |
+| --- | --- | --- |
+| `VITE_API_URL` | 安装时填写 | 浏览器访问的 API origin；构建时写入前端，修改后必须重建前端 |
+| `CORS_ORIGIN` | 安装时填写 | 允许的 Web origin；后端支持英文逗号分隔多个来源，安装器交互仅填写一个 |
+| `PORT` | `51947` | 后端监听及宿主机 API 端口；标准部署建议保留默认值 |
+| `DB_PASSWORD` | 安装器生成 64 位十六进制值 | PostgreSQL 密码；已有数据库必须保留原值 |
+| `SESSION_SECRET` | 新安装由安装器生成 | 文件链接签名及 TOTP 加密密钥 |
+| `STORAGE_CREDENTIALS_SECRET` | 新安装由安装器生成 | 存储及敏感配置加密密钥 |
+| `TG_VAULT_SECRET_DIR` | `/data/secrets` | 未通过环境变量指定的内部持久密钥目录 |
+| `OAUTH_CALLBACK_BASE_URL` | 继承 `VITE_API_URL` | OneDrive/Google Drive 回调 origin |
+| `OAUTH_FRONTEND_ORIGIN` | 继承 `CORS_ORIGIN` | OAuth 完成后通知的前端 origin；多来源时显式指定一个 |
 
-两项填写完整 origin（协议、域名及可选端口），不带路径、查询参数或末尾 `/`；生产环境使用 HTTPS。安装器会询问并校验地址，无需预先复制模板。若已复制 `.env.example`，必须将示例地址换成实际域名；按 Enter 会保留已有值。
+地址应是完整的 `http(s)://主机[:端口]`，不带路径、查询、片段或末尾 `/`。生产环境使用 HTTPS，Web/API 建议为同一主域名的子域名，以符合登录 Cookie 的 `SameSite=Lax` 策略；仅设置 CORS 不会使跨站 Cookie 可用。不要把 `CORS_ORIGIN` 设置为 `*`。
+
+已有部署缺少显式应用密钥时，安装器保留 `/data/secrets` 中的密钥，不生成替代值。迁移或备份必须同时保留 `.env`、数据库和完整 `/data`。替换密钥可能使 TOTP 或存储凭证无法解密。不要在 `.env` 固定 `IMAGE_VERSION`、`SOURCE_REVISION`、`SOURCE_VERSION`；安装器从 package 与 Git 临时注入构建元数据。
+
+### 代理与登录安全
+
+| 变量 | Compose 默认值 | 说明 |
+| --- | --- | --- |
+| `TRUST_PROXY` | `loopback` | Express 信任代理范围；自定义网络部署仅信任实际代理地址，不要盲目设为 `true` |
+| `COOKIE_SECURE` | `true` | 仅通过 HTTPS 发送登录 Cookie |
+| `COOKIE_SECURE_FORCE` | 空；全新安装器写入 `true` | `true`/`false` 优先于 `COOKIE_SECURE`；只在本地 HTTP 调试中关闭 |
+| `JSON_BODY_LIMIT` | `2mb` | JSON 请求体上限，不是文件总大小 |
 
-</details>
+首次启动没有默认管理员密码。限制 Web 和 API 入口的访问后，通过 HTTPS 创建至少 8 位的强密码，再开放给其他用户。管理员密码以加盐 `scrypt` 哈希保存在数据库；浏览器使用 HttpOnly Cookie 会话。修改类请求校验 `Origin`，因此 Web 地址必须与 `CORS_ORIGIN` 一致。
+
+可在 Web 安全设置或 Bot `/setup_2fa` 启用 TOTP；启用后 Web 与 Bot 都需要二次验证。不要共享二维码或 TOTP 密钥。通常不需要填写 `TOTP_SECRET`，该高级环境值会覆盖数据库中的 TOTP 密钥。
+
+### 数据目录与上传限制
+
+以下路径是**容器内路径**，应保持在持久挂载 `/data` 内。`LOCAL_STORAGE_*` 由安装器维护，不是修改保存位置的快捷方式，详见[存储说明](local-storage.md)。
 
-<details>
-<summary><strong>安装脚本自动生成</strong></summary>
+| 变量 | Compose 默认值 | 说明 |
+| --- | --- | --- |
+| `UPLOAD_DIR` | `/data/uploads` | 本地文件与下载暂存目录 |
+| `THUMBNAIL_DIR` | `/data/thumbnails` | 缩略图 |
+| `PREVIEW_DIR` | `/data/previews` | 预览衍生文件 |
+| `CHUNK_DIR` | `/data/chunks` | 分片上传暂存 |
+| `MAX_UPLOAD_CHUNK_MB` | `32` | 单个上传分片上限（MiB） |
+| `MAX_CHUNK_UPLOAD_GB` | `20` | 单次分片上传会话总大小上限（GiB） |
+| `CHUNK_GLOBAL_BUDGET_GB` | `40` | 全局分片预算（GiB），不能小于单会话上限 |
+| `CHUNK_DISK_RESERVE_GB` | `8` | 分片上传的磁盘保留空间（GiB） |
+| `MAX_TOTAL_CHUNKS` | `50000` | 分片数量保护上限 |
+| `CHUNK_SESSION_TTL_MS` | `86400000` | 上传会话有效期，默认 24 小时 |
+| `CHUNK_COMPLETION_LEASE_MS` | `1800000` | 分片合并完成租约，默认 30 分钟 |
+| `DUPLICATE_FILE_MODE` | `copy` | `copy` 生成副本；`skip` 跳过同目录、同名、同大小文件 |
+| `AUTO_CLEANUP_ORPHANS` | `true` | 清理未登记到数据库的本地孤儿文件；也可在 Web/Bot 维护设置中管理 |
+| `ORPHAN_CLEANUP_MIN_AGE_MS` | `600000` | 新文件保护期，默认 10 分钟 |
 
-- **`DB_PASSWORD`** — 自动生成 64 位十六进制 PostgreSQL 密码
-- **`SESSION_SECRET`** / **`STORAGE_CREDENTIALS_SECRET`** — 新安装时自动生成并保留；升级旧部署时不会覆盖 `/data/secrets` 中已有的持久密钥
+反向代理的请求体上限必须容纳分片与 multipart 开销；代理限制的是单次请求，不是文件总大小。远端存储也需要本地暂存空间，不要把下载并发当作无磁盘的直传模式。不要手工向受管理的 uploads 目录导入未索引文件，自动清理可能删除它们。
 
-版本号不保存在 `.env`。安装时会直接从 `backend/package.json` 读取应用版本，并从当前 Git 提交读取源码修订号，只把它们临时传给 Docker 构建。
+### 存储连接与日志
 
-</details>
+| 变量 | Compose 默认值 | 说明 |
+| --- | --- | --- |
+| `ALLOW_INSECURE_STORAGE_ENDPOINTS` | `false` | 保持默认，避免开放不安全存储地址 |
+| `STORAGE_PROBE_TIMEOUT_MS` | `15000` | 存储探测超时 |
+| `WEBDAV_INACTIVITY_TIMEOUT_MS` | `300000` | WebDAV 无活动超时 |
+| `WEBDAV_UPLOAD_TIMEOUT_MS` | `21600000` | WebDAV 上传总超时，默认 6 小时 |
+| `LOG_LEVEL` | `info` | 应用日志级别 |
+| `SQL_LOG_SLOW_MS` | `500` | 慢查询日志阈值 |
+| `SQL_LOG_ALL` | `false` | 全量 SQL 日志，仅排障时按需启用 |
+| `UPDATE_CHECK_ENABLED` | `true` | 是否向 GitHub 查询新版本；设为 `false` 关闭自动检测 |
+| `UPDATE_CHECK_REPOSITORY` | `hicocos/tg-vault` | 更新检测使用的公开 GitHub 仓库，格式为 `owner/repo` |
 
-<details>
-<summary><strong>高级部署覆盖</strong></summary>
+不要公开原始日志、请求头、数据库导出或调试归档。提供问题报告前，移除凭证、session、用户/聊天标识、文件名和私有服务器路径。
 
-- **`OAUTH_CALLBACK_BASE_URL`** — 默认继承 `VITE_API_URL`；仅特殊 API 入口时填写
-- **`OAUTH_FRONTEND_ORIGIN`** — 默认继承 `CORS_ORIGIN` 的第一个地址；仅多前端入口时填写
+## Telegram 配置与能力
 
-</details>
+### 连接 Bot 与个人账号
 
-<details>
-<summary><strong>Telegram 运行配置</strong></summary>
+本项目通过 GramJS/MTProto 连接 Telegram；Bot 配置也需要 API ID 与 API Hash，而不只是 Bot Token。
 
-Telegram 凭证、允许用户、账号登录、来源白名单和下载并发均属于运行配置，统一在 Web **设置 → Telegram** 中管理。新部署不需要在 `.env` 中填写 Telegram 变量，也不需要手动生成 session 文件。
+1. 向 [@BotFather](https://t.me/BotFather) 发送 `/newbot` 创建 Bot，取得 Token。
+2. 在 [my.telegram.org](https://my.telegram.org) 的 `API development tools` 创建应用，取得 `api_id` 与 `api_hash`。
+3. 在 Web **设置 → Telegram → Telegram Bot 连接** 中填写三项凭证，测试连接、设置 4 位数字 Bot PIN，再保存并启用。
+4. 在 **Telegram Bot 用户权限** 中预先填写允许使用 Bot 的数字 user ID，多个 ID 用英文逗号分隔，然后向 Bot 发送 `/start` 完成认证。
+5. 需要频道/群组批量转存或订阅时，在同页通过手机号、验证码和可选的两步验证密码登录个人 Telegram 账号；无需手工生成 session 文件。
 
-旧版本 `.env` 变量仍会被兼容读取，但只用于升级和迁移；不要在新部署中同时维护两套配置。Web 中的设置优先于环境变量。
+PIN 不是用户允许列表的替代品。如果允许列表为空且没有已认证的 Telegram 用户，第一个正确输入 PIN 的用户可自动加入。不要在允许列表未设置时公开 Bot/PIN。环境变量 `TELEGRAM_ALLOWED_USER_IDS` 非空时优先于 Web 列表，并禁止在 Web 修改；新部署应统一使用 Web。Bot 凭证的 Web 设置优先于环境凭证，不要同时维护两套凭证。
 
-</details>
+Token、API Hash、手机号验证码、两步验证密码和登录 session 都是秘密。session 可用于访问 Telegram 账号；只通过自己的 HTTPS 管理页面登录，不要提交到仓库、粘贴到 issue 或共享备份。丢失或泄露后，应在 Telegram 中撤销相关会话，并按需撤销/更换 Bot 凭证。
 
-<details>
-<summary><strong>常用可选项</strong></summary>
+### 权限与下载限制
 
-- **`PORT`** `51947` — 后端监听端口
-- **`UPLOAD_DIR`** `/data/uploads` · **`THUMBNAIL_DIR`** `/data/thumbnails` · **`CHUNK_DIR`** `/data/chunks`
-- **`DUPLICATE_FILE_MODE`** `copy` — `copy` 生成副本；`skip` 跳过同名、同目录且同大小的文件
-- **`AUTO_CLEANUP_ORPHANS`** `true` — 自动清理未登记到数据库的本地孤儿文件
+| 场景 | 要求与边界 |
+| --- | --- |
+| 私聊发送文件给 Bot | 启用 Bot 并通过 PIN/允许列表认证；不要求登录个人账号 |
+| 频道/群组日期、标签下载与订阅 | 启用有来源访问权限的个人账号；私有来源通常需要先加入，且能读取目标历史消息 |
+| 转发媒体 | 有可重读原始来源时可以使用具备访问权限的个人账号；没有可读来源时仍走 Bot 下载 |
+| 大文件 | MTProto 与 HTTP Bot API `getFile` 不同，不能直接套用其大小上限；仍受 Telegram 账号类型、文件可用性、来源权限和服务端限制影响，不保证任意大小可下载 |
 
-</details>
+登录个人账号不会把 Bot 对话消息变成个人账号可读取的消息，也不会绕过受保护内容或不存在/已删除的来源。只归档有权访问和保存的内容，遵守 Telegram 与存储服务条款。遇到 FloodWait 应等待，不要反复重试或增加账号/并发规避限制。
 
-<details>
-<summary><strong>限流与安全项</strong></summary>
+### 下载、订阅与任务
 
-- **普通消息限流** — `TELEGRAM_RATE_WINDOW_MS=60000`，`TELEGRAM_RATE_MAX=30`
-- **重型命令限流** — `TELEGRAM_HEAVY_RATE_WINDOW_MS=600000`，`TELEGRAM_HEAVY_RATE_MAX=5`
-- **`TRUST_PROXY`** `loopback` · **`COOKIE_SECURE`** `true` · **`JSON_BODY_LIMIT`** `2mb`
-- **分片限制** — `MAX_UPLOAD_CHUNK_MB=32`，`MAX_CHUNK_UPLOAD_GB=20`，`CHUNK_GLOBAL_BUDGET_GB=40`
-- **磁盘与数量保护** — `CHUNK_DISK_RESERVE_GB=8`，`MAX_TOTAL_CHUNKS=50000`
-- **`ORPHAN_CLEANUP_MIN_AGE_MS`** `600000` — 10 分钟内不清理本地孤儿文件
+- `/tg_download` 打开日期或标签下载向导，可选择来源、范围、目录及评论区选项，确认前核对目标；`/tg_sub` 管理自动订阅，`/tg_subs` 查看列表。
+- Web 与 Bot 可暂停、继续、取消和重试。暂停阻止后续下载读取，在途请求或存储写入仍可能完成；服务器冷却不能通过“继续”解除。
+- 任务显示处理数量、失败/跳过、保存去向与下载速度。100% 表示已发现条目处理完成，不等于全部成功；扫描总量未知时不显示扫描百分比。排队不表示文件正在传输。
+- 多账号按来源权限、冷却与占用调度，一个文件不会跨账号分片。已开始的文件在原账号上遵守限流并保留续传偏移；增加账号不会自动提高全局并发、带宽或存储上传额度。
+- 下载并发在 **设置 → 维护 → 高级任务设置** 调整，也可用 `/download_workers` 和 `/file_concurrency`。分片默认 4，范围 1–16；同时文件默认 2，允许 1–10，实际最高为 `min(10, max(2, 已启用账号数 × 2))`。保持默认值，按磁盘、网络与账号承受能力调整。
+- 账号共享冷却，普通 FloodWait 只等待；单次服务端等待达到 1 小时才触发减半降载，后续成功读取逐步恢复。扫描按账号串行并限速；用户命令限流与扫描限速不是同一设置。
 
-</details>
+新部署的 Telegram 运行设置在 Web 管理。高级/兼容环境参数默认值见 Compose；常用项如下（单位 `_MS` 为毫秒）：
 
-## 🤖 Telegram 配置与能力
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `TELEGRAM_REQUIRED` | `false` | 是否将 Bot 可用性纳入服务就绪条件 |
+| `TELEGRAM_RATE_WINDOW_MS` / `TELEGRAM_RATE_MAX` | `60000` / `30` | 普通命令限流 |
+| `TELEGRAM_HEAVY_RATE_WINDOW_MS` / `TELEGRAM_HEAVY_RATE_MAX` | `600000` / `5` | 重型命令限流 |
+| `TELEGRAM_PIN_FAIL_WINDOW_MS` / `TELEGRAM_PIN_FAIL_MAX` / `TELEGRAM_PIN_LOCK_MS` | `900000` / `5` / `900000` | PIN 错误尝试保护 |
+| `TELEGRAM_SUBSCRIPTION_INTERVAL_MS` / `TELEGRAM_SUBSCRIPTION_SCAN_LIMIT` | `300000` / `100` | 订阅扫描间隔与条数 |
+| `TELEGRAM_COMMENTS_MAX_PER_POST` | `200` | 每条主帖评论扫描上限 |
+| `TG_JOB_SCAN_SEGMENT_SIZE` | `100` | 频道任务扫描分页大小 |
+| `TG_JOB_MAX_ATTEMPTS` | `3` | 后台条目尝试上限 |
+| `TG_MIN_FREE_DISK_GB` | `8` | Telegram 下载磁盘保留空间（GiB） |
+| `TG_DISK_WATERMARK_RECHECK_MS` / `TG_DISK_WATERMARK_MAX_WAIT_MS` | `30000` / `0` | 空间不足时复查间隔与最长等待；`0` 不设置等待超时 |
+| `TG_STATUS_DEBUG` | `0` | 本地状态调试日志，日常保持关闭 |
 
-### Bot 与账号级下载器的区别
+## 添加存储
 
-**只启用 Bot 即可使用：**
+在 **设置 → 存储** 添加账户并选择默认目标；任务提交前确认保存账户与目录。切换默认存储不等于迁移已有文件。
 
-- ✅ 私聊发送文件给 Bot 转存
-- ✅ 任务管理、存储统计和删除文件
+- **本地磁盘**：路径由部署挂载决定，Web 只读展示；参见[本地存储位置](local-storage.md)。
+- **OneDrive**：创建 Microsoft 应用，填写 Client ID、租户与按需使用的 Client Secret，再完成 OAuth 授权。
+- **Google Drive**：启用 Drive API，配置 OAuth 应用、Client ID/Secret；使用共享云端硬盘时按界面填写其 ID，并确保账号有写入权限。
+- **OSS / S3**：准备 bucket、region、访问密钥；S3 还需 endpoint，按服务商要求选择 path-style。使用仅覆盖所需 bucket 的最小权限凭证。
+- **WebDAV**：填写 endpoint、用户名和密码。默认拒绝不安全或私有地址；仅在明确理解 SSRF/内网访问风险时调整安全设置，不要为了连接失败盲目放开限制。
 
-**额外启用账号级下载器后增加：**
+OAuth 提供方登记的 redirect URI 必须与 Web 设置页显示的一致：OneDrive 默认 `https://api.example.com/api/storage/onedrive/callback`，Google Drive 默认 `https://api.example.com/api/storage/google-drive/callback`。改域名时同步修改提供方登记与部署配置。远端存储凭证保存在数据库中并依赖应用密钥解密；本地备份不包含远端对象，远端文件需按提供方另行备份。
 
-- ✅ 频道/群组按日期或标签批量抓取
-- ✅ 频道订阅自动同步
-- ✅ 下载受 Bot 限制影响的大文件（仍受 Telegram 账号权限和限流约束）
+## 本地开发
 
-### 创建和管理频道下载
+使用 Node.js 24、npm 和可访问的 PostgreSQL；ffmpeg 用于视频缩略图/转码。两个子项目均有独立锁文件，先执行首页的 `npm --prefix ... ci`。后端从其工作目录读取 `.env`，容器根目录 `.env` 不会自动成为本地后端配置。
 
-`/tg_download` 按“类型 → 频道 → 日期或标签 → 目录 → 确认”创建任务。目录可点击“使用默认目录”；确认卡可修改频道、范围、目录或切换评论区选项。点击确认开始，也可回复当前确认卡发送 `确认`；旧卡不能提交新的向导。输入错误会保留草稿，创建失败可重试。
+1. 创建独立开发数据库，在 `backend/.env` 设置真实的开发 `DATABASE_URL`，不要连接生产库；后端启动会初始化 schema 并应用迁移。
+2. 设置 `CORS_ORIGIN=http://localhost:5173`、`OAUTH_CALLBACK_BASE_URL=http://localhost:51947`、`OAUTH_FRONTEND_ORIGIN=http://localhost:5173`。本地 HTTP 使用 `COOKIE_SECURE=false`，确保 `COOKIE_SECURE_FORCE` 未开启；数据目录可用默认的 `backend/data`。
+3. 在一个终端运行 `npm --prefix backend run dev`；另一个终端运行 `VITE_API_URL=http://localhost:51947 npm --prefix frontend run dev -- --host 127.0.0.1`。若 Vite 使用了其他端口，同步修改前端 origin。不要将开发服务器暴露给公网。
 
-确认卡在创建成功后变为回执，下载进度使用独立任务卡；一次性存储目标仅在任务创建成功后消费，取消不改变目标。Bot 和 Web 使用相同的暂停、继续、取消和失败重试逻辑。暂停会等待当前文件处理完毕；继续可以解除手动暂停，若存在服务限额仍自动等待。
-
-“处理中”只统计实际工作线程，领取但尚未执行的文件归入排队。速度为当前任务下载采样的合计，保存大小不是下载速度。部分文件大小未知时，`+` 表示已知下限。任务卡随持久化任务恢复，重启后沿用已有卡片；已结束任务移除无效控制按钮，失败项可单独重试。Web 账号面板在可见时每 5 秒刷新，短时请求限流不单独报警。
-
-日期/标签任务在 Bot 任务卡、`/tasks` 详情和 Web 任务中心显示已检查的频道消息数、发现的文件数、评论扫描计数和当前扫描到的消息时间。频道消息数包含检查后不符合日期/标签或无可下载文件的消息，不把相册补查出的文件重复算作已检查消息。进度在每页扫描后更新，评论分页和文件发现期间最多每 5 秒持久化一次；Bot 卡每 5 秒检查更新。扫描总量事先未知，不额外请求 Telegram 统计总量，也不显示扫描百分比；现有百分比仍表示已发现文件的处理进度。暂停、失败后保留扫描信息，部分页进度不会提前推进恢复游标。
-
-扫描默认每页 `TG_JOB_SCAN_SEGMENT_SIZE=100` 条，单任务串行分页。多个任务共享账号池，每个账号同一时间只执行一个扫描；同账号的扫描 RPC（包括来源解析、内部翻页、相册补查和评论扫描）共用至少 1 秒的请求启动间隔，不占用文件下载名额。扫描遇到 FloodWait 时，遵守 Telegram 返回的冷却时间，并将该账号的扫描间隔加倍，最长 60 秒；持续成功扫描满 10 分钟后逐步减半，最低恢复至 1 秒，长时间空闲不计入恢复。`TELEGRAM_RATE_MAX` 和 `TELEGRAM_HEAVY_RATE_MAX` 限制的是用户命令，不是扫描 RPC。
-
-### 获取 Bot Token
-
-1. 在 Telegram 中搜索 [@BotFather](https://t.me/BotFather) 并开始对话。
-2. 发送 `/newbot`，按提示创建机器人。
-3. 复制 BotFather 返回的 `HTTP API TOKEN`。
-4. 在 TG Vault Web 的“设置 → Telegram”中填写 Token。
-
-### 获取 API ID 和 API Hash
-
-1. 访问 [my.telegram.org](https://my.telegram.org) 并登录 Telegram 账号。
-2. 进入 `API development tools`。
-3. 创建应用后复制 `api_id` 和 `api_hash`。
-4. 在 **设置 → Telegram → Telegram Bot 连接** 中与 Bot Token 一起填写，先测试连接，再保存并启用。连接卡片保留连接状态与 Bot 名称；“更换凭证”“修改 Bot PIN”“刷新状态”位于第一行，“删除配置”单独位于第二行。
-5. 需要账号级下载器时，在同页使用手机号、验证码和可选两步验证密码登录；无需手工生成或编辑 session 文件。
-
-### Telegram Bot 允许用户
-
-TG Vault 会限制能通过 Bot PIN 登录的 Telegram 用户。推荐进入 **设置 → Telegram → Telegram Bot 用户权限**，填写一个或多个数字 user id；多个 ID 用英文逗号分隔。
-
-获取 user id：让用户在 Telegram 私聊 `@userinfobot` 查看 `Id`。如果允许列表留空，并且后台还没有任何 Telegram 用户认证成功，第一个正确输入 Bot PIN 的用户可自动加入允许列表。之后应在 Web 中明确维护列表。
-
-### 账号级下载器什么时候需要？
-
-账号级下载器使用登录的 Telegram 用户账号读取媒体，适用于：
-
-- 频道/群组转存：用户账号需要加入对应频道/群组，并确保能看到历史媒体。
-- 按日期/标签批量抓取：`/tg_download date`、`/tg_download tag` 依赖用户账号访问来源消息。
-- 频道订阅同步：`/tg_sub` 后台扫描依赖用户账号读取频道/群组新消息。
-- 大文件下载：Bot 无法直接下载的文件，可尝试通过有访问权限的用户账号下载。
-
-仅登录或明确启用账号时才应连接个人账号；更改界面语言或查看设置不应激活账号。只转存有权访问和保存的内容，遵守 Telegram 限流；遇到冷却或账号限制时，不要反复重试或提高并发。
-
-### Telegram 下载设置
-
-下载并发在 Web **设置 → 维护 → 高级任务设置** 中调整。单文件分片并发与 Bot `/download_workers` 共用，同时下载文件数与 `/file_concurrency` 共用；页面不再常驻显示二次确认阈值，但选择高并发时仍需确认。保留默认值，确有需要时再修改；不要通过提高并发绕过账号冷却。
-
-下载设置中的“下载中”仅统计账号正在执行的文件下载，不含排队、扫描和存储上传；“权限检测”为来源权限最近检查时间。“来源权限汇总”按账号累计，同一来源可重复计入。
-
-### 多账号调度与自动恢复
-
-- 频道任务仍按批次领取持久化条目，但每个文件进入执行阶段后独立选择账号。排队和后续存储上传不占用账号下载名额；同一任务的不同文件可以分配给不同账号。
-- 调度跳过禁用、断线、登录失效、冷却和已知无来源权限的账号。已确认来源权限优先，再按权重与当前占用选择；同负载时优先使用更久未被选择的账号，避免空闲时始终使用同一账号。
-- 扫描频道、评论和补全元数据也经过调度。扫描、元数据和文件下载分别计数，共享账号冷却；扫描采用独立的串行与请求间隔策略，下载和元数据使用自适应并发上限。
-- FloodWait 只冷却返回限制的账号，遵守 Telegram 指定的等待时间；扫描请求会增大扫描间隔，文件下载会降低账号并发上限。当前文件可由另一个有权限的账号重新读取并下载。未完成文件重新下载，不支持跨账号续传分片；已完成文件不重新入队。
-- 所有合适账号都忙或冷却时自动等待，释放名额会唤醒等待者，最长每秒重新检查一次；等待可取消。全部账号禁用、断线、登录失效或无来源权限时返回明确错误，不回退到默认账号。账号等待仍占用一个全局文件执行槽，因此全局并发保持原有上限。
-- 下载或元数据请求遇到 FloodWait 时，将该账号的运行时并发上限减半，最低为 1。冷却结束后稳定成功运行满 60 秒，每次恢复 1，最多恢复至账号配置上限。自适应上限在进程重启后重置；持久化冷却时间继续生效。
-- 全局文件并发仍默认 2、可设置为 1～4；添加账号不会自动提高它，也不会提高服务器带宽或存储服务上传额度。私密频道需要接力账号各自具备访问权限。
-- 转发且带可读取来源的媒体使用同一账号调度；直接发给 Bot、没有可重读来源的消息仍通过 Bot 下载，因为 Bot 对话消息 ID 不属于用户账号对话。
-
-## 🔐 安全与访问控制
-
-TG Vault 默认采用“首次初始化”模式保护 Web 和 API：
-
-1. 服务启动后，首次访问 Web 页面需创建至少 8 位的管理员密码，使用 `scrypt` 加盐哈希保存到数据库。请在开放给其他用户前完成初始化。
-2. 如果此时已经通过环境变量配置 Telegram Bot，初始化页还会要求创建 Bot 4 位 PIN；新安装也可以先完成网页初始化，再到 **设置 → Telegram** 配置 Bot 和 PIN。
-3. 登录成功后，浏览器会获得 HttpOnly Cookie 会话，前端不再把访问 token 写入 `localStorage`。
-4. 修改类请求会校验 `Origin`，请确保 `.env` 中的 `CORS_ORIGIN` 与前端公网地址一致。
-
-> [!IMPORTANT]
-> 生产环境请使用 HTTPS。默认 `COOKIE_SECURE=true` 时，浏览器只会在 HTTPS 下发送登录 Cookie；如果你只在本地 HTTP 调试，可临时设置 `COOKIE_SECURE=false`。
-> `deploy/install.sh` 生成的正式部署会额外写入 `COOKIE_SECURE_FORCE=true`，防止遗留环境值意外关闭 HTTPS Cookie；本地 HTTP 调试请不要沿用该强制值，或同时设为 `false`。
-
-### 自动密钥说明
-
-安装器为新部署生成 `.env` 密钥；未显式配置的内部密钥由应用保存到数据卷的 `/data/secrets/`。迁移时同时备份 `.env`、数据库和完整数据卷。丢失密钥可能导致登录会话失效，TOTP 和第三方存储凭证无法解密。
-
-完整的宿主机 Nginx 部署、健康检查、协调备份与隔离恢复校验流程见 [`deploy/DEPLOY.md`](../deploy/DEPLOY.md)。仓库提供 `deploy/backup.sh` 和只读归档检查脚本 `deploy/restore-verify.sh`；备份包含密钥材料，必须加密并异地保存。
-
-### 双重验证 (TOTP)
-
-TG Vault 内置支持 TOTP 双重验证（如 Google Authenticator）：
-
-- Web 端：在个人设置中扫码激活
-- Telegram Bot：发送 `/setup_2fa` 获取设置二维码，并在对话框输入验证码激活
-- 启用后，网页登录和使用 Bot 均需二次验证
-
----
-
-## 🌐 反向代理建议
-
-如果你使用 Nginx、Nginx Proxy Manager 或 Caddy 部署，请参考以下映射：
-
-- **前端 / 网页入口**
-  - 示例域名：`https://cloud.example.com`
-  - 转发地址：`127.0.0.1:47832`
-- **后端 / API 接口**
-  - 示例域名：`https://api.example.com`
-  - 转发地址：`127.0.0.1:51947`
-
-如果前后端使用不同域名，请在后端环境变量中设置：
-
-```env
-VITE_API_URL=https://api.example.com
-CORS_ORIGIN=https://cloud.example.com
-COOKIE_SECURE=true
-```
-
-> [!CAUTION]
-> 开启 HTTPS 后，`.env` 中的 `VITE_API_URL` 和 `CORS_ORIGIN` 都应使用 `https://`，否则浏览器可能拦截请求。修改 `VITE_API_URL` 后必须重新构建前端镜像，因为它会被打包进静态文件。
+本地检查入口：`npm --prefix backend run typecheck`、`npm --prefix backend run schema:check`、两端 `run build`、`npm --prefix frontend run lint`。后端 `run build` 使用 esbuild，不替代 TypeScript 类型检查。schema 变更后使用 `npm --prefix backend run schema:generate-init` 更新根目录快照，不要手工改写生成文件或已发布迁移。执行哪些检查取决于变更范围；提交时只报告实际执行的结果。

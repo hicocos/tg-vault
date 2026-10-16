@@ -7,10 +7,15 @@ export default {
   darkMode: "class",
   theme: {
     extend: {
-      fontFamily: {
-        sans: "var(--font-sans)",
-      },
       colors: {
+        // Preserve the v3 palette used by status badges and notifications.
+        amber: { 300: "#fcd34d", 500: "#f59e0b" },
+        blue: { 500: "#3b82f6" },
+        emerald: { 200: "#a7f3d0", 600: "#059669" },
+        green: { 500: "#22c55e" },
+        red: { 200: "#fecaca", 500: "#ef4444", 600: "#dc2626" },
+        sky: { 100: "#e0f2fe", 200: "#bae6fd", 700: "#0369a1", 950: "#082f49" },
+        yellow: { 500: "#eab308" },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -46,9 +51,16 @@ export default {
         },
       },
       borderRadius: {
+        DEFAULT: "0.25rem",
         lg: `var(--radius)`,
         md: `calc(var(--radius) - 2px)`,
         sm: `calc(var(--radius) - 4px)`,
+      },
+      boxShadow: {
+        sm: "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+      },
+      blur: {
+        DEFAULT: "8px",
       },
     },
   },

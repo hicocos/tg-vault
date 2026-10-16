@@ -75,10 +75,12 @@ function PermissionSummary({ summary, compact = false }: { summary: TelegramPerm
 
 function LoginDialog({
     open,
+    target,
     onClose,
     onComplete,
 }: {
     open: boolean;
+    target: TelegramUserAccount | null;
     onClose: () => void;
     onComplete: () => Promise<void>;
 }) {
@@ -93,6 +95,7 @@ function LoginDialog({
     const [failure, setFailure] = useState<string | null>(null);
     const closedRef = useRef(false);
     const pollGenerationRef = useRef(0);
+    const completedFlowRef = useRef<string | null>(null);
 
     const clearSecrets = useCallback(() => {
         setPhone('');
@@ -100,19 +103,26 @@ function LoginDialog({
         setPassword('');
     }, []);
 
+    const loginFlowId = login?.flowId;
+    const targetAccountId = target?.id;
+
     const startQr = useCallback(async () => {
         setBusy(true);
         setFailure(null);
+        pollGenerationRef.current += 1;
+        setPassword('');
         try {
-            if (login?.flowId) await fileApi.cancelTelegramUserLogin(login.flowId).catch(() => undefined);
-            const result = await fileApi.startTelegramUserQrLogin();
+            if (loginFlowId) await fileApi.cancelTelegramUserLogin(loginFlowId).catch(() => undefined);
+            setLogin(null);
+            const result = await fileApi.startTelegramUserQrLogin(targetAccountId);
+            if (closedRef.current) return;
             setLogin(result);
         } catch (error) {
             setFailure(errorMessage(error) || t('management.telegramAccounts.errors.qrCreate'));
         } finally {
             setBusy(false);
         }
-    }, [login?.flowId]);
+    }, [loginFlowId, targetAccountId, t]);
 
     useEffect(() => {
         if (!open) {
@@ -120,13 +130,29 @@ function LoginDialog({
             return;
         }
         closedRef.current = false;
+        completedFlowRef.current = null;
         setMethod('choose');
         setSelectedMethod(null);
         setLogin(null);
         setFailure(null);
         clearSecrets();
         return () => { closedRef.current = true; };
-    }, [open, clearSecrets]);
+    }, [open, target?.id, clearSecrets]);
+
+    useEffect(() => {
+        if (!open || closedRef.current || !login) return;
+        if (login.status === 'error' || login.status === 'expired') {
+            setPassword('');
+            setFailure(login.message || t(login.status === 'expired' ? 'management.telegramAccounts.errors.qrExpired' : 'management.telegramAccounts.errors.login'));
+        }
+        if (login.status === 'complete' && completedFlowRef.current !== login.flowId) {
+            completedFlowRef.current = login.flowId;
+            clearSecrets();
+            void onComplete().catch(error => {
+                if (!closedRef.current) setFailure(errorMessage(error) || t('management.telegramAccounts.errors.login'));
+            });
+        }
+    }, [open, login, clearSecrets, onComplete, t]);
 
     useEffect(() => {
         const flowId = open && login?.status === 'waiting_for_scan' ? login.flowId : null;
@@ -139,16 +165,10 @@ function LoginDialog({
                 const next = await fileApi.getTelegramUserLoginStatus(flowId);
                 if (closedRef.current || stopped || generation !== pollGenerationRef.current) return;
                 setLogin(next);
-                if (next.status === 'complete') {
-                    clearSecrets();
-                    await onComplete();
-                    return;
-                }
-                if (next.status === 'expired') setFailure(t('management.telegramAccounts.errors.qrExpired'));
-                if (next.status === 'error') setFailure(next.message || t('management.telegramAccounts.errors.login'));
+                if (next.status === 'error' || next.status === 'expired') setPassword('');
                 if (!stopped && next.status === 'waiting_for_scan') timer = window.setTimeout(() => { void poll(); }, 1_500);
             } catch (error) {
-                if (!closedRef.current && !stopped) {
+                if (!closedRef.current && !stopped && generation === pollGenerationRef.current) {
                     setFailure(errorMessage(error) || t('management.telegramAccounts.errors.status'));
                     timer = window.setTimeout(() => { void poll(); }, 3_000);
                 }
@@ -160,11 +180,12 @@ function LoginDialog({
             pollGenerationRef.current += 1;
             if (timer !== undefined) window.clearTimeout(timer);
         };
-    }, [open, login?.flowId, clearSecrets, onComplete]);
+    }, [open, login?.flowId, login?.status, t]);
 
     const close = () => {
         const flowId = login?.flowId;
         closedRef.current = true;
+        pollGenerationRef.current += 1;
         clearSecrets();
         setLogin(null);
         setFailure(null);
@@ -173,6 +194,8 @@ function LoginDialog({
     };
 
     const usePhone = () => {
+        pollGenerationRef.current += 1;
+        clearSecrets();
         const flowId = login?.flowId;
         if (flowId) void fileApi.cancelTelegramUserLogin(flowId).catch(() => undefined);
         setLogin(null);
@@ -194,6 +217,8 @@ function LoginDialog({
     };
 
     const backToMethodChoice = () => {
+        pollGenerationRef.current += 1;
+        clearSecrets();
         const flowId = login?.flowId;
         if (flowId && login?.status !== 'complete') void fileApi.cancelTelegramUserLogin(flowId).catch(() => undefined);
         setLogin(null);
@@ -207,7 +232,7 @@ function LoginDialog({
         setBusy(true);
         setFailure(null);
         try {
-            const result = await fileApi.startTelegramUserPhoneLogin(phone.trim());
+            const result = await fileApi.startTelegramUserPhoneLogin(phone.trim(), target?.id);
             setLogin(result);
             setPhone('');
         } catch (error) {
@@ -223,10 +248,9 @@ function LoginDialog({
             const result = await fileApi.submitTelegramUserLoginCode(login.flowId, code.trim());
             setCode('');
             setLogin(result);
-            if (result.status === 'complete') await onComplete();
         } catch (error) {
             setFailure(errorMessage(error) || t('management.telegramAccounts.errors.codeVerify'));
-        } finally { setBusy(false); }
+        } finally { setPassword(''); setBusy(false); }
     };
 
     const submitPassword = async () => {
@@ -235,12 +259,10 @@ function LoginDialog({
         setFailure(null);
         try {
             const result = await fileApi.submitTelegramUserLoginPassword(login.flowId, password);
-            setPassword('');
             setLogin(result);
-            if (result.status === 'complete') await onComplete();
         } catch (error) {
             setFailure(errorMessage(error) || t('management.telegramAccounts.errors.password'));
-        } finally { setBusy(false); }
+        } finally { setPassword(''); setBusy(false); }
     };
 
     const complete = login?.status === 'complete';
@@ -250,10 +272,10 @@ function LoginDialog({
                 <div className="settings-login__header">
                     <div className="settings-icon"><UserRound className="h-5 w-5" /></div>
                     <div className="min-w-0 flex-1">
-                        <h3 id="telegram-account-login-title" className="text-lg font-semibold">{t('management.telegramAccounts.login.title')}</h3>
-                        <p id="telegram-account-login-description" className="mt-1 text-[13px] text-muted-foreground">{t('management.telegramAccounts.login.description')}</p>
+                        <h3 id="telegram-account-login-title" className="text-lg font-semibold">{target ? t('management.telegramAccounts.reauth.title', { name: accountName(target, t) }) : t('management.telegramAccounts.login.title')}</h3>
+                        <p id="telegram-account-login-description" className="mt-1 text-[13px] text-muted-foreground">{target ? t('management.telegramAccounts.reauth.description', { name: accountName(target, t), id: target.userId }) : t('management.telegramAccounts.login.description')}</p>
                     </div>
-                    <button type="button" onClick={close} disabled={busy} className="settings-icon-button rounded-lg text-muted-foreground hover:bg-muted" aria-label={t('management.telegramAccounts.login.closeAria')}><X className="h-4 w-4" /></button>
+                    <button type="button" onClick={close} disabled={busy} className="settings-icon-button rounded-lg text-muted-foreground hover:bg-muted" aria-label={t(target ? 'management.telegramAccounts.reauth.closeAria' : 'management.telegramAccounts.login.closeAria')}><X className="h-4 w-4" /></button>
                 </div>
                 <div className="settings-login__body">
                     {failure && <div role="alert" className="settings-notice settings-status--danger">{failure}</div>}
@@ -278,14 +300,14 @@ function LoginDialog({
                         </div>
                     </div>}
 
-                    {method === 'qr' && !complete && <div className="space-y-4 text-center">
+                    {method === 'qr' && !complete && login?.status !== 'password_required' && login?.status !== 'code_required' && <div className="space-y-4 text-center">
                         <div>
                             <h4 className="font-semibold">{t('management.telegramAccounts.login.qr')}</h4>
                             <p className="mt-1 text-[13px] text-muted-foreground">{t('management.telegramAccounts.login.qrInstructions')}</p>
                         </div>
-                        <div className="settings-qr settings-qr--login">
-                            {login?.qrCode ? <QRCodeSVG value={login.qrCode} size={192} level="M" marginSize={4} aria-label={t('management.telegramAccounts.login.qrAria')} /> : <LoaderCircle className="h-8 w-8 animate-spin text-primary" aria-label={t('management.telegramAccounts.login.generatingQr')} />}
-                        </div>
+                        {(busy || login?.status === 'waiting_for_scan') && <div className="settings-qr settings-qr--login">
+                            {login?.status === 'waiting_for_scan' && login.qrCode ? <QRCodeSVG value={login.qrCode} size={192} level="M" marginSize={4} aria-label={t('management.telegramAccounts.login.qrAria')} /> : <LoaderCircle className="h-8 w-8 animate-spin text-primary" aria-label={t('management.telegramAccounts.login.generatingQr')} />}
+                        </div>}
                         <div className="flex flex-col justify-center gap-2 sm:flex-row">
                             <Button variant="outline" onClick={() => void startQr()} disabled={busy}><RefreshCw className="mr-2 h-4 w-4" />{t('management.telegramAccounts.login.refreshQr')}</Button>
                             <Button variant="ghost" onClick={usePhone} disabled={busy}>{t('management.telegramAccounts.login.usePhone')}</Button>
@@ -301,8 +323,8 @@ function LoginDialog({
                             <Button onClick={() => void submitPhone()} disabled={busy || !phone.trim()}>{t('management.telegramAccounts.login.sendCode')}</Button>
                         </div>
                         <div className="flex flex-wrap gap-2">
-                            <Button variant="ghost" size="sm" onClick={backToMethodChoice}>{t('management.telegramAccounts.login.back')}</Button>
-                            <Button variant="ghost" size="sm" onClick={() => { setSelectedMethod('qr'); setMethod('qr'); void startQr(); }}>{t('management.telegramAccounts.login.backQr')}</Button>
+                            <Button variant="ghost" size="sm" onClick={backToMethodChoice} disabled={busy}>{t('management.telegramAccounts.login.back')}</Button>
+                            <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setSelectedMethod('qr'); setMethod('qr'); void startQr(); }}>{t('management.telegramAccounts.login.backQr')}</Button>
                         </div>
                     </div>}
 
@@ -324,9 +346,14 @@ function LoginDialog({
                         </div>
                     </div>}
 
+                    {!complete && login && (method === 'phone' || login.status === 'password_required' || login.status === 'code_required') && <div className="flex flex-wrap gap-2">
+                        <Button variant="ghost" size="sm" onClick={backToMethodChoice} disabled={busy}>{t('management.telegramAccounts.login.back')}</Button>
+                        <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setSelectedMethod('qr'); setMethod('qr'); void startQr(); }}>{t('management.telegramAccounts.login.backQr')}</Button>
+                    </div>}
+
                     {complete && <div role="status" className="flex flex-col items-center gap-3 py-6 text-center">
                         <CheckCircle2 className="h-10 w-10 settings-text-success" />
-                        <div><h4 className="font-semibold">{t('management.telegramAccounts.login.completeTitle')}</h4><p className="mt-1 text-[13px] text-muted-foreground">{t('management.telegramAccounts.login.completeDescription')}</p></div>
+                        <div><h4 className="font-semibold">{t(target ? 'management.telegramAccounts.reauth.completeTitle' : 'management.telegramAccounts.login.completeTitle')}</h4><p className="mt-1 text-[13px] text-muted-foreground">{t(target ? 'management.telegramAccounts.reauth.completeDescription' : 'management.telegramAccounts.login.completeDescription')}</p></div>
                         <Button onClick={close}>{t('management.telegramAccounts.login.done')}</Button>
                     </div>}
                 </div>
@@ -351,6 +378,7 @@ export function TelegramUserAccountsPanel({
     const [loadError, setLoadError] = useState<string | null>(null);
     const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
     const [loginOpen, setLoginOpen] = useState(false);
+    const [loginTarget, setLoginTarget] = useState<TelegramUserAccount | null>(null);
 
     const reload = useCallback(async (fresh = false) => {
         if (fresh) invalidateSettingsRequests();
@@ -416,7 +444,7 @@ export function TelegramUserAccountsPanel({
                     </div>
                     <p className="mt-1 max-w-2xl text-[13px] leading-6 text-muted-foreground">{t('management.telegramAccounts.description')}</p>
                 </div>
-                <Button className="w-full sm:w-auto" onClick={() => setLoginOpen(true)} disabled={!configured}><Plus className="mr-2 h-4 w-4" />{t('management.telegramAccounts.add')}</Button>
+                <Button className="w-full sm:w-auto" onClick={() => { setLoginTarget(null); setLoginOpen(true); }} disabled={!configured || busyAccountId !== null}><Plus className="mr-2 h-4 w-4" />{t('management.telegramAccounts.add')}</Button>
             </div>
 
             {!configured && <div className="settings-notice settings-status--warning"><ShieldAlert className="mr-2 inline h-4 w-4" />{t('management.telegramAccounts.botRequired')}</div>}
@@ -458,9 +486,11 @@ export function TelegramUserAccountsPanel({
                                     {account.cooldownUntil && <p>{t('management.telegramAccounts.account.cooldownUntil', { time: formatTime(account.cooldownUntil, locale) || t('management.telegramAccounts.account.pendingUpdate') })}</p>}
                                 </div>}
                                 {account.lastError && account.health !== 'disabled' && (!rateLimited || account.health === 'error' || account.health === 'expired') && <p className="mt-2 break-words text-[12px] settings-text-danger">{t('management.telegramAccounts.account.lastError')}: {account.lastError}</p>}
+                                {account.health === 'expired' && <p className="mt-2 text-[12px] settings-text-danger">{t('management.telegramAccounts.reauth.expiredHint')}</p>}
                                 {!account.enabled && <p className="mt-2 text-[12px] text-muted-foreground">{t('management.telegramAccounts.account.disabledHint')}</p>}
                             </div>
                             <div className="settings-actions settings-telegram-account__actions">
+                                {account.enabled && !account.connected && (account.health === 'expired' || account.health === 'error') && <Button size="sm" variant={account.health === 'expired' ? 'default' : 'outline'} disabled={!configured || busyAccountId !== null} onClick={() => { setLoginTarget(account); setLoginOpen(true); }}><KeyRound className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.reauth.action')}</Button>}
                                 {account.enabled ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'disable')}><PowerOff className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.disable')}</Button> : <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'enable')}><Power className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.enable')}</Button>}
                                 <Button size="sm" variant="destructive" disabled={busy} onClick={() => void mutateAccount(account, 'unlink')}><Trash2 className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.delete')}</Button>
                             </div>
@@ -470,7 +500,7 @@ export function TelegramUserAccountsPanel({
             </div>}
 
             </div>
-            <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} onComplete={async () => { await reload(true); await onNotice(t('management.telegramAccounts.notices.bound')); }} />
+            <LoginDialog open={loginOpen} target={loginTarget} onClose={() => setLoginOpen(false)} onComplete={async () => { await reload(true); await onNotice(t(loginTarget ? 'management.telegramAccounts.reauth.notice' : 'management.telegramAccounts.notices.bound')); }} />
         </div>
     );
 }

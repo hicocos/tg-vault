@@ -1,5 +1,6 @@
 import { Api, TelegramClient } from 'telegram';
 import { withTelegramAccount, startTelegramDownloadAttempt, finishTelegramDownloadAttempt } from './telegramMultiAccountRuntime.js';
+import { getTelegramMessagesWithAccess } from './telegramScanAccount.js';
 import { NewMessageEvent } from 'telegram/events/index.js';
 import fs from 'fs';
 import path from 'path';
@@ -45,6 +46,7 @@ import { resolveTelegramStorageFolderPersistent, resolveTelegramTaskStorageFolde
 import { consumeOrGetTelegramTargetState } from '../utils/telegramTargetStateStore.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
 import { DownloadTaskQueue, type DownloadTaskGroupInput, type DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
+import { runRollingDownloadWindow } from './rollingDownloadWindow.js';
 import { persistOrdinaryTransferTask } from './transferTasks.js';
 import { saveAndIndexWithCompensation, compensateIndexedWriteAfterCancel } from './storageWrite.js';
 import { acquireStorageAccountOperationLease, withStorageAccountOperationLease } from './storageAccountOperation.js';
@@ -60,10 +62,11 @@ import { DEFAULT_LOCALE, formatBytes as formatLocalizedBytes, t, type TelegramLo
 import { buildTaskCenterDetail, ordinaryTaskCenterItem, type TaskCenterItem } from './telegramTaskCenter.js';
 import { buildProgressControlButtons, registerProgressCard, isInteractiveProgressCard, taskCenterCardOwners, taskCenterCardKey } from './telegramProgressControls.js';
 import { downloadProgressView } from './downloadProgress.js';
-import { telegramDownloadStream, TelegramDownloadGate } from './telegramDownloadStream.js';
+import { telegramDownloadStream, runTelegramDownloadStripes } from './telegramDownloadStream.js';
 import { setTimeout as waitForDownload } from 'node:timers/promises';
 import { getProviderDisplayName } from '../utils/providerMetadata.js';
-const telegramDownloadGates = new WeakMap<TelegramClient, TelegramDownloadGate>();
+import { protectTemporaryUploadFile, withTemporaryUploadFiles } from '../utils/temporaryUploadFiles.js';
+import { normalizeFileDownloadConcurrency, registerFileConcurrencyRuntime } from './telegramFileConcurrency.js';
 
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
 const DEFAULT_TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
@@ -78,10 +81,6 @@ const TG_MEDIA_GROUP_ENQUEUE_BATCH_SIZE = Math.max(1, parseInt(process.env.TG_ME
 const MEDIA_GROUP_DEBOUNCE_MS = 200;
 const MEDIA_GROUP_MAX_WAIT_MS = 1500;
 
-function normalizeFileDownloadConcurrency(value: unknown): number {
-    const parsed = parseInt(String(value ?? process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY ?? '2'), 10);
-    return [1, 2, 3, 4].includes(parsed) ? parsed : 2;
-}
 
 const TG_DEBUG_LOG_PATH = process.env.TG_STATUS_DEBUG_LOG || path.join(process.cwd(), 'data', 'logs', 'tg_silent_debug.log');
 const TG_DEBUG_LOG_MAX_BYTES = Math.max(1024 * 1024, parseInt(process.env.TG_DEBUG_LOG_MAX_MB || '5', 10) * 1024 * 1024);
@@ -189,7 +188,7 @@ async function downloadIncomingTelegramFile(
     const messageId = forwarded?.savedFromMsgId || forwarded?.channelPost;
     if (source && messageId) {
         return withTelegramAccount(sourceKeyForDownloadRef(source), 'download', async client => {
-            const [visible] = await client.getMessages(source, { ids: [messageId] });
+            const [visible] = await getTelegramMessagesWithAccess(client, source, { ids: [messageId] });
             if (!visible?.media) throw new Error('消息不存在或不包含可下载媒体');
             return downloadAndSaveFile(client, visible, fileName, targetDir, onProgress, signal, groupId);
         }, { signal });
@@ -342,24 +341,6 @@ async function safeEditMessage(client: TelegramClient, chatId: Api.TypeEntityLik
         }
         console.warn(`[Telegram] ⚠️ 编辑消息失败 chat=${chatId.toString()} msg=${params?.message}:`, e?.errorMessage || e?.message || e);
         return null;
-    }
-}
-
-const telegramStorageWriteLocks = new Map<string, Promise<void>>();
-
-async function withTelegramStorageWriteLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-    const previous = telegramStorageWriteLocks.get(key) || Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>(resolve => { release = resolve; });
-    telegramStorageWriteLocks.set(key, previous.then(() => current, () => current));
-    await previous.catch(() => undefined);
-    try {
-        return await fn();
-    } finally {
-        release();
-        if (telegramStorageWriteLocks.get(key) === current) {
-            telegramStorageWriteLocks.delete(key);
-        }
     }
 }
 
@@ -525,6 +506,10 @@ const downloadQueue = new DownloadTaskQueue({
         ordinaryTaskPersistedAt.set(group.id, { at: now, state: group.state, completed: group.completed,
             failed: group.failed, cancelled: group.cancelled, total: group.total });
     },
+});
+registerFileConcurrencyRuntime(value => {
+    downloadQueue.setMaxConcurrent(value);
+    process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY = String(value);
 });
 const channelTaskAbortRegistry = new TaskAbortRegistry();
 
@@ -1165,9 +1150,9 @@ async function refreshConsolidatedMessage(client: TelegramClient, chatId: Api.Ty
     const existingMsgId = lastStatusMessageIdMap.get(chatIdStr);
     const ownerId = replyTo?.senderId?.toJSNumber()
         ?? (existingMsgId ? taskCenterCardOwners.get(taskCenterCardKey(chatIdStr, existingMsgId))?.userId : undefined);
-    const items = ownerId === undefined ? [] : listDownloadTaskGroups(chatIdStr, ownerId)
-        .map(ordinaryTaskCenterItem).filter((item): item is TaskCenterItem => Boolean(item));
     const locale = ownerId === undefined ? DEFAULT_LOCALE : await getTelegramUserLocaleOrDefault(ownerId);
+    const items = ownerId === undefined ? [] : listDownloadTaskGroups(chatIdStr, ownerId)
+        .map(group => ordinaryTaskCenterItem(group, locale)).filter((item): item is TaskCenterItem => Boolean(item));
     const buttons = buildProgressControlButtons(items, locale);
 
     // 新任务触发（有 replyTo）：强制删除旧追踪器，并发送一条新的追踪器消息
@@ -1192,20 +1177,7 @@ export function getDownloadQueueStats() {
     return downloadQueue.getStats();
 }
 
-export function getFileDownloadConcurrency(): number {
-    return downloadQueue.getMaxConcurrent();
-}
 
-export function setFileDownloadConcurrency(value: number): number {
-    const normalized = downloadQueue.setMaxConcurrent(value);
-    process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY = String(normalized);
-    return normalized;
-}
-
-export async function loadFileDownloadConcurrencySetting(): Promise<number> {
-    const value = await getSetting('telegram_file_download_concurrency', process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY || '2');
-    return setFileDownloadConcurrency(normalizeFileDownloadConcurrency(value));
-}
 
 export function getTaskStatus() {
     return downloadQueue.getDetailedStatus();
@@ -1509,16 +1481,15 @@ async function downloadAndSaveFile(
     }
 
     const filePath = path.join(saveDir, tempStoredName);
+    protectTemporaryUploadFile(filePath);
     const totalSize = getEstimatedFileSize(message);
-    let gate = telegramDownloadGates.get(client);
-    if (!gate) { gate = new TelegramDownloadGate(); telegramDownloadGates.set(client, gate); }
     let downloadedSize = 0;
-    const beforeRead = async () => {
+    const beforeRead = async (readSignal = signal) => {
         while (groupId) {
-            signal?.throwIfAborted();
+            readSignal?.throwIfAborted();
             const group = downloadQueue.getGroup(groupId, {}, true);
             if (!group || !['paused', 'pausing'].includes(group.state)) return;
-            await waitForDownload(100, undefined, { signal });
+            await waitForDownload(100, undefined, { signal: readSignal });
         }
     };
 
@@ -1554,7 +1525,7 @@ async function downloadAndSaveFile(
             try {
                 await fileHandle.truncate(totalSize);
 
-                const transfers = await Promise.allSettled(Array.from({ length: workers }, async (_, workerIndex) => {
+                await runTelegramDownloadStripes(workers, async (workerIndex, stripeSignal) => {
                     let writeOffset = workerIndex * TELEGRAM_DOWNLOAD_PART_SIZE;
                     for await (const chunk of telegramDownloadStream(offset => client.iterDownload({
                         file: media,
@@ -1563,8 +1534,8 @@ async function downloadAndSaveFile(
                         chunkSize: TELEGRAM_DOWNLOAD_PART_SIZE,
                         requestSize: TELEGRAM_DOWNLOAD_PART_SIZE,
                         fileSize: bigInt(totalSize),
-                    }), { offset: writeOffset, stride: TELEGRAM_DOWNLOAD_PART_SIZE * workers, end: totalSize, signal, beforeRead, gate })) {
-                        if (signal?.aborted) throw new Error('下载任务已停止');
+                    }), { offset: writeOffset, stride: TELEGRAM_DOWNLOAD_PART_SIZE * workers, end: totalSize, signal: stripeSignal, beforeRead: () => beforeRead(stripeSignal) })) {
+                        stripeSignal.throwIfAborted();
                         if (writeOffset >= totalSize) break;
                         const bytesToWrite = Math.min(chunk.length, totalSize - writeOffset);
                         if (bytesToWrite > 0) {
@@ -1576,16 +1547,14 @@ async function downloadAndSaveFile(
                         }
                         writeOffset += TELEGRAM_DOWNLOAD_PART_SIZE * workers;
                     }
-                }));
-                const failure = transfers.find(result => result.status === 'rejected');
-                if (failure?.status === 'rejected') throw failure.reason;
+                }, signal);
             } finally {
                 await fileHandle.close();
             }
         } else {
             const fileHandle = await fs.promises.open(filePath, 'w');
             try {
-                for await (const chunk of telegramDownloadStream(offset => client.iterDownload({ file: media, offset: bigInt(offset), requestSize: TELEGRAM_DOWNLOAD_PART_SIZE }), { offset: 0, end: totalSize || undefined, signal, beforeRead, gate })) {
+                for await (const chunk of telegramDownloadStream(offset => client.iterDownload({ file: media, offset: bigInt(offset), requestSize: TELEGRAM_DOWNLOAD_PART_SIZE }), { offset: 0, end: totalSize || undefined, signal, beforeRead })) {
                     if (signal?.aborted) throw new Error('下载任务已停止');
                     await fileHandle.writeFile(chunk);
                     downloadedSize += chunk.length;
@@ -1695,8 +1664,9 @@ async function processFileUpload(
     getExecutionControlState?: () => Promise<'run' | 'paused' | 'cooldown' | 'cancelled'>,
 ): Promise<void> {
     file.status = 'queued';
+    let retryDownload = true;
 
-    const attemptUpload = async (signal?: AbortSignal, reportProgress?: (downloaded: number, total: number) => void): Promise<boolean> => {
+    const attemptUpload = (signal?: AbortSignal, reportProgress?: (downloaded: number, total: number) => void): Promise<boolean> => withTemporaryUploadFiles(async () => {
         let localFilePath: string | undefined;
         let storedName: string | undefined; // This will hold the unique name for final storage
 
@@ -1732,7 +1702,7 @@ async function processFileUpload(
                     const ref = file.persistentRef!;
                     const attemptId = await startTelegramDownloadAttempt({ accountId, sourceKey: sourceKeyForDownloadRef(ref.source || ''), jobId: ref.jobId || null, itemId: ref.itemId || null, leaseToken: ref.leaseToken || null });
                     try {
-                        const [message] = await downloadClient.getMessages(ref.source || '', { ids: [ref.id] });
+                        const [message] = await getTelegramMessagesWithAccess(downloadClient, ref.source || '', { ids: [ref.id] });
                         if (!message) throw new Error('消息不存在或无法重新读取');
                         const downloaded = await downloadAndSaveFile(downloadClient, message, file.fileName, file.targetDir, reportProgress, signal, groupId);
                         await finishTelegramDownloadAttempt(attemptId, 'succeeded');
@@ -1771,150 +1741,160 @@ async function processFileUpload(
             }
 
             if (signal?.aborted) throw new Error('下载任务已停止');
-            const storageLockKey = `${provider.name}:${activeAccountId || 'local'}:${storageFolder || ''}`;
-            return await withTelegramStorageWriteLock(storageLockKey, async () => {
-                if (signal?.aborted) throw new Error('下载任务已停止');
-                storedName = await getUniqueStoredName(file.fileName, storageFolder, activeAccountId);
-
-                // 生成缩略图和获取尺寸。方案A：只在本地存储生成；第三方存储不生成本地缩略图。
-                let thumbnailPath: string | null = null;
-                let dimensions: { width?: number; height?: number } = {};
-                if (provider.name === 'local' && (file.mimeType.startsWith('image/') || file.mimeType.startsWith('video/'))) {
-                    try {
-                        thumbnailPath = await generateThumbnail(localFilePath!, storedName, file.mimeType);
-                        dimensions = await getImageDimensions(localFilePath!, file.mimeType);
-                    } catch (thumbErr) {
-                        console.warn('🤖 生成缩略图/获取尺寸失败，继续上传:', thumbErr);
-                    }
+            storedName = await getUniqueStoredName(file.fileName, storageFolder, activeAccountId);
+            
+            // 生成缩略图和获取尺寸。方案A：只在本地存储生成；第三方存储不生成本地缩略图。
+            let thumbnailPath: string | null = null;
+            let dimensions: { width?: number; height?: number } = {};
+            if (provider.name === 'local' && (file.mimeType.startsWith('image/') || file.mimeType.startsWith('video/'))) {
+                try {
+                    thumbnailPath = await generateThumbnail(localFilePath!, storedName, file.mimeType);
+                    dimensions = await getImageDimensions(localFilePath!, file.mimeType);
+                } catch (thumbErr) {
+                    console.warn('🤖 生成缩略图/获取尺寸失败，继续上传:', thumbErr);
                 }
-
-                let finalPath = localFilePath!;
-                let indexedFileId: string | null = null;
-                let sourceRef = provider.name;
-
-                const permissionBeforeStore = await waitForChannelExecutionPermission(
-                    getExecutionControlState,
-                    signal || new AbortController().signal,
-                    { allowUserPauseForActiveWorker: true },
-                );
-                if (permissionBeforeStore === 'cancelled' || signal?.aborted) throw new Error('下载任务已停止');
-                const save = async (): Promise<TelegramPersistedWrite> => {
-                    const persistentRef = file.persistentRef;
-                    let operationId: string | undefined;
-                    let savedPath = '';
-                    let indexState: 'unknown' | 'present' | 'deleted' = 'unknown';
-                    if (persistentRef?.jobId && persistentRef.itemId && persistentRef.leaseToken) {
-                        operationId = await beginTelegramWriteReconciliation(pool, {
-                            jobId: persistentRef.jobId,
-                            itemId: persistentRef.itemId,
-                            childLeaseToken: persistentRef.leaseToken,
-                            provider: provider.name,
-                            accountId: activeAccountId,
-                        });
-                        persistentRef.writeOperationId = operationId;
+            }
+            
+            let finalPath = localFilePath!;
+            let indexedFileId: string | null = null;
+            let sourceRef = provider.name;
+            
+            const permissionBeforeStore = await waitForChannelExecutionPermission(
+                getExecutionControlState,
+                signal || new AbortController().signal,
+                { allowUserPauseForActiveWorker: true },
+            );
+            if (permissionBeforeStore === 'cancelled' || signal?.aborted) throw new Error('下载任务已停止');
+            // Storage failures must not restart Telegram or create another unresolved write.
+            retryDownload = false;
+            const save = async (): Promise<TelegramPersistedWrite> => {
+                const persistentRef = file.persistentRef;
+                signal?.throwIfAborted();
+                const preparedWrite = await provider.prepareSaveFile?.(localFilePath!, storedName!, file.mimeType, storageFolder);
+                signal?.throwIfAborted();
+                let operationId: string | undefined;
+                let savedPath = '';
+                let indexState: 'unknown' | 'present' | 'deleted' = 'unknown';
+                if (persistentRef?.jobId && persistentRef.itemId && persistentRef.leaseToken) {
+                    operationId = await beginTelegramWriteReconciliation(pool, {
+                        jobId: persistentRef.jobId,
+                        itemId: persistentRef.itemId,
+                        childLeaseToken: persistentRef.leaseToken,
+                        provider: provider.name,
+                        accountId: activeAccountId,
+                        storedPath: preparedWrite?.storedPath,
+                    });
+                    persistentRef.writeOperationId = operationId;
+                }
+                try {
+                    signal?.throwIfAborted();
+                    savedPath = preparedWrite
+                        ? await preparedWrite.save(signal)
+                        : await provider.saveFile(localFilePath!, storedName!, file.mimeType, storageFolder, { signal });
+                    finalPath = savedPath;
+                    if (operationId) await markTelegramWriteObjectPresent(pool, operationId, savedPath);
+                    const inserted = await query(`
+                        INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                        RETURNING id
+                    `, [file.fileName, storedName, fileType, file.mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
+                    indexedFileId = String(inserted.rows[0].id);
+                    indexState = 'present';
+                    if (operationId) await markTelegramWriteIndexPresent(pool, operationId, indexedFileId);
+                    return { savedPath: finalPath, fileId: indexedFileId };
+                } catch (error) {
+                    if (!operationId) throw error;
+                    let objectState: 'unknown' | 'deleted' = 'unknown';
+                    let compensatedIndexState: 'unknown' | 'deleted' = indexState === 'present' ? 'unknown' : 'deleted';
+                    const errors: string[] = [];
+                    if (savedPath) {
+                        try { await provider.deleteFile(savedPath); objectState = 'deleted'; }
+                        catch (cleanupError) { errors.push(`object: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
                     }
+                    if (indexedFileId) {
+                        try {
+                            if ((await query('DELETE FROM files WHERE id = $1', [indexedFileId])).rowCount !== 1) throw new Error('索引补偿影响 0 行');
+                            compensatedIndexState = 'deleted';
+                        } catch (cleanupError) { errors.push(`index: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
+                    }
+                    const originalMessage = error instanceof Error ? error.message : String(error);
                     try {
-                        savedPath = await provider.saveFile(localFilePath!, storedName!, file.mimeType, storageFolder);
-                        finalPath = savedPath;
-                        if (operationId) await markTelegramWriteObjectPresent(pool, operationId, savedPath);
-                        const inserted = await query(`
-                            INSERT INTO files (name, stored_name, type, mime_type, size, path, thumbnail_path, width, height, source, folder, storage_account_id)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                            RETURNING id
-                        `, [file.fileName, storedName, fileType, file.mimeType, actualSize, savedPath, thumbnailPath, dimensions.width, dimensions.height, sourceRef, storageFolder, activeAccountId]);
-                        indexedFileId = String(inserted.rows[0].id);
-                        indexState = 'present';
-                        if (operationId) await markTelegramWriteIndexPresent(pool, operationId, indexedFileId);
-                        return { savedPath: finalPath, fileId: indexedFileId };
-                    } catch (error) {
-                        if (!operationId) throw error;
-                        let objectState: 'unknown' | 'deleted' = savedPath ? 'unknown' : 'unknown';
-                        let compensatedIndexState: 'unknown' | 'deleted' = indexState === 'present' ? 'unknown' : 'deleted';
-                        const errors: string[] = [];
-                        if (savedPath) {
-                            try { await provider.deleteFile(savedPath); objectState = 'deleted'; }
-                            catch (cleanupError) { errors.push(`object: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
-                        }
-                        if (indexedFileId) {
-                            try {
-                                if ((await query('DELETE FROM files WHERE id = $1', [indexedFileId])).rowCount !== 1) throw new Error('索引补偿影响 0 行');
-                                compensatedIndexState = 'deleted';
-                            } catch (cleanupError) { errors.push(`index: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`); }
-                        }
                         await updateTelegramWriteAfterCompensation(pool, operationId, {
                             objectState, indexState: compensatedIndexState,
-                            reason: errors.join('; ') || `保存失败且补偿已确认: ${error instanceof Error ? error.message : String(error)}`,
+                            reason: `保存失败: ${originalMessage}${errors.length ? `; 补偿失败: ${errors.join('; ')}` : ''}`,
                         });
-                        throw error;
+                    } catch (journalError) {
+                        console.error('Telegram write journal 保存失败证据更新失败:', journalError);
                     }
-                };
-                const leasedSave = () => withStorageAccountOperationLease(pool, activeAccountId, 'telegram_upload', save);
-                if (file.withLease) {
-                    const persisted = await runLeaseProtectedTelegramSave(
-                        file.withLease,
-                        leasedSave,
-                        async saved => {
-                            const compensation = await compensateIndexedWriteAfterCancel({
-                                fileId: saved.fileId,
-                                savedPath: saved.savedPath,
-                                deleteIndex: async fileId => (await query('DELETE FROM files WHERE id = $1', [fileId])).rowCount === 1,
-                                deleteObject: savedPath => provider.deleteFile(savedPath),
-                            });
-                            if (file.persistentRef?.writeOperationId) {
-                                await updateTelegramWriteAfterCompensation(pool, file.persistentRef.writeOperationId, {
-                                    objectState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
-                                    indexState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
-                                    reason: compensation.status === 'compensated' ? 'child settlement 失败后的补偿已确认' : (compensation.error || '补偿结果不确定'),
-                                });
-                            }
-                            return compensation;
-                        },
-                        async () => {
-                            if (signal?.aborted) throw new Error('下载任务已停止');
-                            const state = await waitForChannelExecutionPermission(
-                                getExecutionControlState,
-                                signal || new AbortController().signal,
-                                { allowUserPauseForActiveWorker: true },
-                            );
-                            if (state === 'cancelled') throw new Error('下载任务已停止');
-                        },
-                    );
-                    finalPath = persisted.savedPath;
-                    indexedFileId = persisted.fileId;
-                    file.leaseSettled = true;
-                } else {
-                    await leasedSave();
+                    throw error;
                 }
-                if (fs.existsSync(localFilePath!)) fs.unlinkSync(localFilePath!);
-                localFilePath = undefined;
-
-                // Durable child-lease saves validate cancellation before success settlement. Once
-                // settled, late AbortSignal delivery must not delete a file whose child is success.
-                if (signal?.aborted && !file.leaseSettled) {
-                    const compensation = indexedFileId
-                        ? await compensateIndexedWriteAfterCancel({
-                            fileId: indexedFileId,
-                            savedPath: finalPath,
+            };
+            const leasedSave = () => withStorageAccountOperationLease(pool, activeAccountId, 'telegram_upload', save);
+            if (file.withLease) {
+                const persisted = await runLeaseProtectedTelegramSave(
+                    file.withLease,
+                    leasedSave,
+                    async saved => {
+                        const compensation = await compensateIndexedWriteAfterCancel({
+                            fileId: saved.fileId,
+                            savedPath: saved.savedPath,
                             deleteIndex: async fileId => (await query('DELETE FROM files WHERE id = $1', [fileId])).rowCount === 1,
                             deleteObject: savedPath => provider.deleteFile(savedPath),
-                        })
-                        : { status: 'reconciliation-required' as const, error: '取消补偿缺少文件索引 ID' };
-                    if (compensation.status !== 'compensated') {
-                        throw new Error(`下载任务取消后需要人工对账: ${compensation.error}`);
-                    }
-                    throw new Error('下载任务已停止');
+                        });
+                        if (file.persistentRef?.writeOperationId) {
+                            await updateTelegramWriteAfterCompensation(pool, file.persistentRef.writeOperationId, {
+                                objectState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
+                                indexState: compensation.status === 'compensated' ? 'deleted' : 'unknown',
+                                reason: compensation.status === 'compensated' ? 'child settlement 失败后的补偿已确认' : (compensation.error || '补偿结果不确定'),
+                            });
+                        }
+                        return compensation;
+                    },
+                    async () => {
+                        if (signal?.aborted) throw new Error('下载任务已停止');
+                        const state = await waitForChannelExecutionPermission(
+                            getExecutionControlState,
+                            signal || new AbortController().signal,
+                            { allowUserPauseForActiveWorker: true },
+                        );
+                        if (state === 'cancelled') throw new Error('下载任务已停止');
+                    },
+                );
+                finalPath = persisted.savedPath;
+                indexedFileId = persisted.fileId;
+                file.leaseSettled = true;
+            } else {
+                await leasedSave();
+            }
+            if (fs.existsSync(localFilePath!)) fs.unlinkSync(localFilePath!);
+            localFilePath = undefined;
+            
+            // Durable child-lease saves validate cancellation before success settlement. Once
+            // settled, late AbortSignal delivery must not delete a file whose child is success.
+            if (signal?.aborted && !file.leaseSettled) {
+                const compensation = indexedFileId
+                    ? await compensateIndexedWriteAfterCancel({
+                        fileId: indexedFileId,
+                        savedPath: finalPath,
+                        deleteIndex: async fileId => (await query('DELETE FROM files WHERE id = $1', [fileId])).rowCount === 1,
+                        deleteObject: savedPath => provider.deleteFile(savedPath),
+                    })
+                    : { status: 'reconciliation-required' as const, error: '取消补偿缺少文件索引 ID' };
+                if (compensation.status !== 'compensated') {
+                    throw new Error(`下载任务取消后需要人工对账: ${compensation.error}`);
                 }
-                file.status = 'success';
-                file.size = actualSize;
-                file.fileType = fileType;
-                if (queue?.chatId) {
-                    const chatIdStr = queue.chatId.toString();
-                    const batchId = (file.message as any).groupedId?.toString();
-                    if (batchId) updateBatch(chatIdStr, batchId, { folderPath: storageFolder || '/', providerName: provider.name });
-                    rememberTransferDestination(chatIdStr, storageFolder || '/', await describeStorageTarget(storageTarget));
-                }
-                return true;
-            });
+                throw new Error('下载任务已停止');
+            }
+            file.status = 'success';
+            file.size = actualSize;
+            file.fileType = fileType;
+            if (queue?.chatId) {
+                const chatIdStr = queue.chatId.toString();
+                const batchId = (file.message as any).groupedId?.toString();
+                if (batchId) updateBatch(chatIdStr, batchId, { folderPath: storageFolder || '/', providerName: provider.name });
+                rememberTransferDestination(chatIdStr, storageFolder || '/', await describeStorageTarget(storageTarget));
+            }
+            return true;
 
         } catch (error) {
             if ((error as Error)?.name === 'TelegramDownloadLeaseLostError') throw error;
@@ -1941,7 +1921,7 @@ async function processFileUpload(
             }
             return false;
         }
-    };
+    });
 
     const queueTask = async (signal: AbortSignal, taskId?: string) => {
         try {
@@ -1962,13 +1942,14 @@ async function processFileUpload(
             const firstAttemptSuccess = await attemptUpload(signal, reportProgress);
             if (taskId) downloadQueue.stopProgress(taskId);
 
-            if (!firstAttemptSuccess && !signal.aborted && !file.retried && !file.storageCooldownUntil) {
+            if (!firstAttemptSuccess && retryDownload && !signal.aborted && !file.retried && !file.storageCooldownUntil) {
                 file.retried = true;
                 file.status = 'uploading'; // 保持 uploading 状态供外部显示
-                file.error = undefined;
+                const originalError = file.error;
                 if (taskId) downloadQueue.resetProgress(taskId);
                 const secondAttemptSuccess = await attemptUpload(signal, reportProgress);
                 if (taskId) downloadQueue.stopProgress(taskId);
+                file.error = secondAttemptSuccess ? undefined : originalError || file.error;
                 if (!secondAttemptSuccess) {
                     file.status = 'failed';
                 }
@@ -2327,6 +2308,7 @@ export async function downloadTelegramChannelRange(
     ownerUserId?: number,
     storageTarget: StorageTargetSnapshot = storageManager.getActiveTarget(),
     withItemLease?: <T>(ref: TelegramDownloadMessageRef, operation: () => Promise<T>) => Promise<T>,
+    loadMoreRefs?: (limit: number) => Promise<TelegramDownloadMessageRef[]>,
 ): Promise<{ requested: number; found: number; skipped: number; failed: number; successful: number; successfulMessageIds: number[]; failedMessageIds: number[]; skippedMessageIds: number[]; firstId: number; lastId: number }> {
     const userClient = botClient;
     const safeLimit = Math.max(1, Math.floor(limit || TG_BATCH_DEFAULT_LIMIT));
@@ -2359,8 +2341,8 @@ export async function downloadTelegramChannelRange(
     const failedMessageIds: number[] = [];
     const skippedMessageIds: number[] = [];
 
-    if (normalizedExplicitRefs) {
-        for (const ref of normalizedExplicitRefs) {
+    const appendExplicitRefs = async (refs: TelegramDownloadMessageRef[]) => {
+        for (const ref of refs) {
             const refSource = ref.source || sourceEntity;
             const fileInfo = ref.fileInfo;
             if (!fileInfo) {
@@ -2385,10 +2367,13 @@ export async function downloadTelegramChannelRange(
                 groupSize: ref.groupSize,
             });
         }
+    };
+    if (normalizedExplicitRefs) {
+        await appendExplicitRefs(normalizedExplicitRefs);
     } else {
         for (let offset = 0; offset < ids.length; offset += TG_LARGE_TASK_SEGMENT_SIZE) {
             const scanIds = ids.slice(offset, offset + TG_LARGE_TASK_SEGMENT_SIZE);
-            const scanMessages = await withTelegramAccount(String(source), 'metadata', client => client.getMessages(sourceEntity, { ids: scanIds }), { signal: taskSignal });
+            const scanMessages = await withTelegramAccount(String(source), 'metadata', client => getTelegramMessagesWithAccess(client, sourceEntity, { ids: scanIds }), { signal: taskSignal });
             const returnedIds = new Set<number>();
             for (const sourceMessage of scanMessages) {
                 if (!sourceMessage) continue;
@@ -2511,11 +2496,21 @@ export async function downloadTelegramChannelRange(
         }
     };
 
-    for (let offset = 0; offset < downloadableRefs.length; offset += TG_LARGE_TASK_SEGMENT_SIZE) {
-        const segment = downloadableRefs.slice(offset, offset + TG_LARGE_TASK_SEGMENT_SIZE);
+    const windowSize = Math.max(1, Math.min(downloadableRefs.length, TG_LARGE_TASK_SEGMENT_SIZE));
+    let nextRef = 0;
+    await runRollingDownloadWindow(windowSize, async capacity => {
+        taskSignal?.throwIfAborted();
+        const controlState = await getExecutionControlState?.();
+        if (controlState && controlState !== 'run') return [];
+        if (nextRef >= downloadableRefs.length && loadMoreRefs) {
+            const additional = normalizeTelegramDownloadRefs(await loadMoreRefs(capacity), sourceEntity) || [];
+            ids.push(...additional.map(ref => ref.id));
+            await appendExplicitRefs(additional);
+        }
+        const segment = downloadableRefs.slice(nextRef, nextRef + capacity);
         const segmentBytes = segment.reduce((sum, item) => sum + (item.totalSize || 0), 0);
+        if (segment.length === 0) return [];
         await waitForDiskWatermark(segmentBytes, taskSignal);
-        const segmentMessagesBySource = new Map<string, Map<number, Api.Message>>();
         const refsBySource = new Map<string, DownloadableMessageRef[]>();
         for (const item of segment) {
             const items = refsBySource.get(item.sourceKey) || [];
@@ -2534,15 +2529,17 @@ export async function downloadTelegramChannelRange(
             }
             if (missingSourceItems.length > 0) {
                 const segmentIds = missingSourceItems.map(item => item.id);
-                const segmentMessages = await withTelegramAccount(sourceKey, 'metadata', client => client.getMessages(sourceItems[0].sourceEntity, { ids: segmentIds }), { signal: taskSignal });
+                const segmentMessages = await withTelegramAccount(sourceKey, 'metadata', client => getTelegramMessagesWithAccess(client, sourceItems[0].sourceEntity, { ids: segmentIds }), { signal: taskSignal });
                 for (const segmentMessage of segmentMessages) {
                     if (segmentMessage) preloadedMessageById.set(segmentMessage.id, segmentMessage as Api.Message);
                 }
             }
-            segmentMessagesBySource.set(sourceKey, preloadedMessageById);
+            for (const item of sourceItems) item.message = preloadedMessageById.get(item.id);
         }
 
-        const outcomes = await Promise.allSettled(segment.map(async (item) => {
+        nextRef += segment.length;
+        return segment;
+    }, async item => {
             if (getExecutionControlState) {
                 const controlState = await getExecutionControlState();
                 if (controlState !== 'run') {
@@ -2556,7 +2553,7 @@ export async function downloadTelegramChannelRange(
                 }
             }
             const { fileName, mimeType } = item.fileInfo;
-            const message = segmentMessagesBySource.get(item.sourceKey)?.get(item.id);
+            const message = item.message;
             if (!message) {
                 skipped += 1;
                 failed += 1;
@@ -2628,13 +2625,11 @@ export async function downloadTelegramChannelRange(
                     completed += 1;
                     found += 1;
                 }
+                item.message = undefined;
                 await refreshSegmentStatus(false, fileName);
             }
-        }));
-        const failure = outcomes.find(result => result.status === 'rejected');
-        if (failure?.status === 'rejected') throw failure.reason;
-        await refreshSegmentStatus(true, segment[segment.length - 1]?.fileInfo.fileName);
-    }
+    });
+    await refreshSegmentStatus(true);
 
     if (downloadableRefs.length > 0 && !executionGroupKey) {
         updateBatch(chatIdStr, batchId, { completed, successful, failed, queuePending: 0, currentFileName: undefined });
@@ -2823,7 +2818,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                         message: buildDownloadProgress(finalFileName, 0, totalSize, typeEmoji, undefined, locale) + destinationText,
                         buttons: buildProgressControlButtons(listDownloadTaskGroups(chatIdStr, senderId)
                             .filter(group => group.id === singleGroupId)
-                            .map(ordinaryTaskCenterItem).filter((item): item is TaskCenterItem => Boolean(item)), locale),
+                            .map(group => ordinaryTaskCenterItem(group, locale)).filter((item): item is TaskCenterItem => Boolean(item)), locale),
                     }) as Api.Message;
                     if (statusMsg) {
                         updateLastStatusMessageId(chatId, statusMsg.id, false);
@@ -2838,10 +2833,10 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             await runStatusAction(chatId, async () => {
                 await safeEditMessage(client, chatId, {
                     message: statusMsg!.id,
-                    text: buildQueuedMessage(finalFileName, stats.pending, locale),
+                    text: buildQueuedMessage(finalFileName, stats.pending, locale) + destinationText,
                     buttons: buildProgressControlButtons(listDownloadTaskGroups(chatIdStr, senderId)
                         .filter(group => group.id === singleGroupId)
-                        .map(ordinaryTaskCenterItem).filter((item): item is TaskCenterItem => Boolean(item)), locale),
+                        .map(group => ordinaryTaskCenterItem(group, locale)).filter((item): item is TaskCenterItem => Boolean(item)), locale),
                 });
             });
         }
@@ -2859,11 +2854,13 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 if (!statusMsg) return;
                 const group = downloadQueue.getGroup(singleGroupId, { chatId: chatIdStr, userId: senderId });
                 if (!group || !['running', 'waiting', 'paused', 'pausing'].includes(group.state)) return;
-                const item = ordinaryTaskCenterItem(group);
+                const item = ordinaryTaskCenterItem(group, locale);
                 if (!item) return;
+                item.storageLabel = storageLabel;
+                item.targetFolder = previewFolder || '/';
                 const paused = group.state === 'paused' || group.state === 'pausing';
                 const text = paused
-                    ? buildTaskCenterDetail(item, 0, { locale }).text + destinationText
+                    ? buildTaskCenterDetail(item, 0, { locale }).text
                     : buildDownloadProgress(finalFileName, group.completedBytes || 0, group.totalBytes || totalSize, typeEmoji, undefined, locale, group.speedBytesPerSecond || 0) + destinationText;
                 await safeEditMessage(client, chatId, {
                     message: statusMsg.id, text, buttons: buildProgressControlButtons([item], locale),
@@ -2906,7 +2903,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
         let lastError: string | undefined;
         let storageCooldownUntil: Date | undefined;
 
-        const attemptSingleUpload = async (signal?: AbortSignal, reportProgress: (downloaded: number, total: number) => void = (downloaded, total) => { void onProgress(downloaded, total); }): Promise<boolean> => {
+        const attemptSingleUpload = (signal?: AbortSignal, reportProgress: (downloaded: number, total: number) => void = (downloaded, total) => { void onProgress(downloaded, total); }): Promise<boolean> => withTemporaryUploadFiles(async () => {
             let localFilePath: string | undefined;
             const storageTarget = singleStorageTarget;
             const { provider, accountId: activeAccountId } = storageTarget;
@@ -2958,7 +2955,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                             await runStatusAction(chatId, async () => {
                                 await safeEditMessage(client, chatId, {
                                     message: statusMsg!.id,
-                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id, locale),
+                                    text: buildDuplicateSkipped(finalFileName, storageFolder, duplicate.id, locale) + `\n📍 ${storageLabel}`,
                                 });
                             });
                         }
@@ -3064,7 +3061,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                 lastLocalPath = undefined;
                 return false;
             }
-        };
+        });
 
         const singleUploadTask = async (signal: AbortSignal, taskId?: string) => {
             const reportQueueProgress = (downloaded: number, total: number) => {
@@ -3094,10 +3091,10 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await safeEditMessage(client, chatId, {
                             message: statusMsg!.id,
-                            text: buildRetryMessage(finalFileName, typeEmoji, locale),
+                            text: buildRetryMessage(finalFileName, typeEmoji, locale) + destinationText,
                             buttons: buildProgressControlButtons(listDownloadTaskGroups(chatIdStr, senderId)
                                 .filter(group => group.id === singleGroupId)
-                                .map(ordinaryTaskCenterItem).filter((item): item is TaskCenterItem => Boolean(item)), locale),
+                                .map(group => ordinaryTaskCenterItem(group, locale)).filter((item): item is TaskCenterItem => Boolean(item)), locale),
                         });
                     });
                 }
@@ -3133,7 +3130,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await safeEditMessage(client, chatId, {
                             message: statusMsg!.id,
-                            text: buildUploadFail(finalFileName, lastError!, locale)
+                            text: buildUploadFail(finalFileName, lastError!, locale) + destinationText
                         }).catch(() => { });
                     });
                 }
@@ -3154,12 +3151,12 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
                     await runStatusAction(chatId, async () => {
                         await safeEditMessage(client, chatId, {
                             message: statusMsg!.id,
-                            text: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale)
+                            text: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale) + destinationText
                         }).catch(() => { });
                     });
                 } else {
                     await safeReply(message, {
-                        message: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale)
+                        message: buildUploadFail(finalFileName, lastError || t(locale, 'upload.error.unknown'), locale) + destinationText
                     });
                 }
             } else {
@@ -3193,7 +3190,7 @@ export async function handleFileUpload(client: TelegramClient, event: NewMessage
             } else if (statusMsg) {
                 await safeEditMessage(client, chatId, {
                     message: statusMsg.id,
-                    text: buildUploadFail(finalFileName, error, locale),
+                    text: buildUploadFail(finalFileName, error, locale) + destinationText,
                 });
             }
             setTimeout(() => removeUpload(chatIdStr, uploadId), 8000);

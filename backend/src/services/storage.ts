@@ -4,7 +4,7 @@ import OSS from 'ali-oss';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl as getS3SignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createClient, WebDAVClient } from 'webdav';
-import { google } from 'googleapis';
+import { google, type drive_v3 } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
 import { MediaSourceMissingError } from './mediaProxyError.js';
@@ -26,6 +26,8 @@ import { DEFAULT_STORAGE_COOLDOWN_MS, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT
 import { switchStorageAccountWithClient, switchStorageToLocalWithClient } from './storageAccountLifecycle.js';
 import { validateConfiguredStorageTarget } from './storageTargetReadiness.js';
 import { OpenListStorageProvider } from './openListStorage.js';
+import { uploadGoogleDriveFile } from './googleDriveUpload.js';
+import { uploadOneDriveFile } from './oneDriveUpload.js';
 
 export class StorageQuotaCooldownError extends Error {
     provider: string;
@@ -648,148 +650,23 @@ export class OneDriveStorageProvider implements IStorageProvider {
         }
     }
 
-    /**
-     * 保存文件到 OneDrive
-     */
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: { signal?: AbortSignal }): Promise<string> {
         const token = await this.getAccessToken();
-        const stats = await fs.promises.stat(tempPath);
-        const fileSize = stats.size;
-
-        console.log(`[OneDrive] Uploading file: ${fileName}, size: ${fileSize} bytes, type: ${mimeType}`);
-
-        // 确保文件夹存在
         const uploadFolder = await this.ensureFolderExists(token, folder);
-
-        // URL编码文件名，处理特殊字符
         const targetPath = uploadFolder ? `${uploadFolder}/${fileName}` : fileName;
-
         try {
-            // 小于 4MB 使用简单上传
-            if (fileSize < 4 * 1024 * 1024) {
-                console.log('[OneDrive] Using simple upload for small file');
-                const fileBuffer = await fs.promises.readFile(tempPath);
-
-                const response = await axios.put(
-                    `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}:/content`,
-                    fileBuffer,
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': mimeType || 'application/octet-stream',
-                            'Content-Length': fileSize.toString()
-                        },
-                        maxBodyLength: Infinity,
-                        maxContentLength: Infinity,
-                        timeout: 60000
-                    }
-                );
-
-                console.log('[OneDrive] Simple upload successful, file ID:', response.data.id);
-                return response.data.id;
-            } else {
-                // 大文件使用分片上传会话
-                console.log('[OneDrive] Using chunked upload session for large file');
-
-                // 1. 创建上传会话
-                const sessionRes = await axios.post(
-                    `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}:/createUploadSession`,
-                    {
-                        item: {
-                            "@microsoft.graph.conflictBehavior": "rename",
-                            name: fileName
-                        }
-                    },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${token}`,
-                            'Content-Type': 'application/json'
-                        },
-                        timeout: 30000
-                    }
-                );
-
-                const uploadUrl = sessionRes.data.uploadUrl;
-                console.log('[OneDrive] Upload session created');
-
-                // 2. 分片上传 - 使用流式读取避免内存溢出
-                const CHUNK_SIZE = 320 * 1024 * 10; // 3.2MB (必须是 320KB 的倍数)
-                let uploadedBytes = 0;
-                let lastResponse: any = null;
-
-                const fd = await fs.promises.open(tempPath, 'r');
-                try {
-                    while (uploadedBytes < fileSize) {
-                        const chunkSize = Math.min(CHUNK_SIZE, fileSize - uploadedBytes);
-                        const buffer = Buffer.alloc(chunkSize);
-                        await fd.read(buffer, 0, chunkSize, uploadedBytes);
-
-                        const rangeEnd = uploadedBytes + chunkSize - 1;
-                        const contentRange = `bytes ${uploadedBytes}-${rangeEnd}/${fileSize}`;
-
-                        console.log(`[OneDrive] Uploading chunk: ${contentRange}`);
-
-                        lastResponse = await axios.put(uploadUrl, buffer, {
-                            headers: {
-                                'Content-Length': chunkSize.toString(),
-                                'Content-Range': contentRange
-                            },
-                            maxBodyLength: Infinity,
-                            maxContentLength: Infinity,
-                            timeout: 120000
-                        });
-
-                        uploadedBytes += chunkSize;
-                        const progress = Math.round((uploadedBytes / fileSize) * 100);
-                        console.log(`[OneDrive] Upload progress: ${progress}%`);
-                    }
-                } catch (chunkError: any) {
-                    await fd.close();
-                    // 分片上传失败，尝试取消会话
-                    console.error('[OneDrive] Chunk upload failed, cancelling session...');
-                    await this.cancelUploadSession(uploadUrl);
-                    throw chunkError;
-                } finally {
-                    try { await fd.close(); } catch { /* ignore */ }
-                }
-
-                // 最后一个分片的响应包含完整的文件信息
-                if (lastResponse?.data?.id) {
-                    console.log('[OneDrive] Chunked upload successful, file ID:', lastResponse.data.id);
-                    return lastResponse.data.id;
-                }
-
-                // 如果最后响应没有ID，查询文件信息
-                const itemRes = await axios.get(
-                    `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}`,
-                    {
-                        headers: { 'Authorization': `Bearer ${token}` },
-                        timeout: 30000
-                    }
-                );
-                console.log('[OneDrive] File ID retrieved:', itemRes.data.id);
-                return itemRes.data.id;
-            }
-        } catch (error: any) {
-            console.error('[OneDrive] Upload failed:', {
-                status: error.response?.status,
-                error: error.response?.data?.error,
-                message: error.message
+            const id = await uploadOneDriveFile({
+                tempPath, fileName, mimeType,
+                resourceUrl: `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}`,
+                getAccessToken: () => this.getAccessToken(),
+                signal: options?.signal,
             });
-            throw new Error(`OneDrive upload failed: ${error.response?.data?.error?.message || error.message}`);
-        }
-    }
-
-    /**
-     * 取消上传会话（清理服务器上的未完成上传）
-     */
-    async cancelUploadSession(uploadUrl: string): Promise<void> {
-        try {
-            await axios.delete(uploadUrl, { timeout: 10000 });
-            console.log('[OneDrive] Upload session cancelled successfully');
-        } catch (error: any) {
-            // 会话可能已过期或不存在，忽略错误
-            console.warn('[OneDrive] Failed to cancel upload session (may already be expired):', error.message);
+            console.log('[OneDrive] Upload successful, file ID:', id);
+            return id;
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('[OneDrive] Upload failed:', message);
+            throw new Error(`OneDrive upload failed: ${message}`, { cause: error });
         }
     }
 
@@ -1136,40 +1013,55 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         return parentId!;
     }
 
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
+    async prepareSaveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null) {
         await this.ensureAuthenticated();
         const folderId = await this.ensureFolderExists(folder);
-
-        const fileMetadata = {
-            name: fileName,
-            parents: [folderId]
+        const drive: drive_v3.Drive = this.drive;
+        const generated = await drive.files.generateIds({ count: 1, space: 'drive', type: 'files' });
+        const fileId = generated.data.ids?.[0];
+        if (typeof fileId !== 'string' || !fileId) throw new Error('Google Drive did not allocate an upload file ID');
+        return {
+            storedPath: fileId,
+            save: async (signal?: AbortSignal): Promise<string> => {
+                try {
+                    const storedPath = await uploadGoogleDriveFile({
+                        tempPath, fileId, fileName, folderId, signal,
+                        create: async body => {
+                            const file = await drive.files.create(this.withSharedDriveSupport({
+                                requestBody: { id: fileId, name: fileName, parents: [folderId] },
+                                media: { mimeType, body },
+                                fields: 'id',
+                            }), { retry: false, signal });
+                            return file.data;
+                        },
+                        inspect: async () => {
+                            const file = await drive.files.get(this.withSharedDriveSupport({
+                                fileId, fields: 'id,name,size,md5Checksum,parents,trashed',
+                            }), { retry: false, signal });
+                            return file.data;
+                        },
+                    });
+                    console.log('[GoogleDrive] Upload successful, file ID:', storedPath);
+                    return storedPath;
+                } catch (error: unknown) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    console.error('[GoogleDrive] Upload failed:', message);
+                    if (isGoogleDriveDailyUploadLimitError(error)) {
+                        throw new StorageQuotaCooldownError('Google Drive 今日上传额度已达上限，任务将自动暂停 24 小时后继续。', {
+                            provider: 'google_drive',
+                            reason: STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT,
+                            storageAccountId: this.id,
+                            originalError: error,
+                        });
+                    }
+                    throw new Error(`Google Drive upload failed: ${message}`, { cause: error });
+                }
+            },
         };
+    }
 
-        const media = {
-            mimeType: mimeType,
-            body: fs.createReadStream(tempPath)
-        };
-
-        try {
-            const file = await this.drive.files.create(this.withSharedDriveSupport({
-                resource: fileMetadata,
-                media: media,
-                fields: 'id'
-            }));
-            console.log('[GoogleDrive] Upload successful, file ID:', file.data.id);
-            return file.data.id;
-        } catch (error: any) {
-            console.error('[GoogleDrive] Upload failed:', error.message);
-            if (isGoogleDriveDailyUploadLimitError(error)) {
-                throw new StorageQuotaCooldownError('Google Drive 今日上传额度已达上限，任务将自动暂停 24 小时后继续。', {
-                    provider: 'google_drive',
-                    reason: STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT,
-                    storageAccountId: this.id,
-                    originalError: error,
-                });
-            }
-            throw new Error(`Google Drive upload failed: ${error.message}`);
-        }
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
+        return (await this.prepareSaveFile(tempPath, fileName, mimeType, folder)).save();
     }
 
     async getFileAvailability(storedPath: string): Promise<{ available: true }> {

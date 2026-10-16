@@ -58,6 +58,7 @@ function normalizeAccount(me: { id: unknown; username?: string; firstName?: stri
 
 export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
     private readonly flows = new Map<string, Flow<C>>();
+    private readonly unclosedClients = new Set<C>();
     private readonly ttlMs: number;
     private readonly maxErrors: number;
     private readonly now: () => number;
@@ -131,6 +132,7 @@ export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
     }
 
     private async removeOwnerFlows(owner: string): Promise<void> {
+        if (this.unclosedClients.size) throw new Error('TELEGRAM_LOGIN_CLEANUP_UNCONFIRMED');
         const owned = [...this.flows.values()].filter(flow => flow.owner === owner);
         for (const flow of owned) {
             this.flows.delete(flow.id);
@@ -180,7 +182,8 @@ export class TelegramUserWebLoginFlows<C extends TelegramUserLoginClient> {
     }
 
     private async closeClient(client: C): Promise<void> {
-        try { await client.disconnect(); } catch { /* best effort */ }
-        try { await client.destroy(); } catch { /* best effort */ }
+        this.unclosedClients.add(client);
+        await client.destroy();
+        this.unclosedClients.delete(client);
     }
 }

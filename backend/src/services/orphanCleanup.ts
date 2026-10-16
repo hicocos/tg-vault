@@ -11,6 +11,7 @@ import { getRelativeStoragePath, safeUnlink } from '../utils/localPath.js';
 import { formatBytes } from '../utils/fileMetadata.js';
 import { getSetting } from '../utils/settings.js';
 import { cleanupPreviewOrphans } from '../utils/previewMaintenance.js';
+import { isTemporaryUploadFileActive } from '../utils/temporaryUploadFiles.js';
 
 const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 const ORPHAN_MIN_AGE_MS = Math.max(60_000, parseInt(process.env.ORPHAN_CLEANUP_MIN_AGE_MS || '600000', 10) || 600_000);
@@ -158,7 +159,7 @@ async function runCleanup(): Promise<CleanupStats> {
     for await (const file of walkFiles(UPLOAD_DIR)) {
         scannedCount += 1;
         const relativePath = getRelativeStoragePath(UPLOAD_DIR, file.path);
-        if (!relativePath || dbFileSet.has(relativePath) || now - file.mtimeMs < ORPHAN_MIN_AGE_MS) continue;
+        if (!relativePath || dbFileSet.has(relativePath) || now - file.mtimeMs < ORPHAN_MIN_AGE_MS || isTemporaryUploadFileActive(file.path)) continue;
         try {
             await safeUnlink(file.path, UPLOAD_DIR);
             stats.deletedCount += 1;

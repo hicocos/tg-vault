@@ -72,8 +72,8 @@ function collectCompletedFolders(
 ): string[] {
     const folders = new Set<string>();
     singleFiles
-        .filter(file => file.phase === 'success' && file.folder)
-        .forEach(file => folders.add(file.folder!));
+        .filter(file => (file.phase === 'success' || file.phase === 'failed') && file.folder != null)
+        .forEach(file => folders.add(file.folder || '/'));
     batches
         .filter(batch => batch.completed === batch.totalFiles)
         .forEach(batch => {
@@ -526,7 +526,7 @@ export function buildSilentAllTasksComplete(
 ): string {
     const successCount = Math.max(0, totalCount - failedCount);
     const providers = new Set<string>();
-    singleFiles.filter(f => f.phase === 'success' && (f.storageLabel || f.providerName)).forEach(f => providers.add(f.storageLabel || f.providerName!));
+    singleFiles.filter(f => f.storageLabel || f.providerName).forEach(f => providers.add(f.storageLabel || f.providerName!));
     batches.filter(b => b.storageLabel || b.providerName).forEach(b => providers.add(b.storageLabel || b.providerName!));
     const folders = collectCompletedFolders(singleFiles, batches);
     const detailLines = [
@@ -651,7 +651,7 @@ export async function buildConsolidatedStatus(
 
         // 显示存储提供商
         const providers = new Set<string>();
-        singleFiles.filter(f => f.phase === 'success' && (f.storageLabel || f.providerName)).forEach(f => providers.add(f.storageLabel || f.providerName!));
+        singleFiles.filter(f => f.storageLabel || f.providerName).forEach(f => providers.add(f.storageLabel || f.providerName!));
         batches.filter(b => b.storageLabel || b.providerName).forEach(b => providers.add(b.storageLabel || b.providerName!));
         if (providers.size > 0) {
             lines.push(`📍 存储: ${Array.from(providers).map(p => getProviderDisplayName(p)).join(', ')}`);
@@ -773,6 +773,8 @@ export async function buildConsolidatedStatus(
         queuedSingles.forEach(file => {
             lines.push(`🕒 ${file.typeEmoji} ${file.fileName}`);
             lines.push(`    └ 排队`);
+            if (file.storageLabel || file.providerName) lines.push(`    📍 存储：${file.storageLabel || getProviderDisplayName(file.providerName!)}`);
+            if (file.folder != null) lines.push(`    📁 保存目录：${file.folder || '/'}`);
         });
     }
 
@@ -788,7 +790,7 @@ export async function buildConsolidatedStatus(
                     icon = '✅';
                     const parts: string[] = [];
                     if (file.size) parts.push(formatBytes(file.size));
-                    if (file.folder) parts.push(`📁 ${file.folder}`);
+                    if (file.folder != null) parts.push(`📁 ${file.folder || '/'}`);
                     detail = parts.join(' · ') || '完成';
                     break;
                 case 'failed':
@@ -800,6 +802,8 @@ export async function buildConsolidatedStatus(
 
             lines.push(`${icon} ${file.typeEmoji} ${file.fileName}`);
             lines.push(`    └ ${detail}`);
+            if (file.storageLabel || file.providerName) lines.push(`    📍 存储：${file.storageLabel || getProviderDisplayName(file.providerName!)}`);
+            if (file.phase === 'failed' && file.folder != null) lines.push(`    📁 保存目录：${file.folder || '/'}`);
         });
     }
 

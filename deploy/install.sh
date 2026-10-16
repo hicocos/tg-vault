@@ -319,7 +319,9 @@ fi
 echo "Web：$CORS_ORIGIN_VALUE"
 echo "API：$VITE_API_URL_VALUE"
 echo
+API_PORT="${PORT:-$(read_env PORT)}"
+API_PORT="${API_PORT:-51947}"
 echo "容器健康检查已通过。公网访问还需宿主机 Nginx/面板的 HTTPS 反向代理："
 echo "  Web  -> http://127.0.0.1:47832"
-echo "  API  -> http://127.0.0.1:51947"
-echo "本机就绪检查：curl -fsS http://127.0.0.1:51947/readyz；另请验证 Web/API 的 HTTPS 地址。"
+echo "  API  -> http://127.0.0.1:$API_PORT"
+echo "本机就绪检查：curl -fsS http://127.0.0.1:$API_PORT/readyz；另请验证 Web/API 的 HTTPS 地址。"

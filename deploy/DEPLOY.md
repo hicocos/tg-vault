@@ -1,136 +1,121 @@
-> 本地保存位置与 bind/卷备份：[完整说明](../docs/local-storage.md)。新安装询问保存目录；升级不迁移，`.env` 单独存在也不套用新目录默认值。
-
 # TG Vault 服务器部署指南
 
-TG Vault 使用 **Docker Compose + 宿主机反向代理**。Compose 包含 `postgres`、`backend`、`frontend`；Nginx 和证书由宿主机或面板管理。
+[首页](../README.md) · [配置参考](../docs/configuration.md) · [本地存储](../docs/local-storage.md)
+
+标准部署使用 **Docker Compose + 宿主机 HTTPS 反向代理**。Compose 包含 `postgres`、`backend`、`frontend`，不包含证书管理服务。默认 Web/API 端口仅绑定宿主机 `127.0.0.1`。
 
 ## 1. 前置条件
 
-- Linux 服务器，Bash 4+、Python 3.6+、Git、Docker Engine、Compose 插件及 Buildx，当前用户能够访问 Docker daemon 和 builder。
-- 默认生成 SBOM（软件物料清单）和 provenance（构建来源证明），需要 Compose 2.39+ 及支持证明的 builder/镜像存储。
-- 已把 Web 域名和 API 域名解析到服务器。
-- 宿主机 Nginx、宝塔或其他反向代理负责 HTTPS 证书。
-- 从项目目录执行下列命令；项目目录即包含 `docker-compose.yml` 的目录。
+- Linux、Bash 4+、Python 3.7+、Git、Docker Engine、Compose 插件及 Buildx；当前用户能访问 Docker daemon 和 builder。
+- 标准模式需要 Compose 2.39+ 及支持 SBOM/provenance 的 builder/镜像存储。较旧环境可主动使用 `./deploy/install.sh --compat`，最低检查基线为 Compose 2.18+；本次不生成构建证明，不改原 Compose 文件。不支持 Python `docker-compose` v1，兼容模式不支持额外 Compose 覆盖文件。
+- Web 与 API 两个域名解析到服务器，例如 `cloud.example.com`、`api.example.com`。使用同一主域名下的 HTTPS 子域名，避免 `SameSite=Lax` Cookie 的跨站限制。
+- 宿主机 Nginx、管理面板或其他反向代理与证书；独立存储磁盘应提前挂载，并留足下载暂存和备份空间。
 
-环境检查只读。缺少组件时，输入 `1` 才授权从 apt（Debian/Ubuntu）或 dnf/yum 的现有仓库安装；可能更新包索引并请求 sudo 密码。按 Enter 或 `q` 退出。脚本不添加仓库、关闭签名校验、放宽 Docker socket 权限或执行远程安装脚本；包管理器自身可能启动安装的软件服务。
+环境检查默认只读。缺少组件时，输入 `1` 才授权从 apt（Debian/Ubuntu）或 dnf/yum 的现有仓库安装，可能请求 sudo 密码；按 Enter 或 `q` 退出。脚本不添加软件仓库、关闭签名校验或放宽 Docker socket 权限。
 
-较旧环境可主动使用 `./deploy/install.sh --compat`，验证基线为 Compose 2.18+。兼容模式去掉本次构建的 SBOM/provenance 字段，不改原 Compose 文件、应用配置或数据库配置；因此本次构建不生成这些证明。它不支持额外的 Compose 覆盖文件。标准模式和兼容模式都检查实际能力，不只比较版本号；均不支持 Python `docker-compose` v1。
-
-## 2. 创建环境变量
-
-首次部署直接运行安装器，无需先复制 `.env.example`：
+## 2. 首次安装
 
 ```bash
+git clone https://github.com/hicocos/tg-vault.git
+cd tg-vault
 ./deploy/install.sh
 ```
 
-首次运行只需要填写以下 2 项：
+**不要先复制 `.env.example`**：安装器会生成 `.env`，而已有 `.env` 会被视为旧部署，不套用新的存储目录默认值。按提示填写：
 
 ```dotenv
 VITE_API_URL=https://api.example.com
 CORS_ORIGIN=https://cloud.example.com
 ```
 
-填写实际 HTTPS origin（协议、域名及可选端口），不带路径、查询参数或末尾 `/`。域名后缀不限，例如 `.cc`、`.cn` 或多级子域名均可；裸域名无效。HTTP 仅适用于本地调试，默认安全 Cookie 需要 HTTPS。
+使用实际完整 origin（协议、域名及可选端口），不要路径、查询、片段或末尾 `/`。已有值按 Enter 保留，包括误填的示例地址，必须主动替换。安装器不替换 Nginx 示例中的域名。
 
-没有已有地址时，按 Enter 不会使用示例。如果已复制 `.env.example`，或在环境变量中设置了示例地址，必须主动替换，否则 Enter 会保留占位值。安装器不替换 Nginx 配置中的域名。确认页面按 Enter 保存并部署，输入 `e` 重填，输入 `q` 取消。
+新安装还会询问服务器文件目录，默认为 `<项目目录>/data`。应选择尚不存在的专用子目录，上级目录必须已存在；安装器以 `0700` 创建并设置 UID/GID `1000:1000`，不递归改其他目录权限。路径支持 ASCII 字母、数字、空格、`/`、`-`、`_`、`.`，不接受符号链接或 `..`。详见[本地存储](../docs/local-storage.md)。
 
-`.env` 支持单行引号、`export KEY=...`、赋值空格、行尾注释和 CRLF；不执行配置内容。不支持依赖环境的 `${VAR}` 插值或多行值，遇到时在写入前停止。数据库密码和应用密钥以文件中的值为准，不受同名进程环境变量覆盖。密码包含 URL 保留字符时，只对连接串编码，不改变数据库原密码。
+确认页按 Enter 保存并部署，输入 `e` 重填，`q` 取消。脚本自动生成数据库密码、`SESSION_SECRET` 与 `STORAGE_CREDENTIALS_SECRET`，将 `.env` 权限设为 `0600`。保留这些值；已有数据库不能换成新密码。
 
-**Telegram 不属于首次部署的 `.env` 配置。** 完成 HTTPS 和 Web 管理员初始化后，在「设置 → Telegram」配置 Bot、允许用户和账号登录。`TELEGRAM_*` 等环境变量仅用于旧版本兼容和高级部署；新安装无需填写或手动生成 session。
+Telegram 凭证不需要写入 `.env`。完成 HTTPS 和管理员初始化后，在 Web 设置中配置 Bot、允许用户和个人账号。
 
-新安装时，脚本会自动生成并保留：
-
-```dotenv
-DB_PASSWORD=随机生成的64位十六进制密码
-SESSION_SECRET=随机生成的64位十六进制密钥
-STORAGE_CREDENTIALS_SECRET=随机生成的64位十六进制密钥
-```
-
-升级时，若 `.env` 未设置 `SESSION_SECRET` 或 `STORAGE_CREDENTIALS_SECRET`，继续使用 `/data/secrets` 中已有的持久密钥，不生成替代值，以免 2FA 和存储凭证失效。
-
-OAuth 默认使用 `VITE_API_URL` 作为回调来源，并使用 `CORS_ORIGIN` 的第一个地址作为前端通知来源。只有多入口或特殊反代部署才需显式设置 `OAUTH_CALLBACK_BASE_URL`、`OAUTH_FRONTEND_ORIGIN`。
-
-直接运行 Compose 时，需自行生成新部署的 `DB_PASSWORD`，已有数据库必须使用原密码；镜像名称会使用 `source`，源码修订号和版本元数据回退为 `unknown` / `worktree`。
-
-## 3. 构建并启动
-
-安装器从 `backend/package.json` 和当前 Git 提交读取版本信息，只传给本次 Compose 调用，不写入 `.env`。以下是手动构建时的版本标记示例（需要宿主机 Node.js）：
+非交互安装不安装缺失软件，也不读取终端输入。全新部署可使用：
 
 ```bash
-revision=$(git rev-parse HEAD)
-version="v$(node -p "require('./backend/package.json').version")"
-IMAGE_VERSION="$version" SOURCE_REVISION="$revision" SOURCE_VERSION="$version" docker compose up -d --build
+CORS_ORIGIN=https://cloud.example.com \
+VITE_API_URL=https://api.example.com \
+INSTALL_STORAGE_PATH=/mnt/archive/tg-vault-data \
+./deploy/install.sh --non-interactive
 ```
+
+`INSTALL_STORAGE_PATH` 仅用于全新非交互安装；已有部署不会因此迁移文件。完整环境变量见[配置参考](../docs/configuration.md)。
+
+## 3. 构建与启动
+
+安装器更新当前分支源码后，依次：
+
+1. 校验部署配置与原有 `/data` 挂载。
+2. 分别构建后端和前端，降低同时构建的内存峰值。
+3. 启动并等待 PostgreSQL 健康，已有数据库容器使用 `--no-recreate` 保留。
+4. 替换前后端并等待健康检查；后端启动自动初始化/迁移数据库。
+
+默认等待 180 秒，可用 `INSTALL_HEALTH_TIMEOUT=600 ./deploy/install.sh` 调整（30–1800 秒）。失败时保留容器和数据，不自动清库重试。安装器从 `backend/package.json` 与 Git 读取版本/修订号，临时传给构建，不写入 `.env`。
+
+手动运行 Compose 需要自行准备 `.env` 和数据库密码；密码包含 URL 保留字符时还要为连接串提供 URL 编码后的 `DB_PASSWORD_URI`，数据库原密码不变。直接 Compose 使用历史 named volume 默认值，不会执行安装器的目录选择/密钥保护逻辑。已确认配置后可运行：
 
 ```bash
 docker compose config --quiet
-docker compose up -d --build
-docker compose ps
+docker compose build backend
+docker compose build frontend
+docker compose up -d --wait
 ```
 
-安装器按以下顺序执行，避免小内存服务器同时构建前后端：
+不传构建元数据时，镜像标签为 `source`、修订为 `unknown`、版本为 `worktree`。需要版本标记时使用安装器。首次安装不能只启动 `--no-deps backend frontend`，必须先有 PostgreSQL。
 
-1. 分别构建 `backend` 和 `frontend`。
-2. 启动并等待 `postgres` 健康。已有容器使用 `--no-recreate` 保留，停止的数据库会恢复启动。
-3. 替换前后端并等待健康检查通过。后端启动时自动检查/迁移数据库 schema。
-
-首次安装不能只启动 `--no-deps backend frontend`，否则缺少数据库服务。安装器保留持久化卷，仅在所有健康检查通过后报告完成；公网访问还需检查 HTTPS 反向代理。
-
-默认健康等待时间为 180 秒；慢速服务器可使用 `INSTALL_HEALTH_TIMEOUT=600 ./deploy/install.sh`（允许 30–1800 秒）。失败时会显示具体阶段和排障命令，保留容器与数据，不自动清库重试。若已有数据库容器/数据卷但 `.env` 中缺失数据库密码，脚本会停止并要求恢复原密码，避免随机生成的新密码破坏数据库连接。
+容器构建/后端运行使用 Node.js 24，前端运行由 Nginx 提供。后端通过镜像自带的进程外监督器启动；不要覆盖为 `node dist/index.js`，否则绕过活性保护。监督器针对 `/livez` 连续失败重启进程组，单纯 `/readyz` 降级不会触发此重启。
 
 ## 4. 配置宿主机反向代理
 
-按实际域名配置宿主机 Nginx 或其他反向代理：
+| 入口 | 上游 |
+| --- | --- |
+| `https://cloud.example.com` | `http://127.0.0.1:47832` |
+| `https://api.example.com` | `http://127.0.0.1:51947` |
 
-- Web 域名代理至 `http://127.0.0.1:47832`
-- API 域名代理至 `http://127.0.0.1:51947`
-- API 上传链路的 `client_max_body_size` 必须与应用的请求/分片限制匹配；它限制单次 HTTP 请求，不是文件总大小
-- TLS 证书由宿主机 Nginx/面板/Certbot 管理，不要运行 `docker compose run certbot`
+标准部署保留后端 `PORT=51947`。反向代理应转发完整路径、Host、真实客户端 IP、`X-Forwarded-For` 与 `X-Forwarded-Proto`，支持 `Range`/`If-Range`，为上传与媒体响应设置合理超时，不公共缓存鉴权响应。API 上传请求体上限至少容纳默认 32 MiB 分片及 multipart 开销；例如 `client_max_body_size 64m` 可用于默认分片配置，非分片请求仍受此上限限制。
 
-`deploy/nginx-site.conf` 和 `deploy/nginx-site-init.conf` 是旧的单域名示例，不是 Web/API 双域名的完整配置。使用前替换域名和证书路径，补齐 API 域名站点，并核对 `/uploads`、`/thumbnails` 等旧路由及缓存策略；不要对受保护文件启用公共缓存。初始 HTTP 配置仅用于申请证书，不要通过它登录或传输凭证。加载前执行 `nginx -t`；证书生效后再开放登录。
+TLS 证书由宿主机或面板管理；不要运行 `docker compose run certbot`。[`nginx-site.conf`](nginx-site.conf) 和 [`nginx-site-init.conf`](nginx-site-init.conf) 是旧单域名示例，不是可直接套用的双域名配置。使用前替换域名、证书路径，补齐 API 站点，核对旧 `/uploads`、`/thumbnails` 路由与公共缓存规则。加载前执行 `nginx -t`；初始 HTTP 站点仅用于证书申请，不用于登录或传输凭证。
+
+**管理员初始化前，仅允许自己访问 Web 和 API 两个入口**（例如临时代理 IP 白名单）。第一个完成初始化的人会设置管理员密码；没有默认管理员凭证或额外安装口令。HTTPS 生效后创建至少 8 位的强密码，再开放服务。在设置中配置 Telegram 与 TOTP，明确 Bot 用户允许列表后再分享 Bot。
+
+默认 `COOKIE_SECURE=true`；全新安装器还写入 `COOKIE_SECURE_FORCE=true`。不要为解决生产登录失败而关闭安全 Cookie：先核对 HTTPS、Web/API 同站域名、`CORS_ORIGIN` 与代理。修改 `VITE_API_URL` 必须重建前端。
 
 ## 5. 更新部署
 
-升级前备份 `.env`、数据库和文件卷；替换前后端会短暂中断服务。从实际项目目录执行：
+先完成下一节的备份，从实际项目根目录运行：
 
 ```bash
-cd /path/to/tg-vault
 ./deploy/install.sh
 ```
 
-安装器拉取当前分支的最新代码，再显示已有 Web/API 地址。按 Enter 保留，或输入新地址；确认后才构建。数据库容器和持久卷的保留方式见上一节。
+安装器从 `origin` 更新当前分支，只接受快进；本地修改、detached HEAD 或无法快进时停止，不丢弃文件或强行合并。已有地址按 Enter 保留；原数据库和文件挂载保留，不自动迁移数据。已手动更新、固定发布源码或离线部署可使用 `--skip-source-update`。也可通过安装器绝对路径调用，它会定位项目目录。
 
-有本地修改、处于 detached HEAD 或更新无法快进时，脚本停止，不丢弃修改或强制合并。已手动更新或需要离线部署时，可主动添加 `--skip-source-update`。也可从其他目录通过绝对路径运行安装器，它会定位到仓库根目录。
+替换前后端会短暂中断服务；仅重启旧容器不会升级源码或容器内 Node。数据库迁移由后端自动执行，不需要手工应用某个历史迁移。需要回退时，不能假设旧镜像兼容新 schema：先在隔离环境验证，必要时恢复升级前同一批数据库、文件与密钥。
 
-项目容器基线为 Node.js 24 LTS（当前固定官方 Node 24.21.0 Alpine 镜像摘要）：后端构建、后端运行及前端构建使用同一 Node 镜像，前端运行仍由 Nginx 提供服务。标准 Compose 部署获取此版本源码后，运行上述安装器即可重新构建并升级容器内 Node，无需修改宿主机 Node。数据库容器、原有配置和文件卷继续保留；仅重启旧容器不会升级 Node。手工创建或迁移的容器应先核对 Compose 项目归属、网络、环境变量和挂载，再按原部署方式重建。升级后可执行 `docker exec tg-vault-backend node --version` 确认版本。
-
-检查服务状态、源码标签和前端资源是否对应本次部署（读取版本的命令需要 Node.js）：
+部署后检查：
 
 ```bash
 docker compose ps
 curl -fsS http://127.0.0.1:51947/livez
 curl -fsS http://127.0.0.1:51947/readyz
 docker compose logs --tail=100 backend frontend postgres
-
-expected_revision=$(git rev-parse HEAD)
-expected_version="v$(node -p "require('./backend/package.json').version")"
 docker inspect --format='{{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.version"}}' tg-vault-backend tg-vault-frontend
-# 比较两个容器输出与 "$expected_revision $expected_version"。
-
-# 比较镜像内 index.html 与 HTTP 返回的 assets/ 入口。
-docker exec tg-vault-frontend sh -c 'grep -oE "assets/[^\"]+\.(js|css)" /usr/share/nginx/html/index.html | sort'
-curl -fsS http://127.0.0.1:47832/ | grep -oE 'assets/[^\"]+\.(js|css)' | sort
 ```
 
-两个容器的 revision/version 应与预期一致，镜像内外的 `assets/` 入口也应相同。另用实际 Web/API HTTPS 地址检查公网访问。
-
-不要使用 `down -v` 排查安装故障。出现 `ENOTFOUND postgres` 或 `EAI_AGAIN` 时，先用 `docker compose ps --all` 检查数据库服务是否存在并已启动，不要先改 DNS 或删数据。
+两端镜像标签应对应预期源码提交/版本；另用浏览器检查实际 Web/API HTTPS 地址、登录、文件访问与 Telegram 状态。不要仅凭容器运行就认定公网部署完成。
 
 ## 6. 常用运维命令
 
+从包含 `docker-compose.yml` 的项目根目录运行：
+
 ```bash
-docker compose ps
+docker compose ps --all
 docker compose logs -f backend
 docker compose logs -f frontend
 docker compose logs -f postgres
@@ -138,49 +123,72 @@ docker compose restart
 docker compose down
 ```
 
-`docker compose down` 不会删除 named volumes；不要添加 `-v`，除非明确要永久删除数据库和文件数据。
+`down` 停止并删除容器，但不删除 named volume。**不要添加 `-v`**，除非确定要永久删除数据库及文件卷。bind 目录也不能作为临时构建文件删除。备份脚本需要原 backend 容器（可以已停止）来确认实际挂载，运行备份前不要先执行 `down`。
 
 ## 7. 备份与恢复
 
-备份必须包含同一维护窗口内的：
-
-1. PostgreSQL custom-format dump
-2. `file-storage` 卷中的完整 `/data`（包括 secrets、缩略图和未完成上传状态）
-3. 版本、时间和 SHA-256 manifest
-
-仓库脚本：
+### 协调备份
 
 ```bash
-chmod +x deploy/backup.sh deploy/restore-verify.sh
-BACKUP_DIR=./backups ./deploy/backup.sh
+BACKUP_DIR=/path/to/secure-backups ./deploy/backup.sh
+./deploy/restore-verify.sh /path/to/secure-backups/<timestamp>
 ```
 
-脚本先检查目标空间，要求至少满足“文件卷未压缩大小 + PostgreSQL 数据库大小 + 512 MiB”。空间不足时，不停止 backend。
+备份依赖运行中的 PostgreSQL、现有 backend 容器及 Docker 拉取辅助镜像的能力。脚本识别 backend 的实际 `/data` 挂载，支持 bind 与 named volume，不猜卷名。输出目录包含：
 
-备份期间停止 backend，使数据库 dump 与 `/data` 归档之间没有应用写入；完成或失败退出时恢复原先运行的 backend。API 在此期间不可用，请安排维护时段。manifest 记录 `consistency=backend-stopped`，校验和使用归档文件名。
+- `postgres.dump`：PostgreSQL custom-format dump。
+- `file-storage.tar.gz`：完整 `/data`，包含本地文件、缩略图/预览、临时状态、Telegram session 与持久密钥。
+- `manifest.txt`：时间、源码修订、一致性标记及 SHA-256。
 
-**另行备份 `.env` 和自定义反向代理配置；脚本不包含它们。** `.env` 中可能保存数据库密码和加密密钥，仅恢复数据卷不够。
+脚本先检查目标至少可容纳“未压缩 `/data` + 数据库大小 + 512 MiB”。空间不足不会停止 backend。归档期间停止 backend，结束或失败退出时恢复其原运行状态，API/上传/后台任务暂不可用；不要同时运行其他写入工具。
 
-备份目录可能包含敏感凭证材料，应加密后异地保存并限制访问。恢复前在隔离环境执行：
+**另行安全备份 `.env` 和自定义反向代理配置，脚本不包含它们。** 远端存储对象不在本地归档中。备份应存到另一块磁盘，加密并异地保存，严格限制访问；不要提交到 GitHub。丢失应用密钥可能导致 TOTP、存储凭证不可读。
 
-```bash
-./deploy/restore-verify.sh ./backups/<backup-directory>
-```
+`restore-verify.sh` 只读检查清单、校验和及归档格式，不恢复数据。通过不代表应用可恢复；定期进行隔离恢复演练。
 
-验证脚本只检查清单、校验和与归档格式，不还原数据。还需定期在隔离 Compose 项目和数据卷中恢复，验证 schema、行数、密钥可读性及 `/readyz`，再安排生产恢复。
+### 隔离恢复演练与正式恢复
+
+以下示例**只在独立测试主机或独立 Docker daemon 上执行**，使用空数据库与空存储。仓库 Compose 固定了项目名、容器名和宿主机端口，仅换目录或加 `-p` 不足以避免与生产冲突。不要直接复用生产 bind 目录。
+
+1. 获取备份 manifest 对应的源码版本，安全复制原 `.env`，改为测试 HTTPS 地址与代理。原应用加密密钥必须保留。测试可将 `LOCAL_STORAGE_SOURCE=file-storage`、`LOCAL_STORAGE_MOUNT_TYPE=volume`，清空其余 `LOCAL_STORAGE_*` 展示元数据，使用测试 daemon 中的空 named volume。不要运行会拉取最新版的安装器。
+2. 核对所有挂载均为隔离目标，构建镜像并只启动数据库，创建但不启动 backend：
+
+   ```bash
+   docker compose config --quiet
+   docker compose build backend frontend
+   docker compose up -d --wait postgres
+   docker compose create --no-deps backend
+   ```
+
+3. 将备份目录记为 `BACKUP`（必须是安全归档的绝对路径），恢复数据库与完整 `/data`：
+
+   ```bash
+   BACKUP=/absolute/path/to/backups/<timestamp>
+   docker compose exec -T postgres pg_restore -U tgvault -d tgvault --clean --if-exists --no-owner < "$BACKUP/postgres.dump"
+   docker run --rm --volumes-from tg-vault-backend \
+     --mount "type=bind,source=$BACKUP,target=/backup,readonly" \
+     alpine:3.20 sh -c 'tar -C /data -xzf /backup/file-storage.tar.gz'
+   docker compose up -d --wait backend frontend
+   ```
+
+   归档解压到 `/data` 根，不额外套一层 uploads；保留归档权限。该命令会覆盖目标内容，因此目标必须为空且已确认隔离。
+
+4. 检查 schema、行数、`/readyz`、管理员登录/TOTP、密钥解密、本地文件与远端存储连接。隔离副本可能持有有效 Telegram 会话与订阅，启动前限制其外网访问，避免与生产同时使用同一会话或执行后台同步。
+
+正式恢复安排维护窗口，停止应用写入后按已演练流程还原同一批数据库、完整 `/data` 与原密钥；验证成功后才切换访问。保留原数据库/卷供回退，不向运行中的数据目录解压覆盖。
 
 ## 8. 故障排查
 
 ### backend 不健康
 
 ```bash
-docker compose ps
+docker compose ps --all
 docker compose logs --tail=200 backend
 curl -i http://127.0.0.1:51947/livez
 curl -i http://127.0.0.1:51947/readyz
 ```
 
-`/livez=200` 但 `/readyz=503` 表示进程存活，但数据库、存储或安全密钥尚不可用。
+`/livez=200`、`/readyz=503` 表示进程存活但依赖未就绪，检查数据库、存储、密钥与按需启用的 Telegram 必需状态。不要先清库或替换密钥。
 
 ### 数据库连接失败
 
@@ -189,6 +197,8 @@ docker compose exec postgres pg_isready -U tgvault -d tgvault
 docker compose logs --tail=200 postgres
 ```
 
-### HTTPS/502
+`ENOTFOUND postgres` / `EAI_AGAIN` 先检查数据库容器是否存在并启动；认证失败核对原 `DB_PASSWORD`，不要随机生成新密码。密码含特殊字符时核对连接串 URL 编码。
 
-检查宿主机 Nginx 配置、证书、Web/API upstream 端口和请求体限制。Compose 内不存在 `nginx` 或 `certbot` 服务。
+### HTTPS、502 或登录失败
+
+检查宿主机代理、证书、Web/API upstream、请求体与超时限制，核对构建时的 API 地址和运行时 CORS。同站 HTTPS 子域名与安全 Cookie 应一致。Compose 内没有 `nginx` 或 `certbot` 服务；只调整实际负责入口的代理。提交日志前脱敏，不公开 `.env`、session 或数据库归档。

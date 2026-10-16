@@ -29,8 +29,9 @@ Thumbs.db
 # Tests
 coverage/
 .nyc_output/
-*.test.ts
-*.spec.ts
+**/__tests__/
+**/*.test.*
+**/*.spec.*
 
 # Logs
 logs/
@@ -41,6 +42,25 @@ data/
 uploads/
 thumbnails/
 chunks/
+previews/
+secrets/
+*.session
+*.session-journal
+telegram_session*.txt
+telegram_user_session*.txt
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+*.backup
+*.bak
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+backups/
+.hermes/
 
 # Git
 .git/

@@ -25,7 +25,7 @@ export const securityCards = {
 
 export const maintenanceCards = {
   chunkConcurrency: { title: '单文件分片并发', description: '与 Bot /download_workers 共用。' },
-  fileConcurrency: { title: '同时下载文件数', description: '与 Bot /file_concurrency 共用。' },
+  fileConcurrency: { title: '同时下载文件数', description: '与 Bot /file_concurrency 共用。', limitDescription: '已启用 Telegram 用户账号：{{enabledAccounts}} 个，当前上限：{{limit}}。上限为已启用账号数的 2 倍；无账号时默认为 2，最多 10。' },
   duplicateMode: { title: '重复文件处理', description: '同名、同目录、同大小文件的统一策略。', copy: '生成副本', skip: '跳过重复' },
   skipPhotos: { title: '跳过频道普通图片', description: "订阅、按日期和按标签批量下载将跳过所有普通图片，仍下载作为文件发送的图片和其他文件。仅适合只需保留原图文件的频道；只发送普通图片的频道将不会下载图片。" },
   cleanupOrphans: { title: '自动清理未索引临时文件', description: "仅清理超过保护期、未被索引引用的本地临时文件，不删除文件索引或云端文件。" },

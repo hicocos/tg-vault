@@ -1,177 +1,97 @@
 <p align="center">
-  <a href="README.md"><strong>简体中文</strong></a> | <strong>English</strong>
+  <a href="README.md">简体中文</a> | <strong>English</strong>
 </p>
 
-<div align="center">
-  <img src="backend/logo.png" alt="TG Vault Logo" width="150" />
+<p align="center"><img src="backend/logo.png" alt="TG Vault Logo" width="150" /></p>
 
-  <h1>TG Vault</h1>
+# TG Vault
 
-  <p>
-    <strong>Telegram File Transfer & Archive</strong>
-  </p>
-  <p>
-    A Telegram-based file transfer, media archiving and multi-storage file management system for individuals and small teams.
-  </p>
+Telegram file transfer, media archiving and multi-storage file management for individuals and small teams. Manage files in the web UI and archive content you are entitled to save from Telegram private chats, channels and groups to your own storage.
 
-  <p>
-    <a href="#-quick-start-docker-compose"><strong>Quick Start</strong></a>
-    ·
-    <a href="#-features"><strong>Features</strong></a>
-    ·
-    <a href="#-telegram-bot-commands"><strong>Bot Commands</strong></a>
-    ·
-    <a href="deploy/DEPLOY.md"><strong>Deployment Guide</strong></a>
-  </p>
+[Quick start](#quick-start) · [Bot commands](#telegram-bot-commands) · [Deployment guide](deploy/DEPLOY.md) · [简体中文](README.md)
 
-  <p>
-    <a href="https://github.com/hicocos/tg-vault/releases"><img src="https://img.shields.io/github/v/release/hicocos/tg-vault?style=for-the-badge&logo=github&color=2f81f7" alt="Latest Release" /></a>
-    <a href="https://github.com/hicocos/tg-vault/blob/main/LICENSE"><img src="https://img.shields.io/github/license/hicocos/tg-vault?style=for-the-badge&color=00b894" alt="License" /></a>
-    <a href="https://github.com/hicocos/tg-vault/stargazers"><img src="https://img.shields.io/github/stars/hicocos/tg-vault?style=for-the-badge&logo=github&color=f1c40f" alt="Stars" /></a>
-    <a href="https://github.com/hicocos/tg-vault/network/members"><img src="https://img.shields.io/github/forks/hicocos/tg-vault?style=for-the-badge&logo=github&color=8e44ad" alt="Forks" /></a>
-  </p>
-  <p>
-    <img src="https://img.shields.io/badge/Telegram-Bot-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Bot" />
-    <img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Compose" />
-    <img src="https://img.shields.io/badge/React-TypeScript-3178C6?style=flat-square&logo=react&logoColor=white" alt="React TypeScript" />
-    <img src="https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL 16" />
-  </p>
-</div>
+## Features
 
-Save files from Telegram private chats, channels or groups, then browse and manage them in the web UI. Supports local disk, OneDrive, Google Drive, OSS, S3 and WebDAV.
+- File uploads, folder organization, search and media previews.
+- Telegram Bot transfers, channel/group batch downloads by date or tag, and channel subscription sync.
+- Web and Bot task management: progress, destinations, failure details, pause, resume, cancel and retry.
+- Local disk, OneDrive, Google Drive, Aliyun OSS, S3 and WebDAV storage, with source and directory rules for archiving.
+- Administrator password, Bot user allowlist and PIN, and TOTP two-factor authentication.
 
----
+TG Vault does not bypass Telegram permissions or download restrictions. Channel downloads and subscriptions require a Telegram user account with access to the source; sending files directly to the Bot does not require a personal account. Bot downloads in this project use MTProto, not the HTTP Bot API's `getFile`: its size limit cannot simply be applied here, and arbitrary files are not guaranteed to download. Direct Bot messages without a readable original source still use Bot downloads; adding a personal account does not automatically remove that path's restrictions. See [configuration](docs/configuration.md#telegram-配置与能力).
 
-## ✨ Features
+## Quick start
 
-- **File management**: Upload, preview and organize files; all folders remain visible without expanding the list. Storage accounts show safe configuration summaries and support renaming.
-- **Media previews**: Opening or closing file details preserves audio/video playback and the current position.
-- **Telegram transfer**: Send files to the Bot, or batch-save media from channels and groups.
-- **Subscription sync**: Subscribe to channels and automatically save future updates.
-- **Task controls**: Pause, resume, cancel and retry downloads from the Web or Bot; both show live item counts, download speed, save destinations and scan progress.
-- **Account scheduling**: Downloads use eligible Telegram accounts with shared cooldowns; channel scans are serialized per account and paced to reduce FloodWait errors.
-- **Multiple storage backends**: Local disk, OneDrive, Google Drive, OSS, S3 and WebDAV.
-- **Automatic archiving**: Organize files by source, channel and file type.
-- **Access protection**: Admin login, Bot user permissions and two-factor authentication.
-
----
-
-## 🚀 Quick Start (Docker Compose)
-
-You will need a Linux server and two domain names — one for the web UI and one for the API.
-
-### 1. Clone the project
+Prepare a Linux server, Docker Compose, and two HTTPS addresses under the same parent domain, such as `cloud.example.com` and `api.example.com`. The host or your management panel provides certificates and the reverse proxy.
 
 ```bash
 git clone https://github.com/hicocos/tg-vault.git
 cd tg-vault
-```
-
-### 2. Run the one-click script
-
-```bash
 ./deploy/install.sh
 ```
 
-Follow the prompts to check the environment and fill in the web and API addresses, then confirm to start the installation.
+Do not copy `.env.example` before a fresh installer run. Enter your Web/API addresses and a new dedicated storage directory. The installer generates the database password and application keys, builds the application, and starts PostgreSQL, the backend and the frontend. The default file directory is `<installation>/data`; existing deployments retain their original mount, with no automatic file migration.
 
-### 3. Get started
+1. Configure HTTPS reverse proxies for Web → `127.0.0.1:47832` and API → `127.0.0.1:51947` as described in the [deployment guide](deploy/DEPLOY.md#4-配置宿主机反向代理).
+2. **Restrict both endpoints to your own access until initialization is complete.** The first person to finish setup chooses the administrator password; there is no default password. Set a strong password of at least eight characters over HTTPS before opening access.
+3. Under **Settings → Telegram**, enter the Bot Token, API ID and API Hash, set a Bot PIN, and configure an allowlist of numeric user IDs. For channel downloads or subscriptions, also log in with a personal Telegram account on that page.
+4. Add other storage accounts under **Settings → Storage** and back up the configuration, database and complete `/data` directory.
 
-Set up HTTPS for both domains as described in the [deployment guide](deploy/DEPLOY.md#4-配置宿主机反向代理), then open the web page and create your admin account.
+See the [full deployment guide](deploy/DEPLOY.md) for installer options, `--compat` mode for older Compose environments and troubleshooting. Detailed guides are currently in Chinese.
 
-Go to **Settings → Telegram** to connect a Bot. If you need channel transfers or subscription sync, also log in with your Telegram account. Other storage backends can be added under **Settings → Storage**.
+## Telegram Bot commands
 
-[View the full deployment guide](deploy/DEPLOY.md) · [Telegram configuration guide](docs/configuration.md#-telegram-配置与能力)
-
-> Note: The deployment and configuration docs are currently available in Chinese only.
-
----
-
-## 🧭 Telegram Bot Commands
-
-After connecting the Bot, send `/start` to begin and `/help` to view the help message.
+After connecting, send `/start` to authenticate and `/help` for the full command list and arguments. Browse and search files in the web UI.
 
 | Command | Purpose |
 | --- | --- |
-| `/tasks` | View and manage tasks |
+| `/tasks` | View tasks, progress and controls |
 | `/storage` | View storage status |
-| `/path_rules` | Set the save location |
-| `/tg_download` | Open the channel/group download wizard |
-| `/tg_sub` | Add a channel subscription |
-| `/tg_subs` | View subscriptions |
+| `/path_rules` | Configure save locations and directory rules |
+| `/target` | Set the storage target for the current chat |
+| `/tg_download` | Open the channel/group date or tag download wizard |
+| `/tg_sub`, `/tg_subs` | Manage and list subscriptions |
+| `/tg_retry` | Retry failed tasks |
+| `/setup_2fa` | Configure TOTP two-factor authentication |
 
-Channel downloads and subscriptions require logging in with a Telegram account that has access to them.
+Channel processing progress includes successful, failed and skipped items; 100% does not mean all files succeeded. Scan totals may be unknown. Queued tasks and Telegram cooldowns do not indicate active transfer. Pausing stops subsequent reads, but in-flight requests or storage writes may still finish.
 
-Date/tag downloads now show scan progress in Bot cards, task details, and the Web task center: messages checked, files discovered, comment counts, and the timestamp reached by the scan. Checked messages include non-matching and non-downloadable messages; album files are counted uniquely. No extra Telegram requests are made to estimate scan totals, and no scan percentage is shown when the total is unknown.
+## Backup and updates
 
-The download wizard lets you edit the source, date range or tag, save directory and comment options before confirming. Failed submissions retain the draft; one-time storage targets are consumed only after a task is created. Completed cards retain failure details and retry links after a restart. Bot `/list` and `/find` are no longer available; use the Web file manager to browse and search files.
-
-Backend startup automatically applies migration `2026101201_telegram_background_job_status_text`, fixing finalization of tasks with partial failures and adding persistent task receipts. No manual database changes are needed.
-
-<details>
-<summary>More commands</summary>
-
-- **File management**: `/delete <ID prefix of at least 8 characters>` deletes a file; `/setup_2fa` sets up two-factor authentication.
-- **Task control**: `/task_pause [task ID]`, `/task_resume [task ID]`, `/task_cancel <task ID or all>`, `/stop_tasks`.
-- **Save directory**: `/p <directory>` applies to the next download only; `/ps <directory>` applies to the current session; `/pc` clears the custom directory.
-- **Batch downloads**: `/tg_download date <channel> <start date> <end date>`, `/tg_download tag <channel> <#tag>`.
-- **Subscriptions & retries**: `/tg_unsub <channel or subscription ID prefix>` cancels a subscription; `/tg_retry [count] [task ID]` retries failed tasks.
-- **Download settings**: `/download_workers`, `/file_concurrency`, `/duplicate_mode`, `/cleanup_settings`.
-
-</details>
-
----
-
-## 🔄 Maintenance & Updates
-
-Go to your TG Vault project directory and run the one-click upgrade script:
+Create a coordinated backup from the project root before updating with the installer:
 
 ```bash
+BACKUP_DIR=/path/to/secure-backups ./deploy/backup.sh
+./deploy/restore-verify.sh /path/to/secure-backups/<timestamp>
 ./deploy/install.sh
 ```
 
-The container build and backend runtime now use Node.js 24 LTS. The installer rebuilds the application containers while retaining configuration, database and file volumes; the host Node.js installation does not need to change.
+The backup script stops the backend while archiving, then restores its previous running state. **Back up `.env` and reverse-proxy configuration separately.** The script includes the database, complete `/data` and a checksum manifest, not files held by remote storage providers. Archive verification is not a restore drill. Upgrades automatically apply database migrations; rollback must preserve database/file consistency rather than simply running an older image. Do not troubleshoot with `docker compose down -v`. See [backup and recovery](deploy/DEPLOY.md#7-备份与恢复).
 
----
+## Local builds and contributions
 
-## 📚 Documentation
+Container builds use Node.js 24; Node.js 24 and npm are also recommended for local builds. Install and build each subproject independently:
 
-- [Deployment guide](deploy/DEPLOY.md): installation, domain configuration, environment compatibility and troubleshooting.
-- [Configuration & usage](docs/configuration.md): Telegram integration, access permissions and advanced configuration.
-- [Local storage locations](docs/local-storage.md): choosing and inspecting file save directories.
-- [Releases](https://github.com/hicocos/tg-vault/releases): new features and fixes.
-
----
-
-## 📂 Project Structure
-
-```text
-TG Vault/
-├── frontend/           # React web frontend
-├── backend/            # Node.js API and Telegram service
-├── init.sql            # Database initialization script
-├── docker-compose.yml  # Docker Compose deployment configuration
-├── .env.example        # Environment variable template
-└── LICENSE             # MIT License
+```bash
+npm --prefix backend ci
+npm --prefix frontend ci
+npm --prefix backend run build
+npm --prefix frontend run build
 ```
 
----
+Running the backend locally also requires PostgreSQL and `DATABASE_URL`; thumbnails/transcoding require ffmpeg. See [local development](docs/configuration.md#本地开发) for startup and environment details. Describe the purpose, reproduction steps and checks actually performed in contributions. Keep lockfiles and Chinese/English documentation in sync. Database changes should update the schema, migrations and `init.sql`; do not rewrite released migrations.
 
-## 📄 License
+GitHub Actions quality checks need no production credentials; public forks can contribute without Docker Hub configuration. To publish images, configure repository secrets `DOCKER_USERNAME` and `DOCKER_PASSWORD`, and optionally the `VITE_API_URL` repository variable. Publishing is skipped without credentials. The API address is embedded in frontend assets: never put secrets in `VITE_*` variables.
 
-Open-sourced under the [MIT License](LICENSE).
+Before publishing commits or sharing issue logs, exclude `.env`, tokens, API hashes, passwords, cookies, Telegram sessions, databases/backups, user files and private server details. Do not commit `node_modules`, `dist`, coverage, temporary debug/smoke scripts or local execution reports. Ignore rules do not remove secrets already committed to Git history; revoke/rotate leaked credentials and clean the history.
 
-Author: [hicocos](https://github.com/hicocos) · Repository: [hicocos/tg-vault](https://github.com/hicocos/tg-vault)
+## Documentation
 
----
+- [Deployment guide](deploy/DEPLOY.md): installation, HTTPS, backups, recovery and updates.
+- [Configuration and usage](docs/configuration.md): environment variables, Telegram, storage and permissions.
+- [Local storage locations](docs/local-storage.md): mounts, path verification and data protection.
+- [Releases](https://github.com/hicocos/tg-vault/releases).
 
-## 📊 Project Data
+## License
 
-<div align="center">
-  <a href="https://www.star-history.com/#hicocos/tg-vault&amp;type=date&amp;legend=top-left">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=hicocos/tg-vault&amp;type=date&amp;legend=top-left&amp;theme=dark" />
-      <img alt="TG Vault Star History Chart" src="https://api.star-history.com/svg?repos=hicocos/tg-vault&amp;type=date&amp;legend=top-left" />
-    </picture>
-  </a>
-</div>
+[MIT License](LICENSE) · [hicocos/tg-vault](https://github.com/hicocos/tg-vault)
