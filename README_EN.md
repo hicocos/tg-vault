@@ -30,14 +30,6 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-The installer pulls the latest amd64/arm64 images from GHCR without a registry login or local compilation, falling back to a source build if pulling fails. **Do not copy `.env.example` before a fresh install.** Follow the prompts for addresses and a storage directory.
-
-1. Configure HTTPS proxies as described in the [deployment guide](deploy/DEPLOY.md#4-配置宿主机反向代理): Web → `127.0.0.1:47832`, API → `127.0.0.1:51947`.
-2. **Restrict both endpoints to yourself until initialization is complete.** Open the web UI and set an administrator password before allowing access.
-3. Under **Settings → Telegram**, connect your Bot and configure user permissions. Sign in with a Telegram user account for channel downloads or subscriptions.
-
-Send `/start` to the Bot to begin, or `/help` for commands. Use `./deploy/install.sh --build` to force a source build. See the [deployment guide](deploy/DEPLOY.md) for other options; detailed guides are currently in Chinese.
-
 ## Backup and updates
 
 Back up `.env`, the database and complete file data before upgrading, then run from the project directory:
