@@ -30,7 +30,7 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-Do not copy `.env.example` before a fresh installer run. Enter your Web/API addresses and a new dedicated storage directory. The installer generates the database password and application keys, then pulls `hicocos/tg-vault-backend:latest` and `hicocos/tg-vault-frontend:latest` from Docker Hub without compiling locally. The default file directory is `<installation>/data`; existing deployments retain their original mount, with no automatic file migration.
+Do not copy `.env.example` before a fresh installer run. Enter your Web/API addresses and a new dedicated storage directory. The installer generates the database password and application keys, then pulls `ghcr.io/hicocos/tg-vault-backend:latest` and `ghcr.io/hicocos/tg-vault-frontend:latest` from GHCR without compiling locally. The default file directory is `<installation>/data`; existing deployments retain their original mount, with no automatic file migration.
 
 1. Configure HTTPS reverse proxies for Web → `127.0.0.1:47832` and API → `127.0.0.1:51947` as described in the [deployment guide](deploy/DEPLOY.md#4-配置宿主机反向代理).
 2. **Restrict both endpoints to your own access until initialization is complete.** The first person to finish setup chooses the administrator password; there is no default password. Set a strong password of at least eight characters over HTTPS before opening access.
@@ -81,7 +81,7 @@ npm --prefix frontend run build
 
 Running the backend locally also requires PostgreSQL and `DATABASE_URL`; thumbnails/transcoding require ffmpeg. See [local development](docs/configuration.md#本地开发) for startup and environment details. Describe the purpose, reproduction steps and checks actually performed in contributions. Keep lockfiles and Chinese/English documentation in sync. Database changes should update the schema, migrations and `init.sql`; do not rewrite released migrations.
 
-GitHub Actions quality checks need no production credentials. Maintainers configure repository secrets `DOCKER_USERNAME` and `DOCKER_PASSWORD` (a Docker Hub Access Token) to publish universal amd64/arm64 images and `latest` tags; installers need no publishing credentials. The container receives `VITE_API_URL` at startup, so different domains do not require recompilation. This address is public: never include secrets in it.
+GitHub Actions publishes universal amd64/arm64 images using the repository's built-in `GITHUB_TOKEN`, with `packages: write` granted only to publishing jobs. No additional registry credentials are required. After the first publication, maintainers must set both container packages to Public in GitHub Packages to allow anonymous pulls. The container receives `VITE_API_URL` at startup, so different domains do not require recompilation. This address is public: never include secrets in it.
 
 Before publishing commits or sharing issue logs, exclude `.env`, tokens, API hashes, passwords, cookies, Telegram sessions, databases/backups, user files and private server details. Do not commit `node_modules`, `dist`, coverage, temporary debug/smoke scripts or local execution reports. Ignore rules do not remove secrets already committed to Git history; revoke/rotate leaked credentials and clean the history.
 

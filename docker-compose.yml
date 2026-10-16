@@ -3,7 +3,7 @@ name: tg-vault
 services:
   # 前端（暴露到宿主机供 Nginx 反代）
   frontend:
-    image: hicocos/tg-vault-frontend:latest
+    image: ghcr.io/hicocos/tg-vault-frontend:latest
     pull_policy: always
     container_name: tg-vault-frontend
     environment:
@@ -31,7 +31,7 @@ services:
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: hicocos/tg-vault-backend:latest
+    image: ghcr.io/hicocos/tg-vault-backend:latest
     pull_policy: always
     container_name: tg-vault-backend
     ports:

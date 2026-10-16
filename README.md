@@ -30,7 +30,7 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-首次安装无需预先复制 `.env.example`。按提示填写 Web/API 地址和新的专用文件目录；安装器生成数据库密码及应用密钥，默认拉取 Docker Hub 的 `hicocos/tg-vault-backend:latest`、`hicocos/tg-vault-frontend:latest`，无需本机编译。文件目录默认是安装目录下的 `data`，已有部署保留原挂载，不自动迁移文件。
+首次安装无需预先复制 `.env.example`。按提示填写 Web/API 地址和新的专用文件目录；安装器生成数据库密码及应用密钥，默认拉取 GHCR 的 `ghcr.io/hicocos/tg-vault-backend:latest`、`ghcr.io/hicocos/tg-vault-frontend:latest`，无需本机编译。文件目录默认是安装目录下的 `data`，已有部署保留原挂载，不自动迁移文件。
 
 1. 按[部署指南](deploy/DEPLOY.md#4-配置宿主机反向代理)配置 Web → `127.0.0.1:47832`、API → `127.0.0.1:51947` 的 HTTPS 反向代理。
 2. **首次初始化前限制两个入口的访问，仅允许自己访问。** 第一个完成初始化的人会设置管理员密码；没有默认管理员密码。通过 HTTPS 创建至少 8 位的强密码后再开放服务。
@@ -81,7 +81,7 @@ npm --prefix frontend run build
 
 本地运行后端还需要 PostgreSQL 和 `DATABASE_URL`；缩略图/转码需要 ffmpeg。开发启动与环境要求见[配置说明](docs/configuration.md#本地开发)。提交变更时说明用途、复现步骤与实际执行的检查；保留锁文件，并同步中英文说明。数据库结构变更应同步 schema、迁移和 `init.sql`，不要改写已发布迁移。
 
-GitHub Actions 的质量检查不需要生产凭证；公共 fork 无需配置 Docker Hub 即可参与开发。维护者在仓库 secrets 配置 `DOCKER_USERNAME`、`DOCKER_PASSWORD`（Docker Hub Access Token）后发布 amd64/arm64 通用镜像及 `latest` 标签；安装者不需要发布凭据。API 地址在容器启动时通过 `VITE_API_URL` 注入，无需为不同域名重新编译；该值公开可见，不能放入秘密。
+GitHub Actions 使用仓库自带的 `GITHUB_TOKEN` 发布 amd64/arm64 通用镜像，无需额外注册表凭据；仅发布任务获授 `packages: write`。首次发布后，维护者需在 GitHub Packages 中将两个容器包的可见性设为 Public，安装者才能匿名拉取。API 地址在容器启动时通过 `VITE_API_URL` 注入，无需为不同域名重新编译；该值公开可见，不能放入秘密。
 
 发布、提交或共享问题日志前，确认不含 `.env`、Token、API Hash、密码、Cookie、Telegram session、数据库/备份、用户文件或服务器私有信息。不要提交 `node_modules`、`dist`、覆盖率、临时调试/冒烟脚本及本地执行报告；忽略规则不能移除已经进入 Git 历史的秘密，泄露后应撤销/轮换并清理历史。
 

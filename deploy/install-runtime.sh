@@ -122,7 +122,7 @@ start_installation() {
     build_application_images
   else
     INSTALL_STAGE=pull-application
-    echo '正在拉取 Docker Hub 最新前后端镜像（latest）...'
+    echo '正在拉取 GHCR 最新前后端镜像（latest）...'
     if installer_compose pull backend frontend && verify_application_image_pair; then
       echo '最新镜像拉取完成；无需在本机编译。'
     else
