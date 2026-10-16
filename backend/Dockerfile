@@ -3,7 +3,8 @@ FROM node:24-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b533
 
 WORKDIR /app
 
-# esbuild 极快且内存占用低，不再需要调高 Node 内存限制
+# Native dependencies may not ship prebuilt binaries for every supported architecture.
+RUN apk add --no-cache python3 make g++
 
 COPY package*.json ./
 RUN npm ci
@@ -30,7 +31,9 @@ RUN apk add --no-cache vips-dev ffmpeg ca-certificates curl
 
 # 复制依赖
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN apk add --no-cache --virtual .native-build-deps python3 make g++ \
+    && npm ci --omit=dev \
+    && apk del .native-build-deps
 
 # 复制构建产物
 COPY --from=builder /app/dist ./dist
