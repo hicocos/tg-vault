@@ -70,6 +70,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -85,8 +87,10 @@ jobs:
         id: meta-backend
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-backend
+          images: hicocos/tg-vault-backend
+          flavor: latest=false
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
@@ -113,6 +117,7 @@ jobs:
         with:
           context: ./backend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: ${{ steps.meta-backend.outputs.labels }}
           build-args: |
@@ -130,6 +135,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
@@ -145,8 +152,10 @@ jobs:
         id: meta-frontend
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/tg-vault-frontend
+          images: hicocos/tg-vault-frontend
+          flavor: latest=false
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
@@ -162,7 +171,7 @@ jobs:
           push: false
           tags: tg-vault-frontend:pr-${{ github.event.pull_request.number }}
           build-args: |
-            VITE_API_URL=${{ vars.VITE_API_URL }}
+            VITE_API_URL=
             SOURCE_REVISION=${{ github.sha }}
             SOURCE_VERSION=pr-${{ github.event.pull_request.number }}
           sbom: true
@@ -174,10 +183,11 @@ jobs:
         with:
           context: ./frontend
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta-frontend.outputs.tags }}
           labels: ${{ steps.meta-frontend.outputs.labels }}
           build-args: |
-            VITE_API_URL=${{ vars.VITE_API_URL }}
+            VITE_API_URL=
             SOURCE_REVISION=${{ github.sha }}
             SOURCE_VERSION=${{ github.ref_name }}
           sbom: true

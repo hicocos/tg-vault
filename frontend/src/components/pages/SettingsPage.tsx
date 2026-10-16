@@ -15,6 +15,7 @@ import { isTrustedOAuthPopupMessage } from "../../services/oauthPopupMessage";
 import { monitorOAuthPopup } from "../../services/oauthPopupFlow";
 import { synchronizeStorageConfig } from "../../services/storageConfigSynchronization";
 import { authService } from "../../services/auth";
+import { API_BASE } from '../../services/config';
 import { SETTINGS_SECTIONS, type SettingsSectionId } from "./settingsSections";
 import { IndeterminateSpinner } from "../ui/IndeterminateSpinner";
 import { errorCode, errorMessage } from "../../services/unknownError";
@@ -1958,7 +1959,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         <span>{t('settings.remaining.copy.072')}</span>
                                     </div>
                                     <p className="text-[12px] text-muted-foreground leading-relaxed">
-                                        {t('settings.remaining.shared.goTo')}<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-primary hover:underline">{t('settings.remaining.copy.073')}</a> {t('settings.remaining.shared.entraGuideMiddle')}<b>{t('settings.remaining.copy.074')}</b> {t('settings.remaining.copy.075')}<code>Web</code>{t('settings.remaining.shared.andEnter')}<code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.redirectUri || `${import.meta.env.VITE_API_URL || window.location.origin}/api/storage/onedrive/callback`}</code>
+                                        {t('settings.remaining.shared.goTo')}<a href="https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" rel="noreferrer" className="text-primary hover:underline">{t('settings.remaining.copy.073')}</a> {t('settings.remaining.shared.entraGuideMiddle')}<b>{t('settings.remaining.copy.074')}</b> {t('settings.remaining.copy.075')}<code>Web</code>{t('settings.remaining.shared.andEnter')}<code className="block mt-1 p-1 bg-muted rounded text-primary">{config?.redirectUri || `${API_BASE || window.location.origin}/api/storage/onedrive/callback`}</code>
                                     </p>
                                     <p className="text-[12px] settings-text-warning leading-relaxed rounded-[7px] border border-amber-500/20 bg-amber-500/5 p-3">
                                         {t('settings.remaining.shared.azureSecretPrefix')}<b>{t('settings.remaining.copy.076')}</b>{t('settings.remaining.copy.077')}<code>AADSTS7000215 Invalid client secret</code>{t('uiAudit.punctuation.period')}

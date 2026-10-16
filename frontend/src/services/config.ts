@@ -1,8 +1,16 @@
 const getApiBase = () => {
+    // The container writes this before startup; a missing/static bootstrap falls back to Vite.
+    const runtime = (globalThis as typeof globalThis & {
+        __TG_VAULT_CONFIG__?: { API_URL?: string };
+    }).__TG_VAULT_CONFIG__;
+    if (typeof runtime?.API_URL === 'string') {
+        return normalizeApiBase(runtime.API_URL);
+    }
+
     // import.meta.env is injected by Vite; Node-based unit tests intentionally have no env object.
     const env = (import.meta as ImportMeta & { env?: { VITE_API_URL?: string; PROD?: boolean } }).env;
     const envUrl = env?.VITE_API_URL?.trim();
-    if (envUrl && envUrl !== 'http://localhost:51947') {
+    if (envUrl) {
         return normalizeApiBase(envUrl);
     }
 

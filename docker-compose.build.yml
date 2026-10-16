@@ -1,0 +1,21 @@
+services:
+  frontend:
+    image: tg-vault-frontend:source
+    pull_policy: never
+    build:
+      context: ./frontend
+      sbom: true
+      provenance: mode=max
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+        SOURCE_VERSION: ${SOURCE_VERSION:-worktree}
+  backend:
+    image: tg-vault-backend:source
+    pull_policy: never
+    build:
+      context: ./backend
+      sbom: true
+      provenance: mode=max
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
+        SOURCE_VERSION: ${SOURCE_VERSION:-worktree}

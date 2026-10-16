@@ -11,20 +11,24 @@ NON_INTERACTIVE=false
 AFTER_SOURCE_UPDATE=false
 SKIP_SOURCE_UPDATE=false
 INSTALL_REQUIRE_ATTESTATIONS="${INSTALL_REQUIRE_ATTESTATIONS:-true}"
+INSTALL_FROM_SOURCE=false
+INSTALL_CHECK_BUILD=false
 for argument in "$@"; do
 case "$argument" in
   --non-interactive) NON_INTERACTIVE=true ;;
   --after-source-update) AFTER_SOURCE_UPDATE=true ;;
   --skip-source-update) SKIP_SOURCE_UPDATE=true ;;
   --compat) INSTALL_REQUIRE_ATTESTATIONS=false ;;
+  --build) INSTALL_FROM_SOURCE=true; INSTALL_CHECK_BUILD=true ;;
   -h|--help)
     cat <<'EOF'
-用法：./deploy/install.sh [--non-interactive] [--skip-source-update] [--compat]
+用法：./deploy/install.sh [--non-interactive] [--skip-source-update] [--build] [--compat]
 
 检查源码更新和服务器环境，再填写 Web/API 地址。仅输入 1 才授权安装缺少的软件。
 首次部署创建 .env 并生成密钥；已有地址按 Enter 保留。生产环境需配置 HTTPS。
 --non-interactive  不读取输入或安装软件；从 .env 或环境变量取值，配置不足时退出。
 --skip-source-update  使用当前源码，不拉取 Git 更新。
+--build  跳过 latest 镜像拉取，强制使用当前源码构建。
 --compat  本次构建不生成 SBOM/provenance，适用于较旧 Compose/镜像存储；不改原配置。
 EOF
     exit 0
@@ -84,6 +88,7 @@ update_source() {
     [[ "$NON_INTERACTIVE" != true ]] || reload_args+=(--non-interactive)
     reload_args+=(--after-source-update)
     [[ "$INSTALL_REQUIRE_ATTESTATIONS" != false ]] || reload_args+=(--compat)
+    [[ "$INSTALL_FROM_SOURCE" != true ]] || reload_args+=(--build)
     exec bash ./deploy/install.sh "${reload_args[@]}"
   fi
   echo "代码已是最新。"
@@ -92,7 +97,7 @@ update_source() {
 update_source
 
 source "$SCRIPT_DIR/install-environment.sh"
-check_environment || exit $?
+check_environment
 
 normalize_origin() {
   python3 "$SCRIPT_DIR/install-config.py" origin "$1"
@@ -208,7 +213,7 @@ if [[ "$NON_INTERACTIVE" == false ]]; then
     echo "数据库密码和应用密钥会自动生成。"
   else
     echo "已有部署：核对地址，按 Enter 保留。升级前请备份 .env、数据库和文件卷。"
-    echo "本次只重建前后端，保留数据库和文件卷；替换服务会短暂中断访问。"
+    echo "本次更新前后端，保留数据库和文件卷；替换服务会短暂中断访问。"
   fi
   echo
   while true; do

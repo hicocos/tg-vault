@@ -4,26 +4,16 @@
 # preflight, 2 on invalid invocation. Never exits the caller or changes its options.
 # NON_INTERACTIVE=true (also the unset default) forbids input/package/sudo calls.
 # NON_INTERACTIVE=false permits installation only after an explicit "1" response.
-# Runtime: Linux, Bash >=4, uname; Python 3, Git, Docker + Compose + Buildx are
-# checked dependencies. No curl, jq, timeout, systemctl or standalone compose.
-# Optional installation: apt-get + apt-cache, dnf, or yum from EXISTING repositories;
-# root or sudo is needed only after consent. No repository/key/service/group changes.
-# INSTALL_REQUIRE_ATTESTATIONS=true is the default, matching the project config.
-# A caller that EXPLICITLY removes sbom/provenance from its selected config may
-# set INSTALL_REQUIRE_ATTESTATIONS=false; this helper never changes that config.
-# Compose upstream minimum: 2.39.0 for attestations; supported baseline 2.18.0
-# for the --wait-timeout workflow. Capability validation accepts older releases
-# with the required capabilities (the flag itself appeared in 2.17).
-# https://docs.docker.com/reference/compose-file/build/#provenance
-# This read-only probe is not a build or validation of the final project config;
-# callers must also run compose config against the final configuration before up.
+# Runtime installs need Linux, Bash 4+, Python 3.7+, Git, Docker and Compose.
+# Buildx/attestation checks run only for explicit source mode or pull fallback.
+# Optional package installation still requires an explicit interactive consent.
 
 _tg_env_manual_help() {
   printf '%s\n' \
-    '需要 Linux、Bash 4+、Python 3.6+、Git、Docker Engine、Compose 插件和 Buildx。' \
-    '标准模式：Compose >= 2.39.0，支持 build.sbom/build.provenance；回移版本以实际能力检查为准。' \
-    '兼容模式：主动选择 --compat，不生成构建证明；验证基线为 Compose >= 2.18.0，需支持 --wait-timeout。' \
-    '两种模式均需可访问的 Buildx builder；标准模式还需支持 --sbom/--provenance 的工具和镜像存储。' \
+    '需要 Linux、Bash 4+、Python 3.7+、Git、Docker Engine 和 Compose 插件。' \
+    '默认拉取最新镜像，Compose 需支持健康等待与 pull 策略；无需 Buildx。' \
+    '源码兜底需要可访问的 Buildx builder；标准构建要求 Compose >= 2.39.0 及构建证明支持。' \
+    '较旧构建环境可主动选择 --compat，不生成本次构建证明；Compose 检查基线为 2.18.0。' \
     'Ubuntu/Debian 包名可能为 docker.io、docker-compose-v2（或 V2 的 docker-compose）、docker-buildx。' \
     '已配置的 Docker 官方仓库通常提供 docker-ce、docker-ce-cli、docker-compose-plugin、docker-buildx-plugin。' \
     'dnf/yum 只使用现有仓库；仓库没有兼容包时请按发行版/ Docker 官方文档手工配置受信任仓库。' \
@@ -40,7 +30,7 @@ _tg_env_compose_schema() {
   # even on a first install where DB_PASSWORD is not generated yet. --quiet keeps
   # configuration values out of logs. Explicit -f also ignores COMPOSE_FILE.
   local attestation_fields=''
-  if [[ "${INSTALL_REQUIRE_ATTESTATIONS:-true}" == true ]]; then
+  if [[ "${INSTALL_CHECK_BUILD:-false}" == true && "${INSTALL_REQUIRE_ATTESTATIONS:-true}" == true ]]; then
     attestation_fields=$'      sbom: true\n      provenance: mode=max'
   fi
   docker compose --env-file /dev/null --project-name tg-vault-preflight -f - config --quiet <<YAML
@@ -54,6 +44,7 @@ $attestation_fields
         condition: service_healthy
   database:
     image: scratch
+    pull_policy: always
     healthcheck:
       test: ["CMD", "true"]
 YAML
@@ -116,10 +107,11 @@ _tg_env_probe() {
   local daemon_ok=false detail compose_version buildx_help compose_help
   printf '%s\n' '服务器环境检测（只读）'
   if ! command -v docker >/dev/null 2>&1; then
-    _tg_env_missing+=(docker compose buildx)
+    _tg_env_missing+=(docker compose)
+    [[ "${INSTALL_CHECK_BUILD:-false}" != true ]] || _tg_env_missing+=(buildx)
     _tg_env_status 'Docker Engine' '✗ 缺失 (docker)'
     _tg_env_status 'Docker Compose 插件' '✗ 不可用 (compose；Docker CLI 缺失)'
-    _tg_env_status 'Docker Buildx' '✗ 不可用 (buildx；Docker CLI 缺失)'
+    [[ "${INSTALL_CHECK_BUILD:-false}" != true ]] || _tg_env_status 'Docker Buildx' '✗ 不可用 (buildx；Docker CLI 缺失)'
   else
     if detail="$(docker info --format '{{.ServerVersion}}' 2>&1)"; then
       daemon_ok=true
@@ -140,13 +132,13 @@ _tg_env_probe() {
     if compose_version="$(docker compose version --short 2>/dev/null)"; then
       if _tg_env_compose_schema >/dev/null 2>&1 &&
           compose_help="$(docker compose up --help 2>/dev/null)" &&
-          [[ "$compose_help" == *'--wait-timeout'* && "$compose_help" == *'--no-recreate'* &&
+          [[ "$compose_help" == *'--wait-timeout'* && "$compose_help" == *'--no-recreate'* && "$compose_help" == *'--pull'* &&
              "$compose_help" =~ (^|[[:space:]])--wait([[:space:]]|$) ]]; then
         _tg_env_status 'Docker Compose 插件' "✓ 配置和健康等待检查通过 (${compose_version:-版本未知})"
       else
         _tg_env_missing+=(compose)
         _tg_env_status 'Docker Compose 插件' '✗ 不支持所需配置，或 config 验证失败'
-        if [[ "${INSTALL_REQUIRE_ATTESTATIONS:-true}" == true ]]; then
+        if [[ "${INSTALL_CHECK_BUILD:-false}" == true && "${INSTALL_REQUIRE_ATTESTATIONS:-true}" == true ]]; then
           printf '%s\n' '需要上游 Compose >= 2.39.0（或兼容回移版本），且支持 build.sbom / build.provenance 与 --wait-timeout。' >&2
         else
           printf '%s\n' '兼容模式验证基线为 Compose >= 2.18.0；回移版本也需通过配置和 --wait-timeout 检查。' >&2
@@ -157,6 +149,8 @@ _tg_env_probe() {
       _tg_env_status 'Docker Compose 插件' '✗ 缺失或不可执行 (compose)'
     fi
 
+
+    if [[ "${INSTALL_CHECK_BUILD:-false}" == true ]]; then
     if docker buildx version >/dev/null 2>&1; then
       if buildx_help="$(docker buildx build --help 2>/dev/null)" &&
           { [[ "${INSTALL_REQUIRE_ATTESTATIONS:-true}" == false ]] ||
@@ -175,13 +169,16 @@ _tg_env_probe() {
       _tg_env_missing+=(buildx)
       _tg_env_status 'Docker Buildx' '✗ 缺失或不可执行；构建需要 Buildx'
     fi
+    else
+      _tg_env_status 'Docker Buildx' '— 镜像安装不需要；仅源码兜底时检查'
+    fi
   fi
 
-  if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
-    _tg_env_status 'Python 3' '✓ 可执行'
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys; sys.exit(sys.version_info < (3, 7))' >/dev/null 2>&1; then
+    _tg_env_status 'Python 3.7+' '✓ 可执行'
   else
     _tg_env_missing+=(python3)
-    _tg_env_status 'Python 3' '✗ 缺失或不可执行'
+    _tg_env_status 'Python 3.7+' '✗ 缺失或版本过低'
   fi
   if command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
     _tg_env_status 'Git' '✓ 可执行'
@@ -189,7 +186,7 @@ _tg_env_probe() {
     _tg_env_missing+=(git)
     _tg_env_status 'Git' '✗ 缺失或不可执行'
   fi
-  if [[ "${DOCKER_BUILDKIT:-}" == 0 ]]; then
+  if [[ "${INSTALL_CHECK_BUILD:-false}" == true && "${DOCKER_BUILDKIT:-}" == 0 ]]; then
     _tg_env_blocked=true
     printf '%s\n' 'DOCKER_BUILDKIT=0 禁用了所需构建能力；请取消该变量或设为 1 后重试。' >&2
   fi
@@ -378,7 +375,7 @@ check_environment() {
   esac
   case "${INSTALL_REQUIRE_ATTESTATIONS:-true}" in
     true) ;;
-    false) printf '%s\n' '兼容模式：本次构建不生成 sbom/provenance；预检按不含证明的配置检查，不修改原文件。' >&2 ;;
+    false) [[ "${INSTALL_CHECK_BUILD:-false}" != true ]] || printf '%s\n' '兼容构建模式：本次不生成 sbom/provenance；原部署配置不变。' >&2 ;;
     *) printf '%s\n' 'INSTALL_REQUIRE_ATTESTATIONS 必须为 true 或 false。' >&2; return 2 ;;
   esac
   system="$(uname -s 2>/dev/null)" || system=unknown

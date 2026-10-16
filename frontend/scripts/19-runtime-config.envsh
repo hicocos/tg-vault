@@ -1,0 +1,138 @@
+#!/bin/sh
+# Sourced by the official entrypoint before 20-envsubst-on-templates.sh.
+# Keep the normalized browser URL and CSP source identical; never interpolate raw input.
+normalize_api_origin() (
+    set -f
+    export LC_ALL=C
+    api=$1
+    api=${api#"${api%%[![:space:]]*}"}
+    api=${api%"${api##*[![:space:]]}"}
+    if [ -z "$api" ]; then
+        return 0
+    fi
+
+    invalid_origin() {
+        echo >&2 'VITE_API_URL must be an HTTP(S) origin (optional /api), without credentials, query, or fragment'
+        exit 1
+    }
+
+    valid_ipv4() (
+        address=$1
+        case "$address" in .*|*.|*..*) return 1 ;; esac
+        IFS=.
+        set -- $address
+        [ "$#" -eq 4 ] || return 1
+        for octet do
+            case "$octet" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
+            [ "${#octet}" -le 3 ] && [ "$octet" -le 255 ] || return 1
+        done
+    )
+
+    valid_ipv6() (
+        address=$1
+        # An embedded IPv4 address occupies two of the eight IPv6 groups.
+        case "$address" in
+            *.*)
+                valid_ipv4 "${address##*:}" || return 1
+                address=${address%:*}:0:0
+                ;;
+        esac
+        compressed=false
+        case "$address" in
+            *:::*|*::*::*) return 1 ;;
+            *::*)
+                compressed=true
+                left=${address%%::*}
+                right=${address#*::}
+                case "$left" in :*) return 1 ;; esac
+                case "$right" in *:) return 1 ;; esac
+                groups=${left}${left:+:}${right}
+                # Removing :: can leave a trailing separator when the right side is empty.
+                groups=${groups%:}
+                ;;
+            :*|*:) return 1 ;;
+            *) groups=$address ;;
+        esac
+        count=0
+        while [ -n "$groups" ]; do
+            group=${groups%%:*}
+            case "$group" in ''|*[!0-9a-f]*) return 1 ;; esac
+            [ "${#group}" -le 4 ] || return 1
+            count=$((count + 1))
+            case "$groups" in *:*) groups=${groups#*:} ;; *) groups= ;; esac
+        done
+        if [ "$compressed" = true ]; then
+            [ "$count" -lt 8 ]
+        else
+            [ "$count" -eq 8 ]
+        fi
+    )
+
+    # This whitelist excludes all JS/Nginx delimiters, control characters and URL credentials.
+    printf '%s\n' "$api" | grep -Eq '^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9.])?)(:[0-9]{1,5})?(/|/[aA][pP][iI]/?)?$' || invalid_origin
+    scheme=${api%%://*}
+    authority=${api#*://}
+    authority=${authority%%/*}
+    authority=$(printf '%s' "$authority" | tr 'A-Z' 'a-z')
+    port=
+    case "$api" in *[![:graph:]]*) invalid_origin ;; esac
+    case "$authority" in
+        \[*\]*)
+            host=${authority%%]*}]
+            address=${host#\[}
+            address=${address%\]}
+            valid_ipv6 "$address" || invalid_origin
+            suffix=${authority#*]}
+            port=${suffix#:}
+            ;;
+        *)
+            host=${authority%%:*}
+            case "$authority" in *:*) port=${authority##*:} ;; esac
+            case "$host" in *..*) invalid_origin ;; esac
+            # Numeric last labels are parsed as IPv4 by browsers, not as DNS names.
+            labels=${host%.}
+            last=${labels##*.}
+            case "$last" in
+                0x*)
+                    case "${last#0x}" in *[!0-9a-f]*) ;; *) invalid_origin ;; esac
+                    ;;
+            esac
+            case "$last" in
+                *[!0-9]*)
+                    [ "${#labels}" -le 253 ] || invalid_origin
+                    while [ -n "$labels" ]; do
+                        label=${labels%%.*}
+                        case "$label" in ''|-*|*-|*[!a-z0-9-]*) invalid_origin ;; esac
+                        [ "${#label}" -le 63 ] || invalid_origin
+                        case "$labels" in *.*) labels=${labels#*.} ;; *) labels= ;; esac
+                    done
+                    ;;
+                *) valid_ipv4 "$host" || invalid_origin ;;
+            esac
+            ;;
+    esac
+    if [ -n "$port" ]; then
+        while [ "${port#0}" != "$port" ]; do port=${port#0}; done
+        [ -n "$port" ] && [ "$port" -le 65535 ] || invalid_origin
+        case "$scheme:$port" in http:80|https:443) port= ;; esac
+    fi
+    printf '%s://%s%s' "$scheme" "$host" "${port:+:$port}"
+)
+
+# The '-' (not ':-') distinction intentionally lets explicit empty override a build default.
+API_ORIGIN=$(normalize_api_origin "${VITE_API_URL-${TG_VAULT_DEFAULT_API_URL-}}") || exit 1
+PORT=${PORT:-51947}
+case "$PORT" in
+    *[!0-9]*) echo >&2 'PORT must be an integer between 1 and 65535'; exit 1 ;;
+esac
+while [ "${PORT#0}" != "$PORT" ]; do PORT=${PORT#0}; done
+if [ -z "$PORT" ] || [ "${#PORT}" -gt 5 ] || [ "$PORT" -gt 65535 ]; then
+    echo >&2 'PORT must be an integer between 1 and 65535'
+    exit 1
+fi
+export API_ORIGIN PORT
+# Preserve $host, $uri, $http_range, and every other Nginx request variable.
+NGINX_ENVSUBST_FILTER='^(PORT|API_ORIGIN)$'
+export NGINX_ENVSUBST_FILTER
+printf 'window.__TG_VAULT_CONFIG__ = { API_URL: "%s" };\n' "$API_ORIGIN" > /usr/share/nginx/html/runtime-config.js
+chmod 644 /usr/share/nginx/html/runtime-config.js

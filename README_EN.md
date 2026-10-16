@@ -30,14 +30,14 @@ cd tg-vault
 ./deploy/install.sh
 ```
 
-Do not copy `.env.example` before a fresh installer run. Enter your Web/API addresses and a new dedicated storage directory. The installer generates the database password and application keys, builds the application, and starts PostgreSQL, the backend and the frontend. The default file directory is `<installation>/data`; existing deployments retain their original mount, with no automatic file migration.
+Do not copy `.env.example` before a fresh installer run. Enter your Web/API addresses and a new dedicated storage directory. The installer generates the database password and application keys, then pulls `hicocos/tg-vault-backend:latest` and `hicocos/tg-vault-frontend:latest` from Docker Hub without compiling locally. The default file directory is `<installation>/data`; existing deployments retain their original mount, with no automatic file migration.
 
 1. Configure HTTPS reverse proxies for Web → `127.0.0.1:47832` and API → `127.0.0.1:51947` as described in the [deployment guide](deploy/DEPLOY.md#4-配置宿主机反向代理).
 2. **Restrict both endpoints to your own access until initialization is complete.** The first person to finish setup chooses the administrator password; there is no default password. Set a strong password of at least eight characters over HTTPS before opening access.
 3. Under **Settings → Telegram**, enter the Bot Token, API ID and API Hash, set a Bot PIN, and configure an allowlist of numeric user IDs. For channel downloads or subscriptions, also log in with a personal Telegram account on that page.
 4. Add other storage accounts under **Settings → Storage** and back up the configuration, database and complete `/data` directory.
 
-See the [full deployment guide](deploy/DEPLOY.md) for installer options, `--compat` mode for older Compose environments and troubleshooting. Detailed guides are currently in Chinese.
+If pulling fails, the platform is unsupported, or the two images belong to different revisions, the installer falls back to a local source build. Use `./deploy/install.sh --build` to force source builds, adding `--compat` for older build environments. Updates always pull `latest` rather than pinning a version; back up before upgrading. See the [deployment guide](deploy/DEPLOY.md), currently in Chinese.
 
 ## Telegram Bot commands
 
@@ -81,7 +81,7 @@ npm --prefix frontend run build
 
 Running the backend locally also requires PostgreSQL and `DATABASE_URL`; thumbnails/transcoding require ffmpeg. See [local development](docs/configuration.md#本地开发) for startup and environment details. Describe the purpose, reproduction steps and checks actually performed in contributions. Keep lockfiles and Chinese/English documentation in sync. Database changes should update the schema, migrations and `init.sql`; do not rewrite released migrations.
 
-GitHub Actions quality checks need no production credentials; public forks can contribute without Docker Hub configuration. To publish images, configure repository secrets `DOCKER_USERNAME` and `DOCKER_PASSWORD`, and optionally the `VITE_API_URL` repository variable. Publishing is skipped without credentials. The API address is embedded in frontend assets: never put secrets in `VITE_*` variables.
+GitHub Actions quality checks need no production credentials. Maintainers configure repository secrets `DOCKER_USERNAME` and `DOCKER_PASSWORD` (a Docker Hub Access Token) to publish universal amd64/arm64 images and `latest` tags; installers need no publishing credentials. The container receives `VITE_API_URL` at startup, so different domains do not require recompilation. This address is public: never include secrets in it.
 
 Before publishing commits or sharing issue logs, exclude `.env`, tokens, API hashes, passwords, cookies, Telegram sessions, databases/backups, user files and private server details. Do not commit `node_modules`, `dist`, coverage, temporary debug/smoke scripts or local execution reports. Ignore rules do not remove secrets already committed to Git history; revoke/rotate leaked credentials and clean the history.
 

@@ -12,13 +12,10 @@ COPY . .
 
 # [重要] 允许构建时指定 API 地址
 # 使用方法: docker build --build-arg VITE_API_URL=https://your-api.domain.com ./frontend
-ARG VITE_API_URL=http://localhost:51947
+ARG VITE_API_URL=
 ENV VITE_API_URL=${VITE_API_URL}
 
 RUN NODE_OPTIONS=--max-old-space-size=768 npm run build
-
-# Bind CSP to the same API origin embedded in the frontend; render PORT at startup.
-RUN node scripts/build-nginx-config.mjs
 
 # Production stage
 FROM nginx@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
@@ -33,9 +30,13 @@ LABEL org.opencontainers.image.revision=$SOURCE_REVISION \
 # 复制构建产物
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# The official entrypoint substitutes only PORT, preserving Nginx request variables.
-ENV PORT=51947 NGINX_ENVSUBST_FILTER=^PORT$
-COPY --from=builder /tmp/default.conf.template /etc/nginx/templates/default.conf.template
+# An unset runtime override retains a source-build default; an explicit empty value uses /api.
+ARG VITE_API_URL=
+ENV TG_VAULT_DEFAULT_API_URL=${VITE_API_URL} \
+    PORT=51947 \
+    NGINX_ENVSUBST_FILTER="^(PORT|API_ORIGIN)$"
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+COPY --chmod=755 scripts/19-runtime-config.envsh /docker-entrypoint.d/19-runtime-config.envsh
 
 EXPOSE 80
 
