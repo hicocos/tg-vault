@@ -24,7 +24,7 @@ export const securityCards = {
 } as const;
 
 export const maintenanceCards = {
-  chunkConcurrency: { title: '单文件分片并发', description: '与 Bot /download_workers 共用。' },
+  chunkConcurrency: { title: '单文件分片并发', description: '与 Bot /download_workers 共用；可选 4、6、8、10、12，其中 10、12 需要二次确认。' },
   fileConcurrency: { title: '同时下载文件数', description: '与 Bot /file_concurrency 共用。', limitDescription: '已启用 Telegram 用户账号：{{enabledAccounts}} 个，当前上限：{{limit}}。上限为已启用账号数的 2 倍；无账号时默认为 2，最多 10。' },
   duplicateMode: { title: '重复文件处理', description: '同名、同目录、同大小文件的统一策略。', copy: '生成副本', skip: '跳过重复' },
   skipPhotos: { title: '跳过频道普通图片', description: "订阅、按日期和按标签批量下载将跳过所有普通图片，仍下载作为文件发送的图片和其他文件。仅适合只需保留原图文件的频道；只发送普通图片的频道将不会下载图片。" },
@@ -72,9 +72,9 @@ export const remainingPages = {
         "sharedDriveHintSuffix": "后面的共享盘 ID；授权账号必须已加入该共享盘并具备创建文件权限。",
         "entraGuideMiddle": "并登录。授权账号可与最终存储账号不同。注册应用时，",
         "andEnter": "，并填写：",
-        "azureSecretPrefix": "如果填写客户端密码，请复制 Azure「证书和密码」里新建密码后的",
+        "azureSecretPrefix": "Web 应用必须填写客户端密码，请复制 Azure「证书和密码」里新建密码后的",
         "ossCredentialsHint": "请提供您的阿里云 OSS 访问凭证。建议使用具有最小权限的 RAM 用户。",
-        "s3CredentialsHint": "支持 MinIO、Cloudflare R2、AWS S3 等。请确保已开启跨域访问（CORS）。",
+        "s3CredentialsHint": "支持 MinIO、Cloudflare R2、AWS S3 等。请求由后端发起，无需为本站开启桶 CORS；请核对 API 地址、区域和桶权限。",
         "forcePathStyle": "强制路径风格（Force Path Style）— MinIO 或私有化部署建议勾选",
         "webdavCredentialsHint": "请提供您的 WebDAV 服务器地址及登录凭证。"
       },
@@ -157,9 +157,9 @@ export const remainingPages = {
         "078": "应用程序 (客户端) ID",
         "079": "租户 ID (Tenant ID)",
         "080": "账户名称 (可选)",
-        "081": "客户端密码 (Client Secret - 可选)",
+        "081": "客户端密码 (Client Secret，Web 应用必填)",
         "082": "开始授权新账户",
-        "083": "点击下方按钮前往微软页面完成授权，系统将自动识别并添加该账户。",
+        "083": "不在本站填写微软账号密码。点击后在微软页面选择并登录要连接的账号；账户名称只是显示备注。",
         "084": "关闭",
         "085": "Aliyun OSS 账户",
         "086": "管理及切换多个阿里云 OSS 存储源",
@@ -306,7 +306,7 @@ export const remainingPages = {
         "227": "操作结果",
         "228": "删除完成",
         "229": "操作失败",
-        "230": "请填写 Client ID",
+        "230": "请填写 Client ID 和 Client Secret（客户端密码的值 Value）",
         "231": "信息不完整",
         "232": "授权窗口被浏览器拦截，请允许弹窗后重试",
         "233": "授权回调缺少新账户标识",
@@ -449,7 +449,7 @@ export const remainingPages = {
         "370": "未命名账户",
         "371": "默认为 common",
         "372": "自定义显示名称，例如：个人网盘",
-        "373": "公共客户端模式可不填",
+        "373": "粘贴证书和密码页面的值 Value，不是 Secret ID",
         "374": "发起中...",
         "375": "保存并授权",
         "376": "取消添加",
@@ -530,6 +530,26 @@ export const remainingPages = {
     "title": "订阅中心",
     "description": "管理频道同步和广告过滤。被过滤的内容不会创建下载任务或写入存储。",
     "refresh": "刷新",
+    "editor": {
+      "add": "新增订阅", "edit": "订阅配置", "create": "保存并启用", "save": "保存配置", "saving": "正在保存…",
+      "source": "频道用户名或链接", "recipient": "Bot 通知接收用户", "recipientHint": "这是订阅归属和通知接收用户，不是下载器账号。",
+      "owner": "订阅归属用户：{{userId}}", "noRecipients": "暂无已认证用户", "recipientRequired": "请先允许该用户使用 Bot，并在 Bot 私聊完成 /start 认证。",
+      "connectionSettings": "Telegram 连接设置", "destination": "保存存储", "followGlobal": "跟随系统默认存储", "local": "服务器本地存储",
+      "destinationHint": "固定存储不会随系统默认存储切换；修改仅影响后续创建的同步任务。", "destinationMissing": "原存储已不可用，请重新选择",
+      "folder": "保存目录", "folderPlaceholder": "留空使用默认分类目录", "folderHint": "填写存储内的相对目录，例如 telegram/频道名。留空沿用默认分类规则。",
+      "filter": "广告过滤模式", "createHint": "新订阅只同步新消息；已有订阅从原进度恢复，不补历史。",
+      "editHint": "仅调整保存位置和过滤规则；不重置进度，不移动已有文件。",
+      "loadFailed": "加载订阅配置选项失败", "saveFailed": "保存订阅配置失败", "currentDestination": "保存到：{{destination}} · {{folder}}"
+    },
+    "fileTypes": {
+      "title": "保存／忽略文件类型", "description": "仅影响当前订阅后续扫描的文件，不删除已保存文件，也不改变已有下载任务。",
+      "mode": "文件类型处理方式", "modes": { "all": "不限制文件类型", "include": "只保存所选类型", "exclude": "忽略所选类型" },
+      "categories": "选择文件类型", "selectAll": "全选", "clear": "清空选择", "required": "请至少选择一种文件类型。",
+      "defaultHint": "不限制时沿用全局“批量下载跳过普通图片”设置。", "explicitHint": "所选类型按文件名和媒体类型识别；当前频道的显式选择优先于全局图片跳过设置，广告过滤仍生效。",
+      "noRecords": "类型规则排除的文件直接跳过，不下载、不写入过滤记录；同步进度正常向前推进。",
+      "save": "保存文件类型规则", "saveFailed": "保存文件类型规则失败",
+      "types": { "images": "图片", "raw-images": "RAW 图片", "videos": "视频", "audio": "音频", "archives": "压缩包", "apps": "安装包／应用", "text": "纯文本", "word-docs": "Word 文档", "pdfs": "PDF", "spreadsheets": "电子表格", "presentations": "演示文稿", "ebooks": "电子书", "code": "代码", "fonts": "字体", "design": "设计文件", "torrents": "种子文件", "documents": "其他文档", "other": "其他文件" }
+    },
     "summary": {
       "enabled": "启用订阅",
       "enabledDetail": "个频道正在同步",
@@ -545,8 +565,8 @@ export const remainingPages = {
       "records": "过滤记录"
     },
     "empty": {
-      "title": "暂无启用中的频道订阅",
-      "description": "请先通过 Telegram Bot 新增或恢复订阅，随后可在这里配置过滤。"
+      "title": "暂无频道订阅",
+      "description": "可直接在这里新增频道订阅，配置保存位置和广告过滤。"
     },
     "subscription": {
       "syncing": "同步中",

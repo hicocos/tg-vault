@@ -20,6 +20,14 @@ export class LocalStorageProvider implements IStorageProvider {
         await fs.promises.access(this.uploadDir, fs.constants.R_OK | fs.constants.W_OK);
     }
 
+    async prepareSaveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null) {
+        const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
+        return { storedPath: safeJoin(destDir, fileName), save: async (signal?: AbortSignal) => {
+            signal?.throwIfAborted();
+            return this.saveFile(tempPath, fileName, mimeType, folder);
+        } };
+    }
+
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
         const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
         if (!fs.existsSync(destDir)) {

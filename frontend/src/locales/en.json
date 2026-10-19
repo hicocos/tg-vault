@@ -433,6 +433,7 @@
       "selectedData": "Saved {{transferred}} / Selected files {{total}}",
       "excluded": "Filtered out {{count}} files (not included in download progress)",
       "channelQueue": "Processing {{active}} · Queued {{pending}}",
+      "transferStages": "Downloading {{downloading}} · Saving {{uploading}} · Waiting to save {{waiting}} · Retrying {{retrying}}",
       "channelScan": "Channel: {{messages}} messages checked · {{files}} files found",
       "commentScan": "Comments: {{messages}} messages checked · {{files}} files found",
       "scanDate": "Scanned through {{time}}",

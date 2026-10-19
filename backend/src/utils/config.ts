@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import { getOrCreatePersistentSecret } from './secretStore.js';
+import { normalizeTelegramDownloadWorkers } from './advancedSettings.js';
 
 dotenv.config();
 
@@ -17,5 +18,5 @@ export const TOKEN_EXPIRY = 7 * 24 * 60 * 60 * 1000;
 export const TELEGRAM_API_ID = process.env.TELEGRAM_API_ID || '';
 export const TELEGRAM_API_HASH = process.env.TELEGRAM_API_HASH || '';
 export const TELEGRAM_USER_SESSION_FILE = process.env.TELEGRAM_USER_SESSION_FILE || './data/telegram_user_session.txt';
-export const TELEGRAM_DOWNLOAD_WORKERS = Math.max(1, Math.min(16, parseInt(process.env.TELEGRAM_DOWNLOAD_WORKERS || '4', 10) || 4));
+export const TELEGRAM_DOWNLOAD_WORKERS = normalizeTelegramDownloadWorkers(process.env.TELEGRAM_DOWNLOAD_WORKERS);
 export const TELEGRAM_USER_DOWNLOAD_ENABLED = !!TELEGRAM_API_ID && !!TELEGRAM_API_HASH;

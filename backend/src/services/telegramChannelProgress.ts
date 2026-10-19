@@ -63,9 +63,11 @@ export function channelProgressText(row: Record<string, unknown>, locale: Telegr
         t(locale, 'channelCard.progress', { done, total }),
         [t(locale, 'channelCard.queue', { active, pending }), failed > 0 ? t(locale, 'channelCard.failures', { count: failed }) : ''].filter(Boolean).join(' · '),
         skipped > 0 ? t(locale, 'channelCard.skipped', { count: skipped }) : '',
+        item?.byteProgressText,
         active > 0 ? t(locale, 'bot.legacy.speed', { speed: formatBytes(Number(row.speed_bytes_per_second || 0), locale) }) : '',
         runtime === 'pausing' ? t(locale, 'taskCenter.note.pausing') : '',
-        row.error ? String(row.error) : '',
+        item?.protection?.kind === 'telegram_flood_wait' ? item.reason || ''
+            : /FLOOD[_ ](?:TEST[_ ]PHONE[_ ])?WAIT/i.test(String(row.error || '')) ? '' : row.error ? String(row.error) : '',
         t(locale, 'channelCard.updated', { time: new Date().toLocaleTimeString(locale, { hour12: false, timeZone: 'Asia/Shanghai' }) }),
         ...(runtime === 'awaiting_selection' ? (() => {
             const { available, selected } = channelFileSelection(row);
@@ -87,12 +89,17 @@ const rendered = new Map<string, { signature: string; at: number; retryAt: numbe
 
 export async function syncTelegramChannelCards(client: TelegramClient): Promise<void> {
     const rows = await query(`SELECT j.*, a.name AS storage_account_name,
+        (SELECT COUNT(*)::int FROM telegram_user_accounts WHERE deleted_at IS NULL) AS telegram_downloader_count,
         COUNT(i.id)::int AS item_count,
         COUNT(i.id) FILTER (WHERE i.status='success')::int AS success_count,
         COUNT(i.id) FILTER (WHERE i.status='failed')::int AS failed_count,
         COUNT(i.id) FILTER (WHERE i.status='skipped')::int AS skipped_count_items,
         COUNT(i.id) FILTER (WHERE i.status='pending')::int AS pending_count,
-        COUNT(i.id) FILTER (WHERE i.status='downloading')::int AS downloading_count
+        COUNT(i.id) FILTER (WHERE i.status='downloading')::int AS downloading_count,
+        COALESCE(SUM(i.total_size) FILTER (WHERE i.status='success'), 0)::text AS completed_bytes,
+        COALESCE(SUM(i.total_size), 0)::text AS total_bytes,
+        COUNT(i.id) FILTER (WHERE COALESCE(i.total_size, 0) <= 0)::int AS unknown_size_count,
+        COUNT(i.id) FILTER (WHERE i.status='success' AND COALESCE(i.total_size, 0) <= 0)::int AS completed_unknown_size_count
         FROM telegram_background_jobs j LEFT JOIN telegram_download_items i ON i.job_id=j.id AND i.status<>'excluded'
         LEFT JOIN storage_accounts a ON a.id::text=j.params->>'storageAccountId'
         WHERE j.kind IN ('date_range','tag_download')
@@ -116,7 +123,11 @@ export async function syncTelegramChannelCards(client: TelegramClient): Promise<
             row.params?.availableFileTypes, row.params?.selectedFileTypes, row.params?.fileSelectionConfirmed,
             row.params?.excludedCount, row.params?.storageProvider, row.params?.storageAccountName,
             row.params?.compactedSuccessCount, row.params?.compactedSkippedCount,
-            row.params?.storageAccountId, row.storage_account_name, row.params?.folderOverride]);
+            row.completed_bytes, row.total_bytes, row.unknown_size_count, row.completed_unknown_size_count,
+            row.item_count, row.params?.compactedTotalBytes, row.params?.completedBytes,
+            row.params?.compactedItemCount, row.params?.compactedUnknownSizeCount, row.params?.savedUnknownCount,
+            row.params?.storageAccountId, row.storage_account_name, row.params?.folderOverride,
+            row.telegram_downloader_count, row.cooldown_until]);
         const previous = rendered.get(id);
         if (previous && (previous.retryAt > Date.now() || (previous.signature === signature
             && (row.finished_at || Date.now() - previous.at < 30_000)))) continue;

@@ -1,6 +1,6 @@
 import { AppearanceSettings } from './AppearanceSettings';
 import { BotFaultDetails } from './BotFaultDetails';
-import { isBotQuarantined, publishBotStatus } from '../../services/botFaultPresentation';
+import { botFaultPresentation, publishBotStatus } from '../../services/botFaultPresentation';
 import { formatDateTime, formatNumber } from '../../i18n/format';
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -126,17 +126,17 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
             <motion.div
                 initial={{ opacity: 0, y: 12, scale: 0.97 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
-                className={cn("w-full overflow-hidden rounded-2xl border bg-background shadow-2xl", danger ? "border-destructive/40" : "border-border")}
+                className={cn("settings-surface w-full overflow-hidden rounded-2xl border bg-background shadow-2xl", danger ? "border-destructive/40" : "border-border")}
             >
                 <div className={cn("flex items-start gap-3 border-b px-5 py-4 sm:px-6", danger ? "border-destructive/20 bg-destructive/10" : "border-border bg-muted/30")}>
-                    <div className={cn("mt-0.5 rounded-full p-2", danger ? "bg-destructive/15 text-destructive" : "bg-primary/10 text-primary")}>
+                    <div className={cn("mt-0.5 shrink-0 rounded-full p-2", danger ? "bg-destructive/15 text-destructive" : "bg-primary/10 text-primary")}>
                         {danger ? <ShieldAlert className="h-5 w-5" /> : <CircleHelp className="h-5 w-5" />}
                     </div>
                     <div className="min-w-0 flex-1">
                         <h3 id="settings-action-title" className="text-base font-semibold sm:text-lg">{state.title}</h3>
                         {danger && <p className="mt-1 text-xs font-medium text-destructive">{state.dangerDescription || t('settings.dialog.irreversible')}</p>}
                     </div>
-                    <button type="button" onClick={onCancel} className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground" aria-label={t('settings.dialog.close')}><X className="h-4 w-4" /></button>
+                    <button type="button" onClick={onCancel} className="settings-icon-button rounded-lg text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground" aria-label={t('settings.dialog.close')}><X className="h-4 w-4" /></button>
                 </div>
                 <div className="max-h-[min(60vh,32rem)] overflow-y-auto px-5 py-5 sm:px-6">
                     <p id="settings-action-message" className="whitespace-pre-line text-sm leading-6 text-muted-foreground">{state.message}</p>
@@ -150,7 +150,7 @@ const ActionDialog = ({ state, input, onInput, onCancel, onConfirm }: {
                         />
                     )}
                 </div>
-                <div className="flex flex-col-reverse gap-2 border-t border-border bg-muted/20 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
+                <div className="flex flex-col-reverse flex-wrap gap-2 border-t border-border bg-muted/20 px-5 py-4 sm:flex-row sm:justify-end sm:px-6">
                     <Button variant="outline" onClick={onCancel}>{state.cancelLabel || t('settings.remaining.copy.124')}</Button>
                     <Button variant={danger ? 'destructive' : 'default'} onClick={onConfirm}>{state.confirmLabel || t('settings.remaining.copy.125')}</Button>
                 </div>
@@ -416,11 +416,20 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         };
     }, [activeSection, botPollEpoch, reloadTelegramBotConfig]);
 
-    const botRetryBlocked = Boolean(telegramBotConfig?.busy || (telegramBotConfig && isBotQuarantined(telegramBotConfig)) || telegramBotConfig?.nextRetryAt
-        || (telegramBotConfig?.retryAllowedAt && Date.parse(telegramBotConfig.retryAllowedAt) > Date.now()));
+    const botFault = telegramBotConfig ? botFaultPresentation(telegramBotConfig) : null;
+    const botRetryBlockReason = isSavingTelegramBot || isChangingTelegramPin ? 'configuring' : botFault?.retryBlockedReason;
+    const botRetryBlocked = !botFault || Boolean(botRetryBlockReason);
+    const botRetryLabel = t(isRetryingBot ? 'settings.botConnection.retrying' : 'settings.botConnection.retry');
+
+    useEffect(() => {
+        const remaining = Date.parse(telegramBotConfig?.retryAllowedAt || '') - Date.now();
+        if (!(remaining > 0)) return;
+        const timer = window.setTimeout(() => setBotPollEpoch(value => value + 1), Math.min(remaining, 2_147_483_647));
+        return () => window.clearTimeout(timer);
+    }, [telegramBotConfig?.retryAllowedAt]);
 
     const handleRetryTelegramBot = async () => {
-        if (botRetryRequest.current || botRetryBlocked || isChangingTelegramPin || isSavingTelegramBot || !telegramBotConfig?.configured || !telegramBotConfig.enabled || telegramBotConfig.status === 'ready') return;
+        if (botRetryRequest.current || botRetryBlocked || !botFault?.offline) return;
         const controller = new AbortController();
         botRetryRequest.current = controller;
         botStatusRequest.current?.abort();
@@ -429,8 +438,12 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         const timeout = window.setTimeout(() => controller.abort(), 20_000);
         try {
             await fileApi.retryTelegramBotConnection(controller.signal);
-        } catch {
-            if (botSectionVisible.current) setBotRetryError(t('settings.botConnection.retryFailed'));
+        } catch (error: unknown) {
+            const code = errorCode(error);
+            const reason = code === 'BOT_CLEANUP_UNCONFIRMED' ? 'cleanupBlocked'
+                : code === 'BOT_RETRY_IN_PROGRESS' ? 'busy' : code === 'BOT_RETRY_COOLDOWN' ? 'retryCooldown'
+                : code === 'BOT_DISABLED' ? 'disabledAction' : code === 'BOT_NOT_CONFIGURED' ? 'configureAction' : 'retryFailed';
+            if (botSectionVisible.current) setBotRetryError(t(`settings.botConnection.${reason}`));
         } finally {
             window.clearTimeout(timeout);
             if (botSectionVisible.current) {
@@ -446,10 +459,10 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     };
 
     const botStatus = !telegramBotConfig ? 'loading'
-        : isBotQuarantined(telegramBotConfig) ? 'quarantined'
+        : botFault?.quarantined ? 'quarantined'
         : !telegramBotConfig.configured ? 'not_configured'
         : !telegramBotConfig.enabled ? 'disabled'
-        : telegramBotConfig.status === 'ready' ? 'ready'
+        : telegramBotConfig.status === 'ready' ? botFault?.offline ? 'offline' : 'ready'
         : telegramBotConfig.status === 'starting' ? 'connecting'
         : telegramBotConfig.nextRetryAt ? 'waiting'
         : telegramBotConfig.status === 'reconnecting' ? 'connecting'
@@ -781,33 +794,39 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
         }
         setIsSaving(true);
         try {
-            const { authUrl, flowNonce, frontendOrigin } = await fileApi.getGoogleDriveAuthUrl(
-                gdClientId,
-                gdClientSecret,
-                gdAccountName,
-                gdSharedDriveId.trim(),
-            );
-
             const width = 600;
             const height = 700;
             const left = window.screenX + (window.innerWidth - width) / 2;
             const top = window.screenY + (window.innerHeight - height) / 2;
 
-            const authWindow = window.open(authUrl, 'GoogleDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
+            oauthPopupCleanupRef.current?.();
+            oauthPopupRef.current?.close();
+            // Reserve the popup before awaiting the API so the click still grants user activation.
+            const authWindow = window.open('about:blank', 'GoogleDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
             if (!authWindow) {
                 throw new Error(t('settings.remaining.copy.204'));
             }
 
-            oauthPopupCleanupRef.current?.();
-            oauthPopupRef.current?.close();
             oauthPopupRef.current = authWindow;
+            const { authUrl, flowNonce, callbackOrigin } = await fileApi.getGoogleDriveAuthUrl(
+                gdClientId,
+                gdClientSecret,
+                gdAccountName,
+                gdSharedDriveId.trim(),
+            );
+            if (authWindow.closed) {
+                setIsSaving(false);
+                oauthPopupRef.current = null;
+                await showNotice(t('settings.remaining.copy.206'), t('settings.remaining.copy.207'));
+                return;
+            }
             let statisticsFresh = true;
             oauthPopupCleanupRef.current = monitorOAuthPopup({
                 host: window,
                 popup: authWindow,
                 classifyMessage: event => {
                     if (!isTrustedOAuthPopupMessage(event, {
-                        frontendOrigin,
+                        callbackOrigin,
                         popup: authWindow,
                         provider: 'google_drive',
                         flowNonce,
@@ -845,7 +864,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.213'));
                 },
             });
+            authWindow.location.replace(authUrl);
         } catch (error: unknown) {
+            oauthPopupCleanupRef.current?.();
+            oauthPopupRef.current?.close();
+            oauthPopupRef.current = null;
             setIsSaving(false);
             await showNotice(t('settings.remaining.copy.214') + errorMessage(error), t('settings.remaining.copy.209'));
         }
@@ -889,39 +912,45 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
     };
 
     const handleSaveOneDriveConfig = async () => {
-        if (!odClientId) {
+        if (!odClientId.trim() || !odClientSecret.trim()) {
             await showNotice(t('settings.remaining.copy.230'), t('settings.remaining.copy.203'));
             return;
         }
         setIsSaving(true);
         try {
-            const { authUrl, flowNonce, frontendOrigin } = await fileApi.getOneDriveAuthUrl(
-                odClientId,
-                odTenantId || 'common',
-                odClientSecret,
-                odAccountName,
-            );
-
             const width = 600;
             const height = 700;
             const left = window.screenX + (window.innerWidth - width) / 2;
             const top = window.screenY + (window.innerHeight - height) / 2;
 
-            const authWindow = window.open(authUrl, 'OneDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
+            oauthPopupCleanupRef.current?.();
+            oauthPopupRef.current?.close();
+            // Reserve the popup before awaiting the API so the click still grants user activation.
+            const authWindow = window.open('about:blank', 'OneDriveAuth', `width=${width},height=${height},left=${left},top=${top},status=yes,toolbar=no,menubar=no`);
             if (!authWindow) {
                 throw new Error(t('settings.remaining.copy.204'));
             }
 
-            oauthPopupCleanupRef.current?.();
-            oauthPopupRef.current?.close();
             oauthPopupRef.current = authWindow;
+            const { authUrl, flowNonce, callbackOrigin } = await fileApi.getOneDriveAuthUrl(
+                odClientId.trim(),
+                odTenantId.trim() || 'common',
+                odClientSecret.trim(),
+                odAccountName.trim(),
+            );
+            if (authWindow.closed) {
+                setIsSaving(false);
+                oauthPopupRef.current = null;
+                await showNotice(t('settings.remaining.copy.234'), t('settings.remaining.copy.207'));
+                return;
+            }
             let statisticsFresh = true;
             oauthPopupCleanupRef.current = monitorOAuthPopup({
                 host: window,
                 popup: authWindow,
                 classifyMessage: event => {
                     if (!isTrustedOAuthPopupMessage(event, {
-                        frontendOrigin,
+                        callbackOrigin,
                         popup: authWindow,
                         provider: 'onedrive',
                         flowNonce,
@@ -959,7 +988,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     statisticsFresh ? t('settings.remaining.copy.126') : t('settings.remaining.copy.213'));
                 },
             });
+            authWindow.location.replace(authUrl);
         } catch (error: unknown) {
+            oauthPopupCleanupRef.current?.();
+            oauthPopupRef.current?.close();
+            oauthPopupRef.current = null;
             setIsSaving(false);
             await showNotice(t('settings.remaining.copy.214') + errorMessage(error), t('settings.remaining.copy.209'));
         }
@@ -1135,7 +1168,6 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 <span className="settings-icon" aria-hidden="true"><Palette className="h-5 w-5" /></span>
                 <div className="min-w-0">
                     <h2>{t(SETTINGS_SECTIONS.find(section => section.id === activeSection)!.labelKey)}</h2>
-                    <p className="tv-muted">{t("settings.subtitle")}</p>
                 </div>
             </header>
 
@@ -1202,7 +1234,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 <div className="border-b border-border/50 p-4 space-y-4">
                     <div className="flex items-start gap-3">
                         <div className="settings-icon"><KeyRound className="h-4 w-4" /></div>
-                        <div>
+                        <div className="min-w-0">
                             <p className="text-[13px] font-medium">{t('settings.cards.security.changePassword.title')}</p>
                             <p className="text-[12px] text-muted-foreground mt-1">{t('settings.cards.security.changePassword.description')}</p>
                         </div>
@@ -1270,7 +1302,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         >
                             <div className="p-6 flex flex-col items-center text-center space-y-4">
                                 {twoFAQrCode ? (
-                                    <div className="max-w-xs space-y-4">
+                                    <div className="w-full max-w-xs space-y-4">
                                         <div className="settings-qr">
                                             <img src={twoFAQrCode} alt={t('settings.cards.security.twoFactor.qrAlt')} className="w-48 h-48" />
                                         </div>
@@ -1374,7 +1406,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 {advancedTasks ? <div className="divide-y divide-border/50">
                     <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.chunkConcurrency.title')} description={t('settings.cards.maintenance.chunkConcurrency.description')} action={
                         <select aria-label={t('settings.cards.maintenance.chunkConcurrency.title')} className="h-10 px-3" value={advancedTasks.telegramDownloadWorkers} onChange={event => void updateAdvancedTask({ telegramDownloadWorkers: Number(event.target.value) })}>
-                            {[4, 8, 12, 16].map(value => <option key={value} value={value}>{value}</option>)}
+                            {[4, 6, 8, 10, 12].map(value => <option key={value} value={value}>{value}</option>)}
                         </select>
                     } />
                     <SettingsRow icon={Gauge} label={t('settings.cards.maintenance.fileConcurrency.title')} description={`${t('settings.cards.maintenance.fileConcurrency.description')} ${t('settings.cards.maintenance.fileConcurrency.limitDescription', { enabledAccounts: advancedTasks.telegramEnabledAccounts, limit: advancedTasks.telegramFileConcurrencyLimit })}`} action={
@@ -1452,7 +1484,15 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
             {activeSection === 'telegram' && <div className="settings-group settings-group--telegram">
             {/* Telegram Download Section */}
             {/* i18n source: Telegram Bot 连接 */}
-            <SettingsSection title={t('settings.telegram.botConnection')}>
+            <SettingsSection title={t('settings.telegram.botConnection')} actions={
+                <Button size="icon" variant="ghost"
+                    aria-label={t(isRefreshingBot ? 'settings.botConnection.refreshing' : 'settings.botConnection.refresh')}
+                    title={t('settings.botConnection.refresh')}
+                    disabled={isRefreshingBot || isRetryingBot || isSavingTelegramBot}
+                    onClick={() => setBotPollEpoch(value => value + 1)}>
+                    <RefreshCw className={cn('h-4 w-4', isRefreshingBot && 'animate-spin')} aria-hidden="true" />
+                </Button>
+            }>
                 <div className="p-4 space-y-4">
                     <div className="settings-bot-overview">
                         <div className="flex min-w-0 items-start gap-3">
@@ -1467,7 +1507,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 {telegramBotConfig?.configured && <div className="mt-2 text-[12px] leading-5 text-muted-foreground">
                                     {telegramBotConfig.bot?.username && <p>Bot：@{telegramBotConfig.bot.username}</p>}
                                     <BotFaultDetails config={telegramBotConfig} />
-                                    {telegramBotConfig.enabled && telegramBotConfig.status !== 'ready' && <p>{t('settings.remaining.shared.runtimeNotReady')}</p>}
+                                    {telegramBotConfig.enabled && botFault?.offline && <p>{t('settings.remaining.shared.runtimeNotReady')}</p>}
                                     {telegramBotConfig.nextRetryAt && telegramBotConfig.enabled && <p>{t('settings.botConnection.nextRetryAt')}: {formatDateTime(telegramBotConfig.nextRetryAt, i18n.resolvedLanguage || i18n.language)}</p>}
                                 </div>}
                             </div>
@@ -1477,7 +1517,11 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             {telegramBotConfig?.source === 'web' && <div className="settings-actions settings-actions--bot">
                                 <Button size="sm" variant="outline" className="settings-action" disabled={isSavingTelegramBot} onClick={() => { if (showTelegramBotForm) handleCancelTelegramBotEdit(); else { handleCancelTelegramPinChange(); clearTelegramBotInputs(); setShowTelegramBotForm(true); } }}>{showTelegramBotForm ? t('settings.remaining.copy.326') : t('settings.remaining.copy.327')}</Button>
                                 <Button size="sm" variant="outline" className="settings-action" disabled={isChangingTelegramPin} onClick={() => { if (showTelegramPinForm) handleCancelTelegramPinChange(); else { handleCancelTelegramBotEdit(); clearTelegramPinChangeInputs(); setTelegramPinVerificationMethod(telegramBotConfig.pinConfigured ? 'current_pin' : 'web_password'); setShowTelegramPinForm(true); } }}>{showTelegramPinForm ? (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.322') : t('settings.remaining.copy.323')) : (telegramBotConfig.pinConfigured ? t('settings.remaining.copy.324') : t('settings.remaining.copy.325'))}</Button>
-                                <Button size="sm" variant="outline" className="settings-action" disabled={isRefreshingBot || isRetryingBot || isSavingTelegramBot} onClick={() => setBotPollEpoch(value => value + 1)}>{t(isRefreshingBot ? 'settings.botConnection.refreshing' : 'settings.botConnection.refresh')}</Button>
+                                <Button size="sm" variant="outline" className="settings-action" onClick={handleRetryTelegramBot}
+                                    disabled={botRetryBlocked || isRetryingBot}
+                                    title={botRetryBlockReason ? t(`settings.botConnection.${botRetryBlockReason}`) : t('settings.botConnection.retryHelp')}>
+                                    {botRetryLabel}
+                                </Button>
                                 <Button size="sm" variant="destructive" className="settings-action" onClick={handleDeleteTelegramBot} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.027')}</Button>
                             </div>}
                         </div>
@@ -1485,14 +1529,14 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                         {!telegramBotConfig?.pinConfigured && telegramBotConfig?.source === 'environment' && <SettingsField label={t('settings.remaining.copy.029')} className="mt-4"><input type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="new-password" value={telegramPin} onChange={event => setTelegramPin(event.target.value.replace(/\D/g, '').slice(0, 4))} placeholder={t('settings.remaining.shared.createPinBeforeMigration')} className="w-full px-3 py-2" /><p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.030')}</p></SettingsField>}
                     </div>
 
-                    {(telegramBotConfig?.source !== 'web' || (telegramBotConfig?.enabled && telegramBotConfig.status !== 'ready') || telegramBotConfig?.busy || telegramBotConfig?.retryAllowedAt || botStatusError || botRetryError) && <div className="space-y-2" data-testid="bot-runtime-controls">
-                        <div className="flex flex-wrap gap-2">
-                            {telegramBotConfig?.configured && telegramBotConfig.enabled && telegramBotConfig.status !== 'ready' && <Button size="sm" onClick={handleRetryTelegramBot} disabled={botRetryBlocked || isRetryingBot || isSavingTelegramBot || isChangingTelegramPin}>{t(isRetryingBot ? 'settings.botConnection.retrying' : 'settings.botConnection.retry')}</Button>}
-                            {telegramBotConfig?.source !== 'web' && <Button size="sm" variant="outline" disabled={isRefreshingBot || isRetryingBot || isSavingTelegramBot} onClick={() => setBotPollEpoch(value => value + 1)}>{t(isRefreshingBot ? 'settings.botConnection.refreshing' : 'settings.botConnection.refresh')}</Button>}
-                        </div>
+                    {(telegramBotConfig?.source !== 'web' || isSavingTelegramBot || isChangingTelegramPin || botStatusError || botRetryError) && <div className="space-y-2" data-testid="bot-runtime-controls">
+                        {telegramBotConfig?.source !== 'web' && telegramBotConfig?.configured && <Button size="sm" onClick={handleRetryTelegramBot}
+                            disabled={botRetryBlocked || isRetryingBot}
+                            title={botRetryBlockReason ? t(`settings.botConnection.${botRetryBlockReason}`) : t('settings.botConnection.retryHelp')}>
+                            {botRetryLabel}
+                        </Button>}
                         <div aria-live="polite">
-                            {telegramBotConfig?.busy && <p className="text-sm">{t('settings.botConnection.busy')}</p>}
-                            {telegramBotConfig?.retryAllowedAt && <p className="text-sm">{t('settings.botConnection.retryAllowedAt')}: {formatDateTime(telegramBotConfig.retryAllowedAt, i18n.resolvedLanguage || i18n.language)}</p>}
+                            {(isSavingTelegramBot || isChangingTelegramPin) && <p className="text-sm">{t('settings.botConnection.configuring')}</p>}
                             {botStatusError && <p className="text-destructive text-sm">{t('settings.botConnection.refreshFailed')}</p>}
                             {botRetryError && <p className="text-destructive text-sm">{botRetryError}</p>}
                         </div>
@@ -1538,7 +1582,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <ShieldCheck className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <div className="flex flex-wrap items-center gap-2">
                                     <span className="text-[13px] font-medium">{t('settings.remaining.copy.043')}</span>
                                     {config?.telegramAllowedUserIdsFromEnv ? (
@@ -1689,7 +1733,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <Database className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <span className="text-[13px] font-medium">{t('settings.remaining.copy.051')}</span>
                                 <p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.052')}</p>
                             </div>
@@ -1863,7 +1907,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <Cloud className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <span className="text-[13px] font-medium">{t('settings.remaining.copy.068')}</span>
                                 <p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.069')}</p>
                             </div>
@@ -2016,7 +2060,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                         <Button
                                             size="sm"
                                             onClick={handleSaveOneDriveConfig}
-                                            disabled={isSaving || !odClientId}
+                                            disabled={isSaving || !odClientId.trim() || !odClientSecret.trim()}
                                             className="settings-action"
                                         >
                                             {isSaving ? t('settings.remaining.copy.366') : t('settings.remaining.copy.367')}
@@ -2042,7 +2086,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <Database className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <span className="text-[13px] font-medium">{t('settings.remaining.copy.085')}</span>
                                 <p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.086')}</p>
                             </div>
@@ -2222,7 +2266,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <Database className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <span className="text-[13px] font-medium">{t('settings.remaining.copy.096')}</span>
                                 <p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.097')}</p>
                             </div>
@@ -2422,7 +2466,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="settings-icon">
                                 <Network className="h-4 w-4" />
                             </div>
-                            <div>
+                            <div className="min-w-0">
                                 <span className="text-[13px] font-medium">{t('settings.remaining.copy.108')}</span>
                                 <p className="text-[12px] text-muted-foreground">{t('settings.remaining.copy.109')}</p>
                             </div>
@@ -2604,13 +2648,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                     </div>
                     <div className="space-y-2">
                         {config?.accounts.filter(account => account.type === 'openlist').map(account => (
-                            <div key={account.id} className={cn("flex flex-col gap-3 rounded-[7px] border p-3 sm:flex-row sm:items-center sm:justify-between", account.is_active ? "border-primary/20 bg-primary/5" : "border-border bg-background")}>
+                            <div key={account.id} className={cn("settings-storage-account", account.is_active ? "border-primary/20 bg-primary/5" : "border-border bg-background")}>
                                 <div className="min-w-0">
                                     <p className="text-[13px] font-medium">{account.name || t('settings.openlist.unnamed')}</p>
                                     <StorageAccountDetails account={account} onSaved={reloadStorageConfig} />
                                     <StorageProbeStatus account={account} busy={probingAccountId === account.id} feedback={probeFeedback?.accountId === account.id ? probeFeedback : null} onProbe={() => void handleProbeAccount(account)} />
                                 </div>
-                                <div className="flex items-center justify-end gap-2">
+                                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                                     {account.is_active ? <span className="rounded bg-green-500/10 px-2 py-1 text-[12px] font-semibold settings-text-success">{t('settings.openlist.inUse')}</span> : <>
                                         <Button size="sm" variant="ghost" onClick={() => handleSwitchProvider('openlist', account.id)} disabled={isSaving}>{t('settings.openlist.switchAccount')}</Button>
                                         <Button size="sm" variant="ghost" className="w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label={t('management.telegramAccounts.account.delete')}
@@ -2632,7 +2676,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                 <SettingsField label={t('settings.openlist.username')}><input autoComplete="username" value={openlistUsername} onChange={event => setOpenlistUsername(event.target.value)} className="w-full px-3 py-2" /></SettingsField>
                                 <SettingsField label={t('settings.openlist.password')}><input type="password" autoComplete="new-password" value={openlistPassword} onChange={event => setOpenlistPassword(event.target.value)} className="w-full px-3 py-2" /></SettingsField>
                             </div>
-                            <div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setShowOpenListForm(false); setOpenlistPassword(''); }}>{t('settings.openlist.cancel')}</Button><Button onClick={handleSaveOpenListConfig} disabled={isSaving || !openlistBaseUrl || !openlistUsername || !openlistPassword}>{isSaving ? t('settings.openlist.saving') : t('settings.openlist.save')}</Button></div>
+                            <div className="settings-actions justify-end"><Button variant="ghost" onClick={() => { setShowOpenListForm(false); setOpenlistPassword(''); }}>{t('settings.openlist.cancel')}</Button><Button onClick={handleSaveOpenListConfig} disabled={isSaving || !openlistBaseUrl || !openlistUsername || !openlistPassword}>{isSaving ? t('settings.openlist.saving') : t('settings.openlist.save')}</Button></div>
                         </div>
                     </motion.div>}
                 </AnimatePresence></details>
@@ -2645,12 +2689,12 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             <div className="space-y-3">
                                 <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="flex min-w-0 items-center gap-3">
-                                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                                        <div className="h-10 w-10 shrink-0 rounded-full bg-primary/10 flex items-center justify-center text-primary">
                                             <Server className="h-5 w-5" />
                                         </div>
-                                        <div>
+                                        <div className="min-w-0">
                                             <p className="text-[13px] font-medium">{t('settings.remaining.copy.120')}</p>
-                                            <div className="flex items-baseline gap-1">
+                                            <div className="flex flex-wrap items-baseline gap-1">
                                                 <span className="text-2xl font-bold tracking-tight">{storageStats.server.used}</span>
                                                 <span className="text-[13px] text-muted-foreground font-medium">/ {storageStats.server.total}</span>
                                             </div>
@@ -2690,13 +2734,13 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                             {/* TG Vault 使用量 */}
                             <div className="space-y-3">
                                 <div className="flex items-center">
-                                    <div className="flex items-center gap-3">
-                                        <div className="h-10 w-10 rounded-full bg-blue-500/10 flex items-center justify-center text-primary">
+                                    <div className="flex min-w-0 items-center gap-3">
+                                        <div className="h-10 w-10 shrink-0 rounded-full bg-blue-500/10 flex items-center justify-center text-primary">
                                             <Cloud className="h-5 w-5" />
                                         </div>
-                                        <div>
+                                        <div className="min-w-0">
                                             <p className="text-[13px] font-medium">{t('settings.remaining.copy.122')}</p>
-                                            <div className="flex items-baseline gap-1">
+                                            <div className="flex flex-wrap items-baseline gap-1">
                                                 <span className="text-2xl font-bold tracking-tight">{storageStats.tgvault.used}</span>
                                                 <span className="text-[13px] text-muted-foreground font-medium">
                                                     ({t('files.ui.storage.fileCount', { count: storageStats.tgvault.fileCount })})

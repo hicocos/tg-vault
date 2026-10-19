@@ -63,10 +63,10 @@ import { getSignedUrl } from '../middleware/signedUrl.js';
 import { normalizeFolderPath } from '../utils/folderPath.js';
 import { getTelegramUserLocaleOrDefault } from './telegramLocalePreferences.js';
 import { DEFAULT_LOCALE, t, type TelegramLocale } from '../i18n/telegram.js';
+import { DOWNLOAD_WORKER_OPTIONS, normalizeTelegramDownloadWorkers } from '../utils/advancedSettings.js';
 
 // ESM compatibility
 const checkDiskSpace = (checkDiskSpaceModule as any).default || checkDiskSpaceModule;
-const DOWNLOAD_WORKER_OPTIONS = [4, 8, 12, 16];
 const STORAGE_TYPE_ORDER = ['local', 'onedrive', 'google_drive', 'aliyun_oss', 's3', 'webdav'];
 const ON_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
@@ -156,14 +156,9 @@ function buildBulkTaskCancelKeyboard(confirmId: string, locale: TelegramLocale =
 }
 
 
-function normalizeDownloadWorkers(value: unknown): number {
-    const parsed = parseInt(String(value ?? '4'), 10);
-    return DOWNLOAD_WORKER_OPTIONS.includes(parsed) ? parsed : 4;
-}
-
 async function getCurrentDownloadWorkers(): Promise<number> {
     const value = await getSetting('telegram_download_workers', process.env.TELEGRAM_DOWNLOAD_WORKERS || '4');
-    return normalizeDownloadWorkers(value);
+    return normalizeTelegramDownloadWorkers(value);
 }
 
 function buildDownloadWorkersKeyboard(current: number, confirmValue?: number, locale: TelegramLocale = DEFAULT_LOCALE): Api.ReplyInlineMarkup {
@@ -181,20 +176,13 @@ function buildDownloadWorkersKeyboard(current: number, confirmValue?: number, lo
     }
 
     return new Api.ReplyInlineMarkup({
-        rows: [
+        rows: [DOWNLOAD_WORKER_OPTIONS.slice(0, 3), DOWNLOAD_WORKER_OPTIONS.slice(3)].map(values =>
             new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${current === 4 ? '✅ ' : ''}4`, data: Buffer.from('dw_set_4') }),
-                    new Api.KeyboardButtonCallback({ text: `${current === 8 ? '✅ ' : ''}8`, data: Buffer.from('dw_set_8') }),
-                ],
-            }),
-            new Api.KeyboardButtonRow({
-                buttons: [
-                    new Api.KeyboardButtonCallback({ text: `${current === 12 ? '✅ ' : ''}12 ⚠️`, data: Buffer.from('dw_set_12') }),
-                    new Api.KeyboardButtonCallback({ text: `${current === 16 ? '✅ ' : ''}16 ⚠️`, data: Buffer.from('dw_set_16') }),
-                ],
-            }),
-        ],
+                buttons: values.map(value => new Api.KeyboardButtonCallback({
+                    text: `${current === value ? '✅ ' : ''}${value}${value >= 10 ? ' ⚠️' : ''}`,
+                    data: Buffer.from(`dw_set_${value}`),
+                })),
+            })),
     });
 }
 
@@ -1254,15 +1242,19 @@ function mergeChannelExecutionState(item: TaskCenterItem | null, row: any): Task
 }
 
 async function loadVisibleChannelTaskRows(chatId: string, userId: number) {
-    const [rows, dismissals] = await Promise.all([
+    const [rows, dismissals, downloaders] = await Promise.all([
         listTelegramActiveTaskQueues(userId, 1000),
         loadTaskCenterDismissals(),
+        query('SELECT COUNT(*)::int AS count FROM telegram_user_accounts WHERE deleted_at IS NULL'),
     ]);
     const candidates = rows.filter(row => String(row.chat_id || '') === chatId).map(row => {
         const task = mapTelegramChannelJob(row, new Map());
         return { sourceType: task.sourceType, id: task.id, status: task.status, updatedAt: new Date(task.updatedAt).toISOString(), row };
     });
-    return filterDismissedTasks(candidates, dismissals).map(task => task.row);
+    return filterDismissedTasks(candidates, dismissals).map(task => ({
+        ...task.row,
+        telegram_downloader_count: Number(downloaders.rows[0].count),
+    }));
 }
 
 async function loadTaskCenterItems(chatId: string, userId: number): Promise<TaskCenterItem[]> {
@@ -1825,7 +1817,8 @@ export async function handleChannelTaskQueueCallback(client: TelegramClient, upd
 
 export async function handleRetryFailedTasks(message: Api.Message, args: string[]): Promise<void> {
     const senderId = message.senderId?.toJSNumber();
-    const jobSelector = args.find(arg => /^[0-9a-f-]{4,36}$/i.test(arg));
+    const jobSelector = args.find(arg => !/^\d+$/.test(arg) && /^[0-9a-f-]{4,36}$/i.test(arg));
+    const taskId = args.find(arg => arg !== jobSelector && /^[satm][A-Za-z0-9_-]+$/.test(arg));
     const chatId = message.chatId?.toString();
     const jobRetry = senderId && jobSelector && chatId ? await retryTelegramBackgroundJob(senderId, jobSelector, chatId) : null;
     if (jobSelector) {
@@ -1837,19 +1830,16 @@ export async function handleRetryFailedTasks(message: Api.Message, args: string[
         return;
     }
 
-    const taskId = args.find(arg => /^[sam][a-z0-9-]+$/i.test(arg));
     const numericArg = args.find(arg => /^\d+$/.test(arg));
     const limit = Math.max(1, Math.min(50, parseInt(numericArg || '10', 10) || 10));
     if (!senderId || !chatId) {
         await message.reply({ message: '📮 无法识别当前聊天，未执行失败任务重试。' });
         return;
     }
-    if (taskId) {
-        const group = getDownloadTaskGroup(taskId, chatId, senderId);
-        if (!group) {
-            await message.reply({ message: `📮 没有找到当前聊天中的失败任务：${taskId}` });
-            return;
-        }
+    const unknownSelector = args.find(arg => !/^\d+$/.test(arg) && arg !== taskId);
+    if (unknownSelector) {
+        await message.reply({ message: `📮 没有找到当前聊天中的失败任务：${unknownSelector}` });
+        return;
     }
     const result = await retryFailedDownloadTasks(limit, taskId, chatId, senderId);
     await message.reply({ message: result.retried > 0 ? `🔄 已重新加入 ${result.retried} 个失败任务${taskId ? `\n任务: ${taskId}` : ''}` : '📮 最近没有可重试的失败任务' });
@@ -2073,10 +2063,10 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             return;
         }
 
-        const setMatch = data.match(/^dw_set_(4|8|12|16)$/);
+        const setMatch = data.match(/^dw_set_(4|6|8|10|12)$/);
         if (setMatch) {
             const workers = Number(setMatch[1]);
-            if (workers >= 12) {
+            if (workers >= 10) {
                 await client.editMessage(update.peer, {
                     message: Number(update.msgId),
                     text: [
@@ -2105,7 +2095,7 @@ export async function handleDownloadWorkersCallback(client: TelegramClient, upda
             return;
         }
 
-        const confirmMatch = data.match(/^dw_confirm_(12|16)$/);
+        const confirmMatch = data.match(/^dw_confirm_(10|12)$/);
         if (confirmMatch) {
             const workers = Number(confirmMatch[1]);
             await setSetting('telegram_download_workers', String(workers));

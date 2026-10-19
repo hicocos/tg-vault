@@ -1,5 +1,5 @@
 /* Settings presentation only. Colors and controls come from index.css. */
-.settings-surface { min-width: 0; font-size: var(--tv-text-body); line-height: 1.6; }
+.settings-surface { min-width: 0; font-size: var(--tv-text-body); line-height: 1.6; overflow-wrap: anywhere; }
 .settings-page { width: 100%; max-width: 1280px; margin: 0 auto; padding-bottom: 32px; }
 .settings-page__header { justify-content: flex-start; align-items: center; gap: 12px; }
 .settings-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); color: hsl(var(--primary)); background: hsl(var(--accent) / .5); }
@@ -12,6 +12,9 @@
 .settings-section { container: settings-section / inline-size; padding: 0; overflow: hidden; }
 .settings-section__header { padding: 15px 18px; border-bottom: 1px solid hsl(var(--border)); }
 .settings-section__header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.settings-section__header--actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.settings-section__header--actions > h3 { min-width: 0; }
+.settings-section__header--actions > button { flex: none; }
 .settings-section__body { min-width: 0; }
 .settings-section__body :is(p, code, h4, h5), .settings-guide__copy { overflow-wrap: anywhere; }
 .settings-row { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 18px; border-bottom: 1px solid hsl(var(--border)); }
@@ -26,7 +29,7 @@
 .settings-row__value { overflow-wrap: anywhere; }
 .settings-row--inline { flex-direction: row; align-items: center; }
 .settings-help { margin-top: 5px; font-size: var(--tv-text-meta); line-height: 1.65; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
-.settings-guide { padding: var(--tv-space-panel); background: hsl(var(--secondary) / .75); box-shadow: none; }
+.settings-guide { min-width: 0; padding: var(--tv-space-panel); background: hsl(var(--secondary) / .75); box-shadow: none; }
 .settings-guide > .settings-icon { margin-bottom: 12px; }
 .settings-guide h3 { margin: 0 0 8px; font-size: 14px; line-height: 1.5; }
 .settings-guide__copy { display: grid; gap: 12px; color: hsl(var(--muted-foreground)); font-size: var(--tv-text-meta); }
@@ -45,13 +48,15 @@
 .settings-action-row > :first-child { min-width: 0; flex: 1 1 220px; }
 .settings-action-row > button { flex: 0 1 auto; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
-.settings-actions > :is(button, select) { max-width: 100%; }
-.settings-actions--bot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; }
+.settings-actions > :is(button, select) { min-width: 0; max-width: 100%; }
+.settings-actions--bot { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
 .settings-actions--bot > button { min-width: 0; padding-inline: 8px; white-space: normal; overflow-wrap: anywhere; }
-.settings-actions--bot > .tv-btn-destructive { grid-column: 1 / -1; }
 .settings-choice-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .settings-provider-block { padding: 16px 18px; border-bottom: 1px solid hsl(var(--border)); background: hsl(var(--muted) / .25); }
 .settings-storage-account { display: flex; flex-direction: column; align-items: stretch; gap: 12px; min-width: 0; padding: 14px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); }
+.settings-storage-account > div { min-width: 0; max-width: 100%; }
+.settings-storage-account > div:first-child { flex: 1 1 0%; }
+.settings-storage-account > div:last-child { flex: 0 1 auto; }
 .settings-inset { padding: var(--tv-space-panel); }
 .settings-bot-overview { display: grid; gap: 12px; min-width: 0; }
 .settings-bot-overview > :nth-child(n+3) { grid-column: 1 / -1; margin-top: 0; }
@@ -67,8 +72,8 @@
 .settings-text-danger { color: var(--tv-danger); }
 .settings-switch-thumb { background: hsl(var(--card)); }
 /* QR output is a scannable image, not a themed UI surface. Keep its quiet zone. */
-.settings-qr { display: inline-flex; align-items: center; justify-content: center; margin-inline: auto; padding: 12px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); background: hsl(var(--card)); }
-.settings-qr img { max-width: 100%; object-fit: contain; }
+.settings-qr { display: inline-flex; align-items: center; justify-content: center; max-width: 100%; margin-inline: auto; padding: 12px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); background: hsl(var(--card)); }
+.settings-qr img { max-width: 100%; height: auto; object-fit: contain; }
 .settings-qr--login { display: flex; width: 224px; max-width: 100%; min-height: 224px; padding: 15px; }
 .settings-qr--login > svg { max-width: 100%; height: auto; }
 .settings-telegram { display: grid; gap: var(--tv-space-group); padding: var(--tv-space-panel); }
@@ -87,7 +92,7 @@
 .settings-telegram__workspace { display: grid; gap: var(--tv-space-group); min-width: 0; align-items: start; }
 .settings-telegram__workspace > :not(.settings-guide) { min-width: 0; }
 .settings-telegram-account { min-width: 0; padding: 15px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); background: hsl(var(--card)); }
-.settings-telegram-account__layout { display: grid; gap: 14px; }
+.settings-telegram-account__layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .settings-telegram-account__name { font-size: var(--tv-text-body); font-weight: 600; overflow-wrap: anywhere; }
 .settings-telegram-account__facts { display: grid; gap: 8px 16px; margin-top: 12px; font-size: var(--tv-text-meta); color: hsl(var(--muted-foreground)); }
 .settings-telegram-account__facts > p { min-width: 0; }
@@ -96,7 +101,7 @@
 .settings-login { padding: 0; overflow: hidden; }
 .settings-login__header { display: flex; align-items: flex-start; gap: 12px; padding: var(--tv-space-panel); border-bottom: 1px solid hsl(var(--border)); background: hsl(var(--muted) / .3); }
 .settings-login__header h3 { font-size: 17px; }
-.settings-login__body { display: grid; gap: 18px; padding: var(--tv-space-panel); }
+.settings-login__body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding: var(--tv-space-panel); }
 .settings-login__method { min-width: 0; padding: 15px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); text-align: start; background: hsl(var(--card)); }
 .settings-login__method:hover, .settings-login__method[aria-pressed='true'] { border-color: hsl(var(--primary)); background: hsl(var(--accent) / .5); }
 .settings-login__method p { overflow-wrap: anywhere; }
@@ -215,9 +220,9 @@
 .settings-version-compact__actions > :is(a,button) { flex: 0 1 auto; min-height:44px; }
 
 .settings-appearance-options { display:flex; flex-wrap:wrap; gap:6px; max-width:100%; }
-.settings-appearance-options button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-height:44px; padding:8px 12px; border:1px solid hsl(var(--border)); border-radius:var(--tv-radius-control); background:hsl(var(--card)); color:hsl(var(--muted-foreground)); line-height:1.4; }
+.settings-appearance-options button { display:inline-flex; align-items:center; justify-content:center; gap:7px; min-width:0; max-width:100%; min-height:44px; padding:8px 12px; border:1px solid hsl(var(--border)); border-radius:var(--tv-radius-control); background:hsl(var(--card)); color:hsl(var(--muted-foreground)); line-height:1.4; }
 .settings-appearance-options button[aria-pressed='true'] { background:hsl(var(--accent)); color:hsl(var(--accent-foreground)); border-color:hsl(var(--primary)); }
-.settings-theme-swatch { width:16px; height:16px; border:1px solid hsl(var(--input)); border-radius:50%; }
+.settings-theme-swatch { flex-shrink:0; width:16px; height:16px; border:1px solid hsl(var(--input)); border-radius:50%; }
 .settings-theme-swatch--simple { background:#f6f7f8; }
 .dark .settings-theme-swatch--simple { background:#151618; }
 .settings-theme-swatch--mist { background:linear-gradient(135deg,#bde4f8,#d7c5f6); }

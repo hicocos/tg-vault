@@ -1,4 +1,6 @@
 import type { Api } from 'telegram';
+import type { TelegramDownloadMessageRef } from './telegramUpload.js';
+import { extractFileInfo, getEstimatedFileSize } from '../utils/telegramMedia.js';
 
 export interface TelegramChannelScanParams {
     mode?: string;
@@ -57,6 +59,73 @@ export async function scanTelegramChannelPage(
         done: done || batch.length < limit,
         nextOffsetId,
     };
+}
+
+export async function scanTelegramDiscussionMediaRefs(
+    source: string,
+    postMessages: Api.Message[],
+    getMessages: (request: { limit: number; offsetId: number; replyTo: number }) => Promise<Api.Message[]>,
+    options: {
+        includeComments?: boolean;
+        commentsMaxPerPost: number;
+        signal?: AbortSignal;
+        onRefDiscovered?: (ref: TelegramDownloadMessageRef) => Promise<void> | void;
+        onCommentScanProgress?: (scanned: number) => Promise<void> | void;
+    },
+): Promise<{ refs: TelegramDownloadMessageRef[]; scanned: number; mediaFound: number }> {
+    const refs: TelegramDownloadMessageRef[] = [];
+    if (!options.includeComments || postMessages.length === 0) {
+        return { refs, scanned: 0, mediaFound: 0 };
+    }
+
+    const maxPerPost = Math.max(1, Math.floor(options.commentsMaxPerPost));
+    const seen = new Set<string>();
+    let scanned = 0;
+    for (const post of postMessages) {
+        if (Number(post.replies?.replies || 0) <= 0) continue;
+
+        let offsetId = 0;
+        let scannedForPost = 0;
+        while (scannedForPost < maxPerPost) {
+            options.signal?.throwIfAborted();
+            const limit = Math.min(100, maxPerPost - scannedForPost);
+            const batch = await getMessages({ limit, offsetId, replyTo: post.id });
+            if (batch.length === 0) break;
+
+            let nextOffsetId = offsetId;
+            for (const comment of batch) {
+                if (!comment || (offsetId > 0 && comment.id >= offsetId)) continue;
+                nextOffsetId = nextOffsetId === 0 ? comment.id : Math.min(nextOffsetId, comment.id);
+                scanned++;
+                scannedForPost++;
+
+                const fileInfo = extractFileInfo(comment);
+                if (!fileInfo) continue;
+                const sourceKey = `${comment.chatId?.toString() || source}:${comment.id}`;
+                if (seen.has(sourceKey)) continue;
+                seen.add(sourceKey);
+                const ref: TelegramDownloadMessageRef = {
+                    id: comment.id,
+                    source: comment.chatId || source,
+                    origin: 'comment',
+                    channelPostId: post.id,
+                    fileInfo,
+                    totalSize: getEstimatedFileSize(comment),
+                    message: comment,
+                    groupedId: messageGroupId(comment),
+                };
+                refs.push(ref);
+                await options.onRefDiscovered?.(ref);
+            }
+            if (nextOffsetId === offsetId) {
+                throw new Error(`TELEGRAM_COMMENT_CURSOR_STALLED: post=${post.id} offset=${offsetId}`);
+            }
+            offsetId = nextOffsetId;
+            await options.onCommentScanProgress?.(scanned);
+            if (batch.length < limit) break;
+        }
+    }
+    return { refs, scanned, mediaFound: refs.length };
 }
 
 export function messageGroupId(message: Api.Message | undefined): string | undefined {

@@ -44,6 +44,8 @@ import type {
     TelegramAdRuleKind,
     TelegramSubscription,
     TelegramSubscriptionList,
+    TelegramSubscriptionConfig,
+    TelegramSubscriptionCreate,
     TelegramPermissionCheckResult,
     TelegramUserAccountStatus,
     TelegramUserAccountsOverview,
@@ -261,6 +263,36 @@ class FileAPI {
         const response = await apiRequest(`${API_BASE}/api/subscriptions?${params.toString()}`, { credentials: 'include', headers: getHeaders() });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || tr('errors.services.telegram.getSubscriptionsFailed'));
         return response.json();
+    }
+
+    async getSubscriptionOptions(): Promise<{ recipients: Array<{ userId: string }> }> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/options`, { credentials: 'include', headers: getHeaders() });
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('subscriptionCenter.editor.loadFailed'));
+        return response.json();
+    }
+
+    async createSubscription(input: TelegramSubscriptionCreate): Promise<TelegramSubscription> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions`, {
+            credentials: 'include', method: 'POST', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(input),
+        });
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('subscriptionCenter.editor.saveFailed'));
+        return (await response.json()).subscription;
+    }
+
+    async updateSubscriptionConfig(subscriptionId: string, input: TelegramSubscriptionConfig): Promise<TelegramSubscription> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/config`, {
+            credentials: 'include', method: 'PUT', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(input),
+        });
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('subscriptionCenter.editor.saveFailed'));
+        return (await response.json()).subscription;
+    }
+
+    async updateSubscriptionFileTypes(subscriptionId: string, input: Pick<TelegramSubscriptionConfig, 'fileFilterMode' | 'fileFilterTypes'>): Promise<TelegramSubscription> {
+        const response = await apiRequest(`${API_BASE}/api/subscriptions/${encodeURIComponent(subscriptionId)}/file-types`, {
+            credentials: 'include', method: 'PATCH', headers: getHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify(input),
+        });
+        if (!response.ok) throw await apiActionErrorFromResponse(response, tr('subscriptionCenter.fileTypes.saveFailed'));
+        return (await response.json()).subscription;
     }
 
     async setSubscriptionEnabled(subscriptionId: string, enabled: boolean): Promise<void> {
@@ -1119,7 +1151,7 @@ class FileAPI {
         return systemClient.healthCheck();
     }
 
-    async getOneDriveAuthUrl(clientId: string, tenantId: string = 'common', clientSecret?: string, name?: string): Promise<OAuthStartResult> {
+    async getOneDriveAuthUrl(clientId: string, tenantId: string, clientSecret: string, name?: string): Promise<OAuthStartResult> {
         const response = await apiRequest(`${API_BASE}/api/storage/config/onedrive/auth-url`, {
             credentials: 'include',
             method: 'POST',

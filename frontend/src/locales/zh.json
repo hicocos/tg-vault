@@ -433,6 +433,7 @@
       "selectedData": "已保存 {{transferred}} / 所选文件 {{total}}",
       "excluded": "筛选已排除{{count}}个文件（不计入下载进度）",
       "channelQueue": "处理中 {{active}} · 排队 {{pending}}",
+      "transferStages": "下载 {{downloading}} · 保存 {{uploading}} · 等待保存 {{waiting}} · 重试 {{retrying}}",
       "channelScan": "频道已检查消息 {{messages}} 条 · 发现文件 {{files}} 个",
       "commentScan": "评论已检查消息 {{messages}} 条 · 发现文件 {{files}} 个",
       "scanDate": "扫描到 {{time}}",

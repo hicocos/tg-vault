@@ -5,6 +5,7 @@ import { open } from 'node:fs/promises';
 import type { IterDownloadFunction, DownloadMediaInterface } from 'telegram/client/downloads.js';
 import { ownUserTransport, withUserTransportSignal } from './telegramUserTransport.js';
 import { decodeTelegramValue, encodeTelegramValue, parseWorkerRequest, telegramWorkerError, type WorkerResponse } from './telegramWorkerProtocol.js';
+import { createTelegramDownloadIterator } from './telegramFileDownload.js';
 
 import { isRecord } from '../utils/typeGuards.js';
 function requestArgument(value: unknown): value is Api.AnyRequest {
@@ -73,7 +74,7 @@ process.on('message', (raw: unknown) => {
                     break;
                 }
                 case 'open': {
-                    const iterator = client.iterDownload(downloadArgument(args[0]))[Symbol.asyncIterator]();
+                    const iterator = createTelegramDownloadIterator(client, downloadArgument(args[0]))[Symbol.asyncIterator]();
                     const id = ++iteratorSequence;
                     iterators.set(id, iterator);
                     value = id;

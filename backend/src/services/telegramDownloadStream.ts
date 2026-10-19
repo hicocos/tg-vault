@@ -1,17 +1,21 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { classifyTelegramDownloadAccountError, telegramFloodWaitSeconds } from './telegramUserClientPool.js';
 import { withTelegramOperationSignal } from './telegramOperationContext.js';
+import { isTelegramTransientDownloadError } from './telegramDownloadRetry.js';
 
-/** Keep each stripe's committed offset across FLOOD_WAIT; never restart the file. */
+/** A yielded chunk is committed by the consumer before its offset advances. */
 export async function* telegramDownloadStream<T extends { length: number }>(
     open: (offset: number) => AsyncIterable<T>,
-    options: { offset: number; stride?: number; end?: number; signal?: AbortSignal; beforeRead?: () => Promise<void> },
+    options: { offset: number; stride?: number; end?: number; signal?: AbortSignal; beforeRead?: () => Promise<void>;
+        recover?: (error: unknown, offset: number, attempt: number, signal?: AbortSignal) => Promise<void> },
 ): AsyncGenerator<T> {
     let offset = options.offset;
+    let networkRetries = 0;
     while (options.end === undefined || offset < options.end) {
         options.signal?.throwIfAborted();
         await options.beforeRead?.();
         const iterator = open(offset)[Symbol.asyncIterator]();
+        let iteratorClosed = false;
         try {
             while (options.end === undefined || offset < options.end) {
                 options.signal?.throwIfAborted();
@@ -31,10 +35,22 @@ export async function* telegramDownloadStream<T extends { length: number }>(
             return;
         } catch (error) {
             options.signal?.throwIfAborted();
-            if (classifyTelegramDownloadAccountError(error) !== 'flood_wait') throw error;
-            await delay(telegramFloodWaitSeconds(error) * 1000, undefined, { signal: options.signal });
+            if (classifyTelegramDownloadAccountError(error) === 'flood_wait') {
+                await delay(telegramFloodWaitSeconds(error) * 1000, undefined, { signal: options.signal });
+            } else {
+                const code = error instanceof Error ? error.message : String(error);
+                const botInterrupted = code === 'BOT_CONNECTION_LOST' || code === 'BOT_DC_CONNECTION_LOST' || code === 'BOT_CANCELLED';
+                if ((!isTelegramTransientDownloadError(error) && !(options.recover && botInterrupted)) || networkRetries >= 3) throw error;
+                networkRetries++;
+                await iterator.return?.();
+                iteratorClosed = true;
+                await delay(300 * 2 ** (networkRetries - 1), undefined, { signal: options.signal });
+                await options.recover?.(error, offset, networkRetries, options.signal);
+                console.info(JSON.stringify({ event: 'telegram_download_resumed', offset, attempt: networkRetries,
+                    code: /^[A-Z0-9_]{1,64}$/.test(code) ? code : 'TRANSPORT_ERROR' }));
+            }
         } finally {
-            await iterator.return?.();
+            if (!iteratorClosed) await iterator.return?.();
         }
     }
 }

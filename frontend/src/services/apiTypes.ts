@@ -164,8 +164,18 @@ export type TelegramAdFilterMode = 'off' | 'conservative' | 'aggressive';
 export type TelegramAdRuleKind = 'keyword' | 'domain' | 'username' | 'template' | 'media';
 export type TelegramAdRuleAction = 'allow' | 'block';
 
+export const TELEGRAM_SUBSCRIPTION_FILE_TYPES = [
+    'images', 'raw-images', 'videos', 'audio', 'archives', 'apps',
+    'text', 'word-docs', 'pdfs', 'spreadsheets', 'presentations', 'ebooks',
+    'code', 'fonts', 'design', 'torrents', 'documents', 'other',
+] as const;
+export type TelegramSubscriptionFileType = typeof TELEGRAM_SUBSCRIPTION_FILE_TYPES[number];
+export type TelegramSubscriptionFileFilterMode = 'all' | 'include' | 'exclude';
+
 export interface TelegramSubscription {
     id: string;
+    user_id: string;
+    chat_id: string | null;
     source: string;
     source_original: string | null;
     source_type: string;
@@ -178,10 +188,31 @@ export interface TelegramSubscription {
     last_success_at: string | null;
     last_error: string | null;
     next_scan_at: string | null;
+    target_mode: 'follow_global' | 'fixed';
+    target_provider: string | null;
+    target_account_id: string | null;
+    target_account_name: string | null;
     ad_filter_mode: TelegramAdFilterMode;
+    file_filter_mode: TelegramSubscriptionFileFilterMode;
+    file_filter_types: TelegramSubscriptionFileType[];
     ad_stats: { blocked_count: number; review_count: number; reviewed_count: number };
     created_at: string;
     updated_at: string;
+}
+
+export interface TelegramSubscriptionConfig {
+    folderOverride: string | null;
+    targetMode: 'follow_global' | 'fixed';
+    targetProvider: string | null;
+    targetAccountId: string | null;
+    adFilterMode: TelegramAdFilterMode;
+    fileFilterMode: TelegramSubscriptionFileFilterMode;
+    fileFilterTypes: TelegramSubscriptionFileType[];
+}
+
+export interface TelegramSubscriptionCreate extends TelegramSubscriptionConfig {
+    source: string;
+    userId: string;
 }
 
 export interface TelegramSubscriptionList {
@@ -342,37 +373,18 @@ export interface TelegramUserLoginComplete {
 }
 
 export type TelegramUserAccountHealth = 'ready' | 'connecting' | 'disabled' | 'cooldown' | 'expired' | 'permission_denied' | 'error';
-export type TelegramSourcePermissionState = 'allowed' | 'denied' | 'unknown';
-
-export interface TelegramPermissionSummary {
-    allowed: number;
-    denied: number;
-    unknown: number;
-    total: number;
-    lastCheckedAt: string | null;
-}
-
-export interface TelegramSourcePermission {
-    sourceId: string;
-    sourceName: string | null;
-    status: TelegramSourcePermissionState;
-    checkedAt: string | null;
-    reason: string | null;
-}
 
 export interface TelegramUserAccount {
     id: string;
     userId: string;
     username: string | null;
     displayName: string | null;
+    dcId: number | null;
     enabled: boolean;
     connected: boolean;
     health: TelegramUserAccountHealth;
-    checkedAt: string | null;
     lastError: string | null;
     cooldownUntil: string | null;
-    permissionSummary: TelegramPermissionSummary;
-    permissions?: TelegramSourcePermission[];
     scheduling: {
         weight: number;
         activeDownloads: number;
@@ -387,7 +399,6 @@ export interface TelegramUserAccountsOverview {
         enabled: number;
         ready: number;
         coolingDown: number;
-        permissions: TelegramPermissionSummary;
     };
     scheduling: {
         strategy: 'weighted_least_connections';
@@ -534,6 +545,6 @@ export interface StorageDeleteImpact {
 export interface OAuthStartResult {
     authUrl: string;
     flowNonce: string;
-    frontendOrigin: string;
+    callbackOrigin: string;
     expiresAt: string;
 }

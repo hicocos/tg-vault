@@ -24,7 +24,7 @@ export const securityCards = {
 } as const;
 
 export const maintenanceCards = {
-  chunkConcurrency: { title: 'Concurrent chunks per file', description: 'Also controlled by the Bot command /download_workers.' },
+  chunkConcurrency: { title: 'Concurrent chunks per file', description: 'Also controlled by /download_workers. Choose 4, 6, 8, 10, or 12; 10 and 12 require confirmation.' },
   fileConcurrency: { title: 'Concurrent file downloads', description: 'Also controlled by the Bot command /file_concurrency.', limitDescription: 'Enabled Telegram user accounts: {{enabledAccounts}}. Current limit: {{limit}}. The limit is twice the enabled account count, with a fallback of 2 when no accounts are enabled and a maximum of 10.' },
   duplicateMode: { title: 'Duplicate-file handling', description: 'Choose how to handle files with the same name and size in the same folder.', copy: 'Create a copy', skip: 'Skip duplicates' },
   skipPhotos: { title: 'Skip photo messages', description: "Subscriptions and batch downloads by date or tag skip photo messages, but still download images sent as files and all other files. Use this only if you need original image files. No images will be downloaded from channels that only send photos." },
@@ -72,9 +72,9 @@ export const remainingPages = {
         "sharedDriveHintSuffix": " in its URL. The authorized account must be a member with permission to create files.",
         "entraGuideMiddle": "and sign in. The account used to authorize the app can differ from the storage account. When registering the app, under ",
         "andEnter": " and enter:",
-        "azureSecretPrefix": "If you use a client secret, copy its ",
+        "azureSecretPrefix": "Web apps require a client secret. Copy its ",
         "ossCredentialsHint": "Enter your Alibaba Cloud OSS credentials. Use a RAM user with the minimum required permissions.",
-        "s3CredentialsHint": "Supports MinIO, Cloudflare R2, AWS S3, and compatible services. Make sure cross-origin access (CORS) is enabled.",
+        "s3CredentialsHint": "Supports MinIO, Cloudflare R2, AWS S3, and compatible services. Requests run on the backend; bucket CORS is not required. Check the API endpoint, region, and bucket permissions.",
         "forcePathStyle": "Force path style (recommended for MinIO and self-hosted services)",
         "webdavCredentialsHint": "Enter the WebDAV server address and login credentials."
       },
@@ -157,9 +157,9 @@ export const remainingPages = {
         "078": "Application (client) ID",
         "079": "Tenant ID",
         "080": "Account name (optional)",
-        "081": "Client Secret (optional)",
+        "081": "Client Secret (required for Web apps)",
         "082": "Authorize a new account",
-        "083": "Continue to Microsoft to authorize access. Your account will be detected and added automatically.",
+        "083": "Do not enter your Microsoft password here. Choose and sign in to your account on Microsoft’s page; the account name is only a display label.",
         "084": "Close",
         "085": "Aliyun OSS accounts",
         "086": "Manage and switch between Aliyun OSS storage accounts",
@@ -306,7 +306,7 @@ export const remainingPages = {
         "227": "Result",
         "228": "Deletion complete",
         "229": "Operation failed",
-        "230": "Enter the Client ID",
+        "230": "Enter the Client ID and Client Secret (the secret Value)",
         "231": "Incomplete information",
         "232": "The authorization window was blocked by your browser. Allow pop-ups and try again.",
         "233": "The authorization callback is missing the new account identifier",
@@ -449,7 +449,7 @@ export const remainingPages = {
         "370": "Unnamed account",
         "371": "Defaults to common",
         "372": "Custom display name, for example: Personal Drive",
-        "373": "Optional in public client mode",
+        "373": "Paste the Value from Certificates & secrets, not the Secret ID",
         "374": "Starting…",
         "375": "Save and authorize",
         "376": "Cancel",
@@ -530,6 +530,26 @@ export const remainingPages = {
     "title": "Subscription center",
     "description": "Manage channel sync and ad filtering. Filtered content is not queued for download or stored.",
     "refresh": "Refresh",
+    "editor": {
+      "add": "Add subscription", "edit": "Subscription settings", "create": "Save and enable", "save": "Save settings", "saving": "Saving…",
+      "source": "Channel username or link", "recipient": "Bot notification recipient", "recipientHint": "This user owns the subscription and receives notifications; this is not a downloader account.",
+      "owner": "Subscription owner: {{userId}}", "noRecipients": "No authenticated users", "recipientRequired": "Allow this user to use the Bot, then complete /start authentication in a private Bot chat.",
+      "connectionSettings": "Telegram connection settings", "destination": "Storage destination", "followGlobal": "Follow system default storage", "local": "Local server storage",
+      "destinationHint": "A fixed destination does not follow system storage changes. Changes apply only to future sync jobs.", "destinationMissing": "Original storage unavailable; choose another destination",
+      "folder": "Destination folder", "folderPlaceholder": "Leave blank for default category folders", "folderHint": "Use a relative storage path, such as telegram/channel. Leave blank to use default category rules.",
+      "filter": "Ad filtering mode", "createHint": "Syncs new messages only. Existing subscriptions resume from their saved position, without fetching history.",
+      "editHint": "Changes the destination and filters only. Sync progress and saved files stay unchanged.",
+      "loadFailed": "Could not load subscription options", "saveFailed": "Could not save subscription settings", "currentDestination": "Save to: {{destination}} · {{folder}}"
+    },
+    "fileTypes": {
+      "title": "Save / ignore file types", "description": "Applies only to future scans of this subscription. Saved files and existing download jobs are unchanged.",
+      "mode": "File type handling", "modes": { "all": "No file type restriction", "include": "Save selected types only", "exclude": "Ignore selected types" },
+      "categories": "Choose file types", "selectAll": "Select all", "clear": "Clear selection", "required": "Select at least one file type.",
+      "defaultHint": "Unrestricted mode keeps the global setting for skipping ordinary photos in batch downloads.", "explicitHint": "Types use file names and media metadata. Explicit channel choices override global photo skipping; ad filtering still applies.",
+      "noRecords": "Excluded file types are skipped without downloads or filter history. The sync position continues advancing.",
+      "save": "Save file type rules", "saveFailed": "Could not save file type rules",
+      "types": { "images": "Images", "raw-images": "RAW images", "videos": "Videos", "audio": "Audio", "archives": "Archives", "apps": "Installers / apps", "text": "Plain text", "word-docs": "Word documents", "pdfs": "PDF", "spreadsheets": "Spreadsheets", "presentations": "Presentations", "ebooks": "E-books", "code": "Code", "fonts": "Fonts", "design": "Design files", "torrents": "Torrents", "documents": "Other documents", "other": "Other files" }
+    },
     "summary": {
       "enabled": "Enabled subscriptions",
       "enabledDetail": "channels syncing",
@@ -545,8 +565,8 @@ export const remainingPages = {
       "records": "Filter history"
     },
     "empty": {
-      "title": "No enabled channel subscriptions",
-      "description": "Add or resume a subscription through the Telegram Bot, then set up filtering here."
+      "title": "No channel subscriptions",
+      "description": "Add a channel subscription here and configure its destination and ad filtering."
     },
     "subscription": {
       "syncing": "Syncing",

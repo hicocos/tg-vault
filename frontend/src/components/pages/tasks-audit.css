@@ -8,29 +8,34 @@
 .op-tasks-page .is-historical .op-progress { background: hsl(var(--muted)); }
 .op-tasks-page .is-historical .op-progress > span { background: hsl(var(--muted-foreground)); transition: none; }
 .op-tasks-page .audit-task-cards { min-width: 0; padding: 12px; }
-.op-tasks-page .audit-task-collection > div { display: grid; gap: 12px; }
+.op-tasks-page .audit-task-collection > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
 .op-tasks-page .audit-task-card { display: flex; flex-direction: column; min-width: 0; gap: 10px; padding: 14px; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-panel); background: hsl(var(--card)); }
 .op-tasks-page .audit-task-card.is-selected { border-color: hsl(var(--primary)); background: hsl(var(--primary) / .04); }
 .op-tasks-page .audit-task-card > div { width: auto; min-width: 0; max-width: none; }
 .op-tasks-page .audit-task-card .op-task-identity { order: 0; }
-.op-tasks-page .audit-task-card .audit-task-status { order: 1; }
+.op-tasks-page .audit-task-card .audit-task-status { order: 0; }
 .op-tasks-page .audit-task-card .op-task-target { order: 2; font-size: var(--tv-text-meta); }
 .op-tasks-page .audit-task-card .op-task-transfer { order: 3; }
-.op-tasks-page .audit-task-card .op-task-date { order: 4; }
 .op-tasks-page .audit-task-card .op-task-actions { order: 5; }
 .op-tasks-page .audit-task-card .op-task-actions .op-actions { flex-direction: row; }
 .op-tasks-page .audit-task-card .op-task-actions:empty { display: none; }
 .op-tasks-page .audit-task-card .op-cell-meta { font-size: var(--tv-text-meta); }
 .op-tasks-page .audit-task-card .op-task-identity h3 { margin: 3px 0; font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
 .op-tasks-page .audit-task-card .op-select-cell { order: -1; min-height: 44px; display: flex; align-items: center; }
-.op-tasks-page .audit-task-card .op-task-details-mobile { order: 6; border-top: 1px solid hsl(var(--border)); }
 .op-tasks-page .audit-task-card .audit-task-status { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
 .op-tasks-page .audit-task-card .audit-task-status .op-cell-meta { margin: 0; }
-.op-tasks-page .audit-task-card .op-task-actions button { flex: 1; justify-content: center; }
-.op-tasks-page .audit-task-card .op-task-date { font-size: 11px; }
+.op-tasks-page .audit-task-card .op-task-actions button { flex: 1 1 140px; justify-content: center; }
 .op-tasks-page .audit-task-card .op-task-transfer { display: grid; gap: 3px; }
 .op-tasks-page .audit-task-card .op-task-transfer .op-cell-meta { margin: 0; }
 .op-tasks-page .audit-task-card .op-select-cell input { width: 22px; height: 22px; }
+.op-tasks-page .op-task-table .audit-task-status { min-width: 100px; }
+.op-tasks-page .op-task-table .op-badge { white-space: nowrap; }
+.op-tasks-page .op-task-table .op-task-transfer { width: 34%; }
+.op-tasks-page .op-task-table .op-task-identity { width: 25%; }
+.op-tasks-page .op-task-table .op-task-actions { width: 125px; min-width: 115px; }
+.op-tasks-page .op-task-transfer .op-cell-meta { overflow-wrap: anywhere; }
+.op-tasks-page .op-task-details[open] { margin-top: 6px; padding-top: 4px; border-top: 1px solid hsl(var(--border)); }
+.op-tasks-page .op-task-details > .op-cell-meta { margin-top: 6px; }
 @media (max-width: 760px) {
   .op-tasks-page .audit-task-card button, .op-tasks-page .audit-task-card summary { min-height: 44px; }
   .op-tasks-page .audit-task-card .op-task-actions button { font-size: var(--tv-text-meta); }

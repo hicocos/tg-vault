@@ -13,7 +13,12 @@ export interface AdvancedSettings {
     highRisk: { telegramDownloadWorkers: boolean; telegramFileConcurrency: boolean };
 }
 
-const WORKERS = new Set([4, 8, 12, 16]);
+export const DOWNLOAD_WORKER_OPTIONS = [4, 6, 8, 10, 12];
+
+export function normalizeTelegramDownloadWorkers(value: unknown): number {
+    const workers = Number(value);
+    return DOWNLOAD_WORKER_OPTIONS.includes(workers) ? workers : 4;
+}
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
     if (value === undefined || value === null || value === '') return fallback;
@@ -30,12 +35,12 @@ export function buildAdvancedSettings(input: {
     skipTelegramPhotosInBatch: unknown;
     telegramDownloadHistoryPolicy: unknown;
 }): AdvancedSettings {
-    const workers = Number(input.telegramDownloadWorkers);
+    const workers = normalizeTelegramDownloadWorkers(input.telegramDownloadWorkers);
     const fileConcurrency = Number(input.telegramFileConcurrency);
     const duplicateMode: DuplicateModeSetting = input.duplicateMode === 'skip' ? 'skip' : 'copy';
     const telegramDownloadHistoryPolicy: TelegramDownloadHistoryPolicySetting = input.telegramDownloadHistoryPolicy === 'all' ? 'all' : 'errors_only';
     return {
-        telegramDownloadWorkers: WORKERS.has(workers) ? workers : 4,
+        telegramDownloadWorkers: workers,
         telegramFileConcurrency: Number.isInteger(fileConcurrency) && fileConcurrency >= 1 && fileConcurrency <= 10 ? fileConcurrency : 2,
         telegramFileConcurrencyLimit: input.telegramFileConcurrencyLimit,
         telegramEnabledAccounts: input.telegramEnabledAccounts,
@@ -43,7 +48,7 @@ export function buildAdvancedSettings(input: {
         autoCleanupOrphans: booleanValue(input.autoCleanupOrphans, true),
         skipTelegramPhotosInBatch: booleanValue(input.skipTelegramPhotosInBatch, false),
         telegramDownloadHistoryPolicy,
-        highRisk: { telegramDownloadWorkers: workers >= 12, telegramFileConcurrency: fileConcurrency >= 4 },
+        highRisk: { telegramDownloadWorkers: workers >= 10, telegramFileConcurrency: fileConcurrency >= 4 },
     };
 }
 
@@ -53,8 +58,8 @@ export function normalizeAdvancedSettingsPatch(input: Record<string, unknown>): 
     const [key, value] = entries[0];
     if (key === 'telegramDownloadWorkers') {
         const parsed = Number(value);
-        if (!WORKERS.has(parsed)) throw new Error('telegramDownloadWorkers 必须是 4/8/12/16');
-        return { telegramDownloadWorkers: parsed, highRisk: parsed >= 12 };
+        if (!DOWNLOAD_WORKER_OPTIONS.includes(parsed)) throw new Error('telegramDownloadWorkers 必须是 4/6/8/10/12');
+        return { telegramDownloadWorkers: parsed, highRisk: parsed >= 10 };
     }
     if (key === 'telegramFileConcurrency') {
         const parsed = Number(value);

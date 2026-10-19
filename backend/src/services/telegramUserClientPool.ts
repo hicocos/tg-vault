@@ -10,6 +10,8 @@ import type { Api } from 'telegram';
 import { TelegramUserWorkerClient } from './telegramUserWorkerClient.js';
 import { TELEGRAM_EXTREME_FLOOD_WAIT_SECONDS, type TelegramTransportRuntimeEvent } from './telegramWorkerProtocol.js';
 import { withTelegramOperationSignal } from './telegramOperationContext.js';
+import { isTelegramTransientDownloadError } from './telegramDownloadRetry.js';
+import { isTelegramEntityResolutionError } from './telegramEntityResolution.js';
 import { decryptCredential } from '../utils/credentialCrypto.js';
 import {
     selectWeightedLeastConnectedTelegramAccount,
@@ -94,6 +96,7 @@ export interface TelegramAccountSelectionOptions extends TelegramAccountScheduli
     preferredAccountId?: string;
     onFloodWait?: (event: TelegramAccountFloodWait) => Promise<void> | void;
     onScanRequest?: (event: TelegramScanRequestEvent) => void;
+    onDownloadRetry?: (event: { attempt: number; maxAttempts: number; accountId: string; error: string }) => void;
 }
 
 export type PublicTelegramUserAccount = Omit<TelegramUserAccountRecord, 'session'> & {
@@ -130,11 +133,12 @@ export function isTelegramSessionExpiredError(error: unknown): boolean {
     return /(AUTH_KEY_(UNREGISTERED|INVALID|DUPLICATED)|SESSION_(REVOKED|EXPIRED)|USER_DEACTIVATED)/i.test(errorName(error));
 }
 
-export function classifyTelegramDownloadAccountError(error: unknown): 'session_expired' | 'permission_denied' | 'flood_wait' | 'retryable' {
+export function classifyTelegramDownloadAccountError(error: unknown): 'session_expired' | 'permission_denied' | 'entity_unresolved' | 'flood_wait' | 'retryable' {
     const value = error as { errorMessage?: unknown; message?: unknown; name?: unknown } | null;
     const text = `${value?.errorMessage || ''} ${value?.message || ''} ${value?.name || ''}`;
     if (isTelegramSessionExpiredError(error)) return 'session_expired';
-    if (/CHANNEL_PRIVATE|USER_NOT_PARTICIPANT|USER_BANNED_IN_CHANNEL|CHAT_FORBIDDEN|CHAT_ADMIN_REQUIRED|Could not find the input entity|Cannot find any entity/i.test(text)) return 'permission_denied';
+    if (isTelegramEntityResolutionError(error)) return 'entity_unresolved';
+    if (/CHANNEL_PRIVATE|USER_NOT_PARTICIPANT|USER_BANNED_IN_CHANNEL|CHAT_FORBIDDEN|CHAT_ADMIN_REQUIRED/i.test(text)) return 'permission_denied';
     if (/FLOOD|Too many requests/i.test(text)) return 'flood_wait';
     return 'retryable';
 }
@@ -512,12 +516,24 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
         sourceKey: string,
         scope: TelegramAccountSourceScope,
         operation: (client: C, accountId: string) => Promise<T>,
-        options: Pick<TelegramAccountSelectionOptions, 'signal' | 'preferredAccountId' | 'excludeAccountIds' | 'onFloodWait' | 'onScanRequest'> = {},
+        options: Pick<TelegramAccountSelectionOptions, 'signal' | 'preferredAccountId' | 'excludeAccountIds' | 'onFloodWait' | 'onScanRequest' | 'onDownloadRetry'> = {},
     ): Promise<T> {
         const key = normalizeTelegramAccountSourceKey(sourceKey);
         const excluded = new Set(options.excludeAccountIds || []);
+        const tried = new Set<string>();
+        let lastError: unknown;
         while (true) {
-            const lease = await this.acquire(key, { ...options, scope, excludeAccountIds: excluded });
+            throwIfAborted(options.signal);
+            if (scope === 'download' && tried.size >= 3) throw lastError;
+            let lease: SelectedTelegramDownloadAccount<C>;
+            try {
+                lease = await this.acquire(key, { ...options, scope, excludeAccountIds: excluded });
+            } catch (error) {
+                throwIfAborted(options.signal);
+                if (scope === 'download' && lastError !== undefined && error instanceof NoEligibleTelegramAccountError) throw lastError;
+                throw error;
+            }
+            if (scope === 'download') tried.add(lease.accountId);
             try {
                 throwIfAborted(options.signal);
                 const result = await withTelegramOperationSignal(options.signal, () => operation(lease.client, lease.accountId));
@@ -527,13 +543,41 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
                 throwIfAborted(options.signal);
                 const classification = classifyTelegramDownloadAccountError(error);
                 const message = errorName(error);
-                if (/^TELEGRAM_HISTORY_UNVERIFIED/.test(message)) {
+                if (scope === 'download') lastError = error;
+                if (classification === 'entity_unresolved' || /^TELEGRAM_HISTORY_UNVERIFIED/.test(message)) {
+                    // Discovering a readable account is not a whole-file replay.
+                    tried.delete(lease.accountId);
                     excluded.add(lease.accountId);
                     lease.release();
                     await this.deps.repository.markSourceAccess(lease.accountId, key, scope, 'unknown', message);
                     console.warn(JSON.stringify({ event: 'telegram_source_unverified', accountId: lease.accountId, source: key, scope, reason: message }));
                     continue;
                 } else if (classification === 'retryable') {
+                    if (scope === 'download' && isTelegramTransientDownloadError(error)) {
+                        excluded.add(lease.accountId);
+                        const entry = this.entries.get(lease.accountId);
+                        if (entry && entry.account.healthState !== 'session_expired') {
+                            entry.account = { ...entry.account, healthState: 'degraded', lastError: message };
+                        }
+                        lease.release();
+                        try {
+                            await this.deps.repository.recordFailure(lease.accountId, message);
+                        } catch (recordError) {
+                            // Diagnostic persistence must not replace the download's real error.
+                            console.error(JSON.stringify({ event: 'telegram_account_failure_persist_failed',
+                                accountId: lease.accountId, error: errorName(recordError) }));
+                        }
+                        throwIfAborted(options.signal);
+                        if (tried.size >= 3) throw error;
+                        try {
+                            options.onDownloadRetry?.({ attempt: tried.size + 1, maxAttempts: 3,
+                                accountId: lease.accountId, error: message });
+                        } catch (notificationError) {
+                            console.error(JSON.stringify({ event: 'telegram_download_retry_notify_failed',
+                                accountId: lease.accountId, error: errorName(notificationError) }));
+                        }
+                        continue;
+                    }
                     if (/EADDRNOTAVAIL|EMFILE|ENFILE|ENOBUFS|TELEGRAM_WORKER_(EXITED|UNAVAILABLE|REQUEST_TIMEOUT|CANCEL_TIMEOUT)|USER_RESOURCE_CIRCUIT/i.test(message)) {
                         this.updateCooldown(lease.accountId, new Date(this.now() + 60_000), message, scope);
                         await this.persistCooldown(lease.accountId, this.entries.get(lease.accountId)?.account.cooldownUntil || new Date(this.now() + 60_000), message);
@@ -559,8 +603,22 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
                                 accountId: lease.accountId, error: errorName(notificationError) }));
                         }
                     }
+                    if (scope === 'download') {
+                        const retryAt = Math.max(entry?.account.cooldownUntil?.getTime() || 0,
+                            this.cooldownWrites.get(lease.accountId)?.until.getTime() || 0);
+                        while (this.now() < retryAt) {
+                            throwIfAborted(options.signal);
+                            await this.waitForAvailability(options.signal, Math.min(ACCOUNT_WAIT_RECHECK_MS, retryAt - this.now()));
+                        }
+                        throwIfAborted(options.signal);
+                        // Whole-file replay is not a FloodWait recovery strategy;
+                        // iterators handle their per-chunk waits within the operation.
+                        throw error;
+                    }
                 } else if (classification === 'permission_denied') {
+                    tried.delete(lease.accountId);
                     const denialKey = JSON.stringify([lease.accountId, key, scope]);
+                    if (scope === 'download') excluded.add(lease.accountId);
                     this.pendingAccessDenials.set(denialKey, (this.pendingAccessDenials.get(denialKey) || 0) + 1);
                     lease.release();
                     try {
@@ -572,6 +630,7 @@ export class TelegramUserClientPool<C extends TelegramPooledClient = TelegramPoo
                     }
                 } else {
                     const entry = this.entries.get(lease.accountId);
+                    if (scope === 'download') excluded.add(lease.accountId);
                     if (entry) entry.account = { ...entry.account, healthState: 'session_expired' };
                     lease.release();
                     await this.deps.repository.markSessionExpired(lease.accountId, message);

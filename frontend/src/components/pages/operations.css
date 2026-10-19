@@ -15,6 +15,8 @@
   gap: 12px 18px;
   margin: 0 0 18px;
 }
+.op-page-heading :is(h1, p) { overflow-wrap: anywhere; }
+.op-page-heading > .op-actions { flex-shrink: 0; }
 .op-page-heading > div { min-width: 0; flex: 1; }
 .tv-operations .op-page-heading h1 { margin: 0; font-size: 26px; font-weight: 650; line-height: 1.2; letter-spacing: -.035em; }
 .op-page-heading p { max-width: 76ch; margin: 6px 0 0; color: hsl(var(--muted-foreground)); font-size: var(--tv-text-body); line-height: 1.6; }
@@ -92,8 +94,7 @@
 .op-progress-line .op-progress { flex: 1; }
 .op-cell-meta { display: block; margin-top: 3px; color: hsl(var(--muted-foreground)); font-size: 11px; font-weight: 400; line-height: 1.55; }
 
-/* Uploads: left file workbench, right target snapshot and transfer options. */
-.op-upload-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(260px, 1fr); align-items: start; gap: var(--tv-space-group); }
+/* Upload controls and queue presentation. */
 .op-drop-zone { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px 16px; border: 1px dashed hsl(var(--primary) / .4); border-radius: var(--tv-radius-control); background: hsl(var(--primary) / .035); color: hsl(var(--foreground)); cursor: pointer; text-align: center; transition: border-color .15s, background-color .15s; }
 .op-drop-zone:hover, .op-drop-zone.is-dragging { border-color: hsl(var(--primary)); background: hsl(var(--primary) / .075); }
 .op-drop-zone.is-disabled { opacity: .55; cursor: not-allowed; }
@@ -134,7 +135,8 @@
 .op-task-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, .85fr); align-items: end; gap: var(--tv-space-group); padding: 16px 18px; }
 .op-quick-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; align-items: stretch; }
 .op-quick-filter { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; padding: 8px 10px; border: 1px solid transparent; border-radius: var(--tv-radius-control); background: hsl(var(--muted) / .65); color: hsl(var(--muted-foreground)); font-size: 11px; line-height: 1.4; text-align: start; }
-.op-quick-filter strong { color: hsl(var(--foreground)); font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.op-quick-filter strong { flex-shrink: 0; color: hsl(var(--foreground)); font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.op-quick-filter span { min-width: 0; overflow-wrap: anywhere; }
 .op-quick-filter:hover { border-color: hsl(var(--border)); }
 .op-quick-filter.is-active { background: hsl(var(--primary) / .08); border-color: hsl(var(--primary) / .3); color: hsl(var(--primary)); }
 .op-quick-filter.is-active strong { color: hsl(var(--primary)); }
@@ -273,7 +275,6 @@
   .op-page-heading p { font-size: var(--tv-text-meta); }
   .op-eyebrow { display: none; }
   .tv-operations .op-panel { padding: 14px; }
-  .op-upload-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .op-drop-zone { padding: 14px 12px; }
   .op-upload-symbol { display: none; }
   .op-drop-copy h3 { font-size: 15px; }
@@ -283,7 +284,8 @@
   .tv-operations .op-input { font-size: 16px; min-height: 44px; }
   .op-task-filters { padding: 14px; }
   .op-table-toolbar, .op-selection-bar { padding-inline: 14px; }
-  .op-quick-filter { padding: 8px; align-items: flex-start; flex-direction: column; }
+  .op-quick-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .op-quick-filter { padding: 8px; align-items: center; flex-direction: row; }
   .op-task-actions button, .op-actions > button, .op-action { min-height: 40px; }
   .op-tabs button { flex: 1; padding: 9px 8px; font-size: var(--tv-text-meta); }
   .tv-operations .op-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -323,7 +325,6 @@
 }
 
 /* UI audit: one responsive task DOM preserves all handlers. */
-.op-upload-target-first { display:grid; gap:10px; margin-bottom:14px; padding:12px; border:1px solid hsl(var(--primary) / .25); border-radius:var(--tv-radius-control); background:hsl(var(--accent)); overflow-wrap:anywhere; }
 .op-task-details summary, .op-zero-summary > summary { cursor:pointer; padding:10px 0; color:hsl(var(--primary)); }
 .op-task-id code { overflow-wrap:anywhere; min-width:0; }
 .op-task-table .op-badge { overflow-wrap:normal; word-break:normal; }
@@ -339,7 +340,7 @@
  .op-task-table .op-task-identity h3 { margin-top:0; }
  .op-progress-line { flex-wrap:wrap; }
  .op-progress-line .op-progress { min-width:50px; }
- .op-upload-page .op-page-heading p, .op-drop-copy, .op-upload-symbol, .op-drop-target { display:none; }
+ .op-upload-page .op-page-heading p, .op-drop-target { display:none; }
  .op-drop-zone { padding:14px; }
  .op-drop-choose { min-height:44px; }
  .op-upload-batch .op-empty--compact { min-height:0; padding:8px; }
@@ -348,11 +349,6 @@
  .op-icon-button { min-width:44px; }
 }
 
-.op-upload-layout { grid-template-columns:minmax(0,1.6fr) minmax(270px,1fr); }
-.op-upload-workbench { grid-column:1; grid-row:1 / 3; }
-.op-upload-target-first { grid-column:2; grid-row:1; margin:0; border-color:hsl(var(--border)); background:hsl(var(--card)); }
-.op-upload-target-first h2 { font-size:15px; font-weight:600; }
-.op-upload-settings { grid-column:2; grid-row:2; }
 .op-drop-zone { min-height:230px; border:2px dashed hsl(var(--primary) / .6); background:hsl(var(--primary) / .06); }
 .op-queue-summary { width:fit-content; padding:4px 0; background:transparent; border:0; gap:8px; }
 .op-status-dot { width:7px; height:7px; border-radius:50%; background:var(--tv-success); }
@@ -360,15 +356,8 @@
 .op-more-actions > summary { cursor:pointer; padding:8px; color:hsl(var(--muted-foreground)); }
 .op-more-actions > button { margin-top:6px; }
 @media(max-width:760px) {
- .op-upload-layout { display:flex; flex-direction:column; gap:12px; }
- .op-upload-layout > * { width:100%; }
- .op-upload-target-first { order:0; }
- .op-upload-workbench { order:1; }
- .op-upload-settings { order:2; }
  .op-drop-zone { min-height:142px; }
  .op-drop-copy { display:block; }
  .op-drop-copy h3 { display:none; }
  .op-drop-copy p { font-size:12px; }
- .op-upload-workbench > .op-section-heading { display:none; }
- .op-upload-target-first { padding:12px; gap:7px; }
 }

@@ -1,3 +1,5 @@
+import { DOWNLOAD_WORKER_OPTIONS } from './advancedSettings.js';
+
 type RuntimeEnv = NodeJS.ProcessEnv;
 
 interface NumberSpec {
@@ -5,6 +7,7 @@ interface NumberSpec {
     fallback: number;
     min: number;
     max: number;
+    values?: readonly number[];
 }
 
 const NUMBER_SPECS: NumberSpec[] = [
@@ -18,10 +21,23 @@ const NUMBER_SPECS: NumberSpec[] = [
     { name: 'CHUNK_COMPLETION_LEASE_MS', fallback: 1_800_000, min: 60_000, max: 86_400_000 },
     { name: 'ORPHAN_CLEANUP_MIN_AGE_MS', fallback: 600_000, min: 60_000, max: 2_592_000_000 },
     { name: 'SQL_LOG_SLOW_MS', fallback: 500, min: 0, max: 3_600_000 },
-    { name: 'TELEGRAM_DOWNLOAD_WORKERS', fallback: 4, min: 1, max: 16 },
+    { name: 'TELEGRAM_DOWNLOAD_WORKERS', fallback: 4, min: 4, max: 12, values: DOWNLOAD_WORKER_OPTIONS },
     { name: 'TELEGRAM_FILE_DOWNLOAD_CONCURRENCY', fallback: 2, min: 1, max: 10 },
     { name: 'TELEGRAM_RATE_WINDOW_MS', fallback: 60_000, min: 10_000, max: 86_400_000 },
     { name: 'TELEGRAM_RATE_MAX', fallback: 30, min: 5, max: 10_000 },
+    { name: 'TELEGRAM_FILE_RATE_MAX', fallback: 120, min: 50, max: 10_000 },
+    { name: 'TELEGRAM_CONTROL_RATE_MAX', fallback: 60, min: 10, max: 1_000 },
+    { name: 'TG_MAX_IN_FLIGHT_FILES', fallback: 2, min: 1, max: 20 },
+    { name: 'TG_MAX_PENDING_FILES', fallback: 500, min: 50, max: 10_000 },
+    { name: 'TG_STAGING_BUDGET_GB', fallback: 4, min: 1, max: 1024 },
+    { name: 'TG_SAVE_CONCURRENCY', fallback: 1, min: 1, max: 5 },
+    { name: 'MEDIA_CONCURRENCY', fallback: 1, min: 1, max: 4 },
+    { name: 'MEDIA_QUEUE_LIMIT', fallback: 64, min: 0, max: 256 },
+    { name: 'MEDIA_THREADS', fallback: 1, min: 1, max: 4 },
+    { name: 'MEDIA_THUMBNAIL_TIMEOUT_MS', fallback: 30_000, min: 1_000, max: 300_000 },
+    { name: 'MEDIA_PROBE_TIMEOUT_MS', fallback: 15_000, min: 1_000, max: 120_000 },
+    { name: 'MEDIA_PREVIEW_TIMEOUT_MS', fallback: 120_000, min: 1_000, max: 600_000 },
+    { name: 'MEDIA_DERIVATIVE_TIMEOUT_MS', fallback: 120_000, min: 10_000, max: 600_000 },
     { name: 'TELEGRAM_HEAVY_RATE_WINDOW_MS', fallback: 600_000, min: 60_000, max: 86_400_000 },
     { name: 'TELEGRAM_HEAVY_RATE_MAX', fallback: 5, min: 1, max: 1_000 },
     { name: 'TELEGRAM_PIN_FAIL_WINDOW_MS', fallback: 900_000, min: 60_000, max: 86_400_000 },
@@ -58,6 +74,10 @@ function parseNumbers(env: RuntimeEnv, errors: string[]): Record<string, number>
         const value = raw ? Number(raw) : spec.fallback;
         if (!Number.isInteger(value) || value < spec.min || value > spec.max) {
             errors.push(`${spec.name} 必须是 ${spec.min} 到 ${spec.max} 之间的整数`);
+            continue;
+        }
+        if (spec.values && !spec.values.includes(value)) {
+            errors.push(`${spec.name} 必须是 ${spec.values.join(' / ')}`);
             continue;
         }
         values[spec.name] = value;

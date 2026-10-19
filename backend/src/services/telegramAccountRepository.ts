@@ -3,6 +3,7 @@ import { encryptCredential } from '../utils/credentialCrypto.js';
 import type { TelegramAccountHealthState, TelegramSourceAccessState } from './telegramAccountScheduler.js';
 import { normalizeTelegramAccountSourceKey } from './telegramAccountScheduler.js';
 import { loadFileDownloadConcurrencySetting } from './telegramFileConcurrency.js';
+import { isTelegramEntityResolutionError } from './telegramEntityResolution.js';
 
 export type TelegramAccountSourceScope = 'download' | 'scan' | 'metadata';
 export type TelegramDownloadAttemptStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -83,7 +84,7 @@ function mapAccess(row: {
         accountId: String(row.account_id),
         sourceKey: String(row.source_key),
         scope: row.scope,
-        accessState: recent ? row.access_state : 'unknown',
+        accessState: recent && !isTelegramEntityResolutionError(row.last_error) ? row.access_state : 'unknown',
         lastError: row.last_error || null,
         checkedAt,
     };
@@ -194,41 +195,6 @@ export class TelegramAccountRepository {
         );
         if (result.rowCount === 1) await loadFileDownloadConcurrencySetting();
         return result.rowCount === 1;
-    }
-
-    async listAccessForAccounts(accountIds: readonly string[]): Promise<Map<string, {
-        permissions: TelegramAccountSourceAccessRecord[];
-        summary: { allowed: number; denied: number; unknown: number; total: number; lastCheckedAt: Date | null };
-    }>> {
-        const accessByAccount = new Map(accountIds.map(accountId => [accountId, {
-            permissions: [] as TelegramAccountSourceAccessRecord[],
-            summary: { allowed: 0, denied: 0, unknown: 0, total: 0, lastCheckedAt: null as Date | null },
-        }]));
-        if (accountIds.length === 0) return accessByAccount;
-
-        const result = await this.db.query(`
-            SELECT * FROM telegram_account_source_access
-            WHERE account_id = ANY($1::uuid[])
-            ORDER BY account_id, checked_at DESC NULLS LAST, source_key, scope
-        `, [accountIds]);
-        const now = this.now().getTime();
-        for (const row of result.rows) {
-            const permission = mapAccess(row, now);
-            const access = accessByAccount.get(permission.accountId);
-            if (!access) continue;
-            access.permissions.push(permission);
-            // Details include every scope; the existing summary counts only download probes.
-            if (permission.scope !== 'download') continue;
-            const summary = access.summary;
-            summary.total++;
-            if (permission.accessState === 'allowed') summary.allowed++;
-            else if (permission.accessState === 'denied') summary.denied++;
-            else if (permission.accessState === 'unknown') summary.unknown++;
-            if (permission.checkedAt && (!summary.lastCheckedAt || permission.checkedAt > summary.lastCheckedAt)) {
-                summary.lastCheckedAt = permission.checkedAt;
-            }
-        }
-        return accessByAccount;
     }
 
     async reauthenticateAccount(input: {

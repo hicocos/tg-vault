@@ -13,7 +13,7 @@ import { buildSecurityLoginNotification, type TelegramLoginDetails } from './tel
 import { registerProgressCard } from './telegramProgressControls.js';
 import { is2FAEnabled, generateOTPAuthUrl, verifyTOTP, activate2FA } from '../utils/security.js';
 import { handleStart, handleHelp, handleNotifications, handleNotificationsCallback, handleStatus, handleStorage, handleStorageSwitch, handleStorageSwitchCallback, handleTarget, handleTargetCallback, handleDelete, handleDeleteConfirmCallback, handleTelegramFileBrowserCallback, applyPendingTelegramFileMutation, handleTasks, handleTaskCenterCallback, handleBulkTaskCancelCallback, handleStopTasks, handlePauseTasks, handleResumeTasks, handleCancelTask, handleChannelTaskQueueCallback, handleRetryFailedTasks, handleDownloadWorkers, handleDownloadWorkersCallback, handleFileConcurrency, handleFileConcurrencyCallback, handleStorageCleanupCallback, handlePathRules, handlePathOnce, handlePathSession, handlePathClear, handlePathRulesCallback, handleDuplicateMode, handleDuplicateModeCallback, handleCleanupSettings, handleCleanupSettingsCallback } from './telegramCommands.js';
-import { handleFileUpload, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, getTaskControlJobIds, listFailedDownloadTaskDetails, retryFailedDownloadTasks } from './telegramUpload.js';
+import { handleFileUpload, recoverOrdinaryTelegramTasks, handleCleanupCallback, pauseDownloadTasks, resumeDownloadTasks, resolveTaskChatIdForControl, refreshSilentProgress, cancelSilentTask, canControlTask, getTaskControlJobIds, listFailedDownloadTaskDetails, retryFailedDownloadTasks } from './telegramUpload.js';
 import { loadFileDownloadConcurrencySetting } from './telegramFileConcurrency.js';
 
 import { enqueueTelegramNotification, flushTelegramNotificationDigest, listTelegramNotificationDigestScopes, resolveNotificationOwnerUserId } from './telegramNotificationDelivery.js';
@@ -72,6 +72,9 @@ import { getSetting, setSetting } from '../utils/settings.js';
 import { TelegramBotSupervisor, botRetryDelay } from './telegramBotLifecycle.js';
 import { setTelegramBotRuntimeProbe } from './telegramBotStatus.js';
 import { withTelegramOperationDeadline } from './telegramOperationDeadline.js';
+import { TelegramIngressLimit } from './telegramIngressLimit.js';
+import { TelegramQueueCapacityError } from './telegramOrdinaryRecovery.js';
+import { botDownloadRuntime } from './telegramBotDownloadRuntime.js';
 
 const TELEGRAM_BOT_COMMAND_MENU_FINGERPRINT_SETTING = 'telegram_bot_command_menu_fingerprint';
 const TELEGRAM_BOT_USER_ISOLATION_MIN_MS = 60_000;
@@ -107,6 +110,7 @@ export function scheduleTelegramBotPostStartup(): void {
             if (generation !== postStartupGeneration || !activeClient || client !== activeClient || !activeClient.connected || getTelegramBotStatus().status !== 'ready') return;
             startTelegramSubscriptionWorker(activeClient);
             startTelegramJobRecoveryWorker(activeClient);
+            await recoverOrdinaryTelegramTasks(activeClient);
             console.log('🤖 Telegram Bot 订阅后台任务已在隔离窗口后恢复；用户连接未变更');
         })().catch(error => console.error('🤖 Telegram 启动后运行时恢复失败:', error));
     }, delayMs);
@@ -210,9 +214,17 @@ function cancelBotRetry(): void {
     nextRetryAt = null;
 }
 function scheduleBotRetry(error: unknown): void {
-    if (botSupervisor.cleanupBlocked) return;
+    if (botSupervisor.cleanupBlocked) {
+        botDownloadRuntime.unavailable(false, new Error('BOT_CLEANUP_UNCONFIRMED'));
+        return;
+    }
     const delay = botRetryDelay(error, retryAttempt);
-    if (delay === null) return;
+    if (delay === null) {
+        botDownloadRuntime.unavailable(false, error instanceof Error ? error : new Error(String(error)));
+        return;
+    }
+    if (nextRetryAt) return;
+    botDownloadRuntime.unavailable(true);
     const generation = retryGeneration;
     nextRetryAt = Date.now() + delay;
     retryTimer = setTimeout(() => {
@@ -357,17 +369,30 @@ const pendingSubscriptionCancels = new Map<string, {
 }>();
 const TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS = 2 * 60 * 1000;
 
-interface RateBucket {
-    windowStartedAt: number;
-    count: number;
-}
-
-const telegramRateBuckets = new Map<string, RateBucket>();
 const TELEGRAM_MESSAGE_RATE_WINDOW_MS = Math.max(10_000, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || '60000', 10) || 60_000);
 const TELEGRAM_MESSAGE_RATE_MAX = Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || '30', 10) || 30);
 const TELEGRAM_HEAVY_RATE_WINDOW_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_HEAVY_RATE_WINDOW_MS || '600000', 10) || 600_000);
 const TELEGRAM_HEAVY_RATE_MAX = Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || '5', 10) || 5);
 const TELEGRAM_HEAVY_COMMANDS = new Set(['/tg_download', '/tg_date', '/tg_tag', '/cleanup_settings']);
+const ingressLimit = new TelegramIngressLimit({ windowMs: TELEGRAM_MESSAGE_RATE_WINDOW_MS, messageMax: TELEGRAM_MESSAGE_RATE_MAX,
+    fileMax: Number(process.env.TELEGRAM_FILE_RATE_MAX || 120), controlMax: Number(process.env.TELEGRAM_CONTROL_RATE_MAX || 60),
+    heavyWindowMs: TELEGRAM_HEAVY_RATE_WINDOW_MS, heavyMax: TELEGRAM_HEAVY_RATE_MAX });
+const transferControlCommands: Record<string, true> = { '/status': true, '/tasks': true, '/task_pause': true, '/task_resume': true,
+    '/task_cancel': true, '/stop_tasks': true, '/stop': true, '/cancel_tasks': true, '/tg_retry': true };
+const ingressRejections = new Map<string, { count: number; timer: NodeJS.Timeout }>();
+
+function reportIngressRejection(message: Api.Message, retryAfterSeconds: number): void {
+    const key = `${message.chatId}:${message.senderId}`;
+    const existing = ingressRejections.get(key);
+    if (existing) { existing.count++; return; }
+    const entry = { count: 1, timer: setTimeout(() => {
+        ingressRejections.delete(key);
+        void message.reply({ message: `⏳ 本批有 ${entry.count} 条消息未接收，未进入下载队列。请 ${retryAfterSeconds} 秒后重发；已接收任务继续处理，可使用 /tasks、/task_pause 或 /task_cancel。` })
+            .catch(error => console.error('Telegram 批量限流通知失败:', error));
+    }, 1500) };
+    entry.timer.unref?.();
+    ingressRejections.set(key, entry);
+}
 
 interface PinFailureState {
     windowStartedAt: number;
@@ -411,39 +436,10 @@ function clearPinFailures(userId: number): void {
 }
 
 
-function consumeTelegramRateLimit(userId: number, text: string): { limited: boolean; retryAfterSeconds: number } {
-    const now = Date.now();
-    const normalized = text.trim().split(/\s+/, 1)[0].replace(/@\w+$/, '').toLowerCase();
-    const checks = [
-        { key: `${userId}:all`, windowMs: TELEGRAM_MESSAGE_RATE_WINDOW_MS, max: TELEGRAM_MESSAGE_RATE_MAX },
-    ];
-
-    if (TELEGRAM_HEAVY_COMMANDS.has(normalized)) {
-        checks.push({ key: `${userId}:heavy:${normalized}`, windowMs: TELEGRAM_HEAVY_RATE_WINDOW_MS, max: TELEGRAM_HEAVY_RATE_MAX });
-    }
-
-    let longestRetryAfter = 0;
-    for (const check of checks) {
-        const bucket = telegramRateBuckets.get(check.key);
-        if (!bucket || now - bucket.windowStartedAt >= check.windowMs) {
-            telegramRateBuckets.set(check.key, { windowStartedAt: now, count: 1 });
-            continue;
-        }
-        if (bucket.count >= check.max) {
-            longestRetryAfter = Math.max(longestRetryAfter, Math.ceil((check.windowMs - (now - bucket.windowStartedAt)) / 1000));
-            continue;
-        }
-        bucket.count += 1;
-    }
-
-    // Opportunistic cleanup to avoid unbounded growth in long-running bots.
-    for (const [key, bucket] of telegramRateBuckets) {
-        if (now - bucket.windowStartedAt > Math.max(TELEGRAM_MESSAGE_RATE_WINDOW_MS, TELEGRAM_HEAVY_RATE_WINDOW_MS) * 2) {
-            telegramRateBuckets.delete(key);
-        }
-    }
-
-    return { limited: longestRetryAfter > 0, retryAfterSeconds: longestRetryAfter };
+function consumeTelegramRateLimit(userId: number, text: string, hasMedia: boolean): { limited: boolean; retryAfterSeconds: number } {
+    const command = text.trim().split(/\s+/, 1)[0].replace(/@\w+$/, '').toLowerCase();
+    return ingressLimit.consume(userId, hasMedia ? 'file' : transferControlCommands[command] ? 'control' : 'message',
+        !hasMedia && TELEGRAM_HEAVY_COMMANDS.has(command) ? command : undefined);
 }
 
 function isCancelInput(text: string): boolean {
@@ -1574,6 +1570,7 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
     const botToken = credentials?.botToken || '';
 
     if (!credentials || (!credentialsOverride && effective && !effective.enabled)) {
+        botDownloadRuntime.unavailable(false, new Error('BOT_NOT_CONFIGURED'));
         resetTelegramBotStatus(false);
         console.log('⚠️ Telegram Bot 未配置或已停用');
         return;
@@ -1611,10 +1608,15 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
             systemVersion: '1.0.0',
             appVersion: '1.0.0',
             floodSleepThreshold: 0,
-        }));
+        }), { onMainConnectionLost: error => {
+            if (client !== attemptClient || botSupervisor.busy) return;
+            markTelegramBotError('reconnecting', error.message, '等待 Bot-only 重试');
+            scheduleBotRetry(error);
+        } });
 
         botSupervisor.own(attemptClient);
         client = attemptClient;
+        botDownloadRuntime.register(attemptClient, crypto.createHash('sha256').update(`${apiId}:${apiHash}:${botToken}`).digest('hex'));
         console.log('🤖 Telegram Bot 正在启动...');
         stage = 'authorize';
         await botSupervisor.operation(() => attemptClient.start({ botAuthToken: botToken }), startupTimeoutMs);
@@ -1624,17 +1626,10 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
 
         console.log('🤖 Telegram Bot 已连接!');
 
-        // Ensure database table exists
         try {
-            await query(`
-                CREATE TABLE IF NOT EXISTS telegram_auth (
-                    user_id BIGINT PRIMARY KEY,
-                    authenticated_at TIMESTAMPTZ DEFAULT NOW()
-                )
-            `);
             await loadAuthenticatedUsers();
         } catch (e) {
-            console.error('🤖 初始化 Telegram 认证表失败:', e);
+            console.error('🤖 加载 Telegram 认证用户失败:', e);
         }
 
         // Keep command registration out of the critical readiness path and do
@@ -1707,9 +1702,9 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
 
                 if (!chatId) return;
 
-                const rateLimit = consumeTelegramRateLimit(senderId, text);
+                const rateLimit = consumeTelegramRateLimit(senderId, text, Boolean(message.media));
                 if (rateLimit.limited) {
-                    await message.reply({ message: `⏳ 操作过于频繁，请 ${rateLimit.retryAfterSeconds} 秒后再试。` });
+                    reportIngressRejection(message, rateLimit.retryAfterSeconds);
                     return;
                 }
 
@@ -2253,6 +2248,10 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
                     await message.reply({ message: t(messageLocale, 'common.unknownText') });
                 }
             } catch (error) {
+                if (error instanceof TelegramQueueCapacityError) {
+                    reportIngressRejection(event.message, 60);
+                    return;
+                }
                 console.error('🤖 处理消息时发生意外错误:', error);
             }
         }, new NewMessage({ incoming: true }));
@@ -2410,6 +2409,8 @@ async function initTelegramBotInternal(credentialsOverride?: TelegramBotCredenti
         botSupervisor.assertActive();
         botSupervisor.assertActive();
         markTelegramBotReady();
+        retryAttempt = 0;
+        botDownloadRuntime.ready(attemptClient);
         botDiagnostic('ready', startedAt, 'ok');
         connectionTimer = setInterval(() => {
             if (client !== attemptClient || attemptClient.connected || botSupervisor.busy || nextRetryAt) return;
@@ -2456,7 +2457,7 @@ async function withTelegramClientDeadline<T>(operation: Promise<T>, timeoutMs: n
     return withTelegramOperationDeadline(operation, timeoutMs, message);
 }
 
-async function stopTelegramBotInternal(): Promise<void> {
+async function stopTelegramBotInternal(recovering = false): Promise<void> {
     const stoppedAt = Date.now();
     cancelTelegramBotPostStartup();
     if (connectionTimer) clearInterval(connectionTimer);
@@ -2464,12 +2465,19 @@ async function stopTelegramBotInternal(): Promise<void> {
     if (digestTimer) clearInterval(digestTimer);
     digestTimer = null;
 
+    botDownloadRuntime.unavailable(recovering);
     client = null;
     try {
-        await withTelegramOperationDeadline(stopTelegramBackgroundWorkers(), 10_000, 'BOT_WORKER_STOP_TIMEOUT');
-        await botSupervisor.cleanup();
+        // Closing the transport settles RPCs that workers may still be awaiting.
+        // Both branches must finish before another Bot client can be authorized.
+        const results = await Promise.allSettled([
+            withTelegramOperationDeadline(stopTelegramBackgroundWorkers(), 10_000, 'BOT_WORKER_STOP_TIMEOUT'),
+            botSupervisor.cleanup(),
+        ]);
+        for (const result of results) if (result.status === 'rejected') throw result.reason;
     } catch (error) {
         botSupervisor.quarantine();
+        botDownloadRuntime.unavailable(false, new Error('BOT_CLEANUP_UNCONFIRMED'));
         markTelegramBotCleanupError(error);
         botDiagnostic('cleanup', stoppedAt, 'unconfirmed');
         throw error;
@@ -2484,7 +2492,7 @@ export interface TelegramBotLifecycleControls {
 }
 
 async function restartBotInternal(credentialsOverride?: TelegramBotCredentials): Promise<void> {
-    await stopTelegramBotInternal();
+    await stopTelegramBotInternal(true);
     botSupervisor.assertActive();
     retryAttempt++;
     diagnosticAttempt++;

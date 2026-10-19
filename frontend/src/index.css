@@ -187,7 +187,7 @@ dialog { margin: auto; }
   .tv-badge-danger { background:var(--tv-danger-bg); color:var(--tv-danger); }
   .tv-number { font-variant-numeric:tabular-nums; }
   .tv-divider { border-top:1px solid hsl(var(--border)); }
-  .tv-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; max-width:100%; min-height:44px; padding:10px 16px; border:1px solid transparent; border-radius:var(--tv-radius-control); font-size:13px; font-weight:500; line-height:1.4; text-align:center; white-space:normal; transition:background .15s,color .15s,border-color .15s; }
+  .tv-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-width:0; max-width:100%; min-height:44px; padding:10px 16px; border:1px solid transparent; border-radius:var(--tv-radius-control); font-size:13px; font-weight:500; line-height:1.4; text-align:center; white-space:normal; overflow-wrap:anywhere; transition:background .15s,color .15s,border-color .15s; }
   .tv-btn:disabled { pointer-events:none; opacity:.5; }
   .tv-btn-primary { background:hsl(var(--primary)); color:hsl(var(--primary-foreground)); box-shadow:0 2px 6px hsl(var(--primary)/.12); }
   .tv-btn-primary:hover { background:var(--tv-primary-hover); }

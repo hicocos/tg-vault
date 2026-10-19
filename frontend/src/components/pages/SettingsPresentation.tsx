@@ -4,16 +4,17 @@ import { cn } from '../../lib/utils';
 import './settings.css';
 
 /** Presentation only: settings state, drafts and effects stay in their owner. */
-export function SettingsSection({ title, children, sectionId, className }: {
+export function SettingsSection({ title, children, sectionId, className, actions }: {
     title: string;
     children: ReactNode;
     sectionId?: string;
     className?: string;
+    actions?: ReactNode;
 }) {
     const headingId = useId();
     return (
         <section className={cn('tv-panel settings-section', className)} data-settings-section={sectionId} aria-labelledby={headingId}>
-            <header className="settings-section__header"><h3 id={headingId}>{title}</h3></header>
+            <header className={cn('settings-section__header', actions && 'settings-section__header--actions')}><h3 id={headingId}>{title}</h3>{actions}</header>
             <div className="settings-section__body">{children}</div>
         </section>
     );

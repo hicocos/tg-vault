@@ -23,7 +23,7 @@ import { installTelegramMultiAccountRuntimeAdapters } from './services/telegramM
 import { shutdownTelegramUserClientPool, getTelegramUserClientPoolState } from './services/telegramUserClientPool.js';
 import { isInitialSetupRequired } from './utils/authSettings.js';
 import { get2FAReadiness } from './utils/security.js';
-import { ensureDatabaseInitialized, pool } from './db/index.js';
+import { assertDatabaseCurrent, pool } from './db/index.js';
 import helmet from 'helmet';
 import crypto from 'node:crypto';
 import { normalizeRequestId } from './services/operationalEvents.js';
@@ -63,7 +63,7 @@ let dependencyReadiness: DependencyReadinessSnapshot = { ready: false, checkedAt
 
 async function refreshDependencyReadiness(): Promise<DependencyReadinessSnapshot> {
     try {
-        await ensureDatabaseInitialized();
+        await assertDatabaseCurrent();
         await pool.query('SELECT 1');
         const { storageManager } = await import('./services/storage.js');
         await storageManager.assertReady();
@@ -271,7 +271,12 @@ async function startTelegramRuntime(telegramConfig: Awaited<ReturnType<typeof ap
 }
 
 async function initializeApplication(): Promise<void> {
-    await ensureDatabaseInitialized();
+    await assertDatabaseCurrent();
+    // Recovery belongs to application startup, never to read-only schema checks.
+    // No previous-process download attempt can remain live before workers start.
+    await pool.query(`UPDATE telegram_download_attempts
+        SET status = 'cancelled', error = '服务重启，旧下载执行已结束', finished_at = NOW()
+        WHERE status = 'running'`);
     await loadFileDownloadConcurrencySetting();
     const telegramConfig = await applyEffectiveTelegramBotConfig();
     const telegramEnabled = telegramConfig.configured && telegramConfig.enabled;

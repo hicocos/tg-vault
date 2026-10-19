@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle2, FolderOpen, Gauge, RotateCcw, ShieldCheck, Upload, XCircle } from "../ui/icons";
+import { CheckCircle2, Gauge, RotateCcw, ShieldCheck, Upload, XCircle } from "../ui/icons";
 import type { QueueItem } from "../ui/UploadQueueModal";
 import { UploadZone } from "../ui/UploadZone";
 import type { UploadCapabilities } from "../../services/api";
@@ -43,7 +43,6 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
             <header className="tv-page-header op-page-heading">
                 <div>
                     <h1 id="upload-center-title">{t('management.upload.title')}</h1>
-                    <p>{t('management.upload.subtitle')}</p>
                 </div>
                 {(queue.length > 0 || recoveredUploadCount > 0) && (
                     <Button variant="outline" className="op-action" onClick={onOpenQueue}>
@@ -52,8 +51,7 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
                 )}
             </header>
 
-            <div className="op-upload-layout">
-                <section className="tv-panel op-panel op-upload-workbench">
+            <section className="tv-panel op-panel op-upload-workbench">
                     <section className="op-upload-target-first" aria-labelledby="upload-settings-title">
                         <h2 id="upload-settings-title">{t('uiAudit.uploadSettings')}</h2>
                         <dl className="op-upload-storage"><div><dt>{t('management.upload.currentStorage')}</dt><dd data-upload-storage>{storageLabel}</dd></div></dl>
@@ -63,7 +61,6 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
                                 {folders.map(folder => <option key={folder} value={folder}>{folder}</option>)}
                             </select>
                         </label>
-                        <p className="op-help op-upload-lock-note" id="upload-target-lock">{t('management.upload.reliable.lockedDetail')}</p>
                     </section>
                     <UploadZone
                         onDrop={files => onUpload(files, destination || undefined)}
@@ -72,6 +69,23 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
                         capabilities={capabilities}
                         disabled={!ready}
                     />
+                    <section className="op-upload-settings" aria-labelledby="upload-capabilities-title">
+                        <div className="op-upload-capability">
+                            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                            <div>
+                                <h2 id="upload-capabilities-title" className="sr-only">{t('uiAudit.uploadCapabilities')}</h2>
+                                <p>{threshold ? t('management.upload.chunkThreshold', { size: threshold }) : t('management.upload.limitsLoading')}</p>
+                            </div>
+                        </div>
+                        <details className="op-disclosure">
+                            <summary>{t('management.upload.reliable.title')}</summary>
+                            <div className="op-policy-list">
+                                <p className="op-help">{t('management.upload.reliable.lockedDetail')}</p>
+                                <div><RotateCcw className="h-4 w-4" /><div><h3>{t('management.upload.reliable.resumable')}</h3><p>{t('management.upload.reliable.resumableDetail')}</p></div></div>
+                                <div><Gauge className="h-4 w-4" /><div><h3>{t('management.upload.reliable.concurrency')}</h3><p>{t('management.upload.reliable.concurrencyDetail')}</p></div></div>
+                            </div>
+                        </details>
+                    </section>
 
                     {queue.length > 0 && <section className="op-upload-batch" aria-labelledby="upload-batch-title">
                         <div className="op-section-heading">
@@ -112,24 +126,7 @@ export const UploadCenter = ({ onUpload, uploading, uploadProgress, capabilities
                     {recoveredUploadCount > 0 && <div className="op-upload-recovery">
                         <Button variant="outline" className="op-action" onClick={onOpenQueue}><RotateCcw className="h-4 w-4" />{t('management.upload.recoverableCount', { count: recoveredUploadCount })}</Button>
                     </div>}
-                </section>
-
-                <aside className="op-upload-settings" aria-labelledby="upload-capabilities-title">
-                    <div className="op-section-heading"><h2 id="upload-capabilities-title"><FolderOpen className="h-4 w-4" />{t('uiAudit.uploadCapabilities')}</h2></div>
-                    <dl className="op-target-details">
-
-                        <div><dt><ShieldCheck className="h-4 w-4" />{t('management.upload.transferPolicy')}</dt><dd>{threshold ? t('management.upload.chunkThreshold', { size: threshold }) : t('management.upload.limitsLoading')}</dd></div>
-                    </dl>
-                    <details className="op-disclosure">
-                        <summary>{t('management.upload.reliable.title')}</summary>
-                        <div className="op-policy-list">
-                            <div><RotateCcw className="h-4 w-4" /><div><h3>{t('management.upload.reliable.resumable')}</h3><p>{t('management.upload.reliable.resumableDetail')}</p></div></div>
-                            <div><Gauge className="h-4 w-4" /><div><h3>{t('management.upload.reliable.concurrency')}</h3><p>{t('management.upload.reliable.concurrencyDetail')}</p></div></div>
-
-                        </div>
-                    </details>
-                </aside>
-            </div>
+            </section>
         </section>
     );
 };

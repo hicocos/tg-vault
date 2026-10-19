@@ -114,6 +114,7 @@ interface OwnedClient extends Omit<TelegramClient, '_sender' | '_connection' | '
 interface SenderOwner {
     id: number;
     generation: number;
+    fileResponses: number;
     failed?: unknown;
     retryAt?: number;
     flight?: Promise<boolean>;
@@ -161,6 +162,7 @@ export function ownUserTransport<T extends TelegramClient>(client: T, options: {
 
     const account = options.accountId ? createHash('sha256').update(options.accountId).digest('hex').slice(0, 16) : 'login';
     const owners = new Map<OwnedSender, SenderOwner>();
+    const requestTimeouts = new WeakMap<Error, { generation: number; fileResponses: number }>();
     const sockets = new Set<UserNetSocket>();
     const work = new Set<Promise<unknown>>();
     const terminal = new AbortController();
@@ -356,14 +358,19 @@ export function ownUserTransport<T extends TelegramClient>(client: T, options: {
             if (owner.closed) throw transportError('USER_SENDER_CLOSED');
             if (!sender.isConnected()) await waiting(() => waitFor(sender._reconnect(), signal));
             signal.throwIfAborted();
+            const generation = owner.generation;
+            const fileResponses = owner.fileResponses;
             owner.states.add(state);
             signal.addEventListener('abort', abort, { once: true });
             timer = setTimeout(() => {
                 removeState(sender, state); owner.states.delete(state);
-                state.reject(transportError('USER_REQUEST_TIMEOUT')); state.finished.resolve();
+                const error = transportError('USER_REQUEST_TIMEOUT');
+                if (file) requestTimeouts.set(error, { generation, fileResponses });
+                state.reject(error); state.finished.resolve();
             }, 30_000);
             sender._sendQueue.append(state);
             const result = await state.promise;
+            if (file && result instanceof Api.upload.File) owner.fileResponses++;
             if (file && result instanceof Api.upload.File && result.bytes.length > 0 && requestEpisode === floodEpisode && floodUntil <= Date.now()) {
                 const now = Date.now();
                 successfulReads++;
@@ -424,7 +431,7 @@ export function ownUserTransport<T extends TelegramClient>(client: T, options: {
         assertOpen();
         if (owners.has(sender)) return sender;
         if (!sender._sendQueue || !sender._pendingState || typeof sender._connect !== 'function') throw transportError('USER_SDK_OWNERSHIP_UNSUPPORTED');
-        const owner: SenderOwner = { id: ++nextSender, generation: 0, closed: false,
+        const owner: SenderOwner = { id: ++nextSender, generation: 0, fileResponses: 0, closed: false,
             authorized: !!sender.authKey.getKey(), states: new Set(), connections: new Set() };
         owners.set(sender, owner);
         const connectOnce = async () => {
@@ -747,14 +754,28 @@ export function ownUserTransport<T extends TelegramClient>(client: T, options: {
             if (!sender) throw transportError('USER_DISCONNECTED');
             try {
                 let result: unknown;
+                let timeoutRecovered = false;
                 for (let retry = 0; ; retry++) {
                     try { result = await sender.send(request); break; }
                     catch (error) {
                         const message = error && typeof error === 'object' && 'errorMessage' in error && typeof error.errorMessage === 'string'
                             ? error.errorMessage : error instanceof Error ? error.message : '';
-                        const transient = error instanceof errors.ServerError || /^(USER_CONNECTION_LOST|USER_REQUEST_TIMEOUT|ECONNRESET|ETIMEDOUT|RPC_CALL_FAIL|RPC_MCGET_FAIL|TIMEOUT|Timeout)$/.test(message);
+                        const transient = error instanceof errors.ServerError || /^(USER_CONNECTION_LOST|connection_lost|USER_REQUEST_TIMEOUT|ECONNRESET|ETIMEDOUT|RPC_CALL_FAIL|RPC_MCGET_FAIL|TIMEOUT|Timeout)$/.test(message);
                         if (!(request instanceof Api.upload.GetFile) || retry >= 2 || !transient) throw error;
                         signal.throwIfAborted();
+                        const timeout = error instanceof Error ? requestTimeouts.get(error) : undefined;
+                        const owner = owners.get(sender)!;
+                        if (timeout && !timeoutRecovered) {
+                            if (owner.generation !== timeout.generation) {
+                                // A sibling already replaced this request's generation.
+                                if (owner.flight) await waiting(() => waitFor(owner.flight!, signal));
+                            } else if (retry > 0 || owner.fileResponses === timeout.fileResponses) {
+                                // Give a healthy sender one retry for an isolated slow
+                                // read, but do not let ongoing sibling progress mask a stall forever.
+                                timeoutRecovered = true;
+                                await waiting(() => waitFor(sender._reconnect(), signal));
+                            }
+                        }
                         await waiting(() => delay(300 * 2 ** retry + Math.floor(Math.random() * 200), signal));
                     }
                 }

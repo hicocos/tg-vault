@@ -43,6 +43,11 @@ export interface DownloadTaskGroupSnapshot extends DownloadTaskGroupInput, Downl
     state: DownloadTaskGroupState;
     total: number;
     active: number;
+    downloading: number;
+    uploading: number;
+    waitingUpload: number;
+    retrying: number;
+    stage: 'waiting' | 'downloading' | 'uploading';
     pending: number;
     completed: number;
     failed: number;
@@ -75,11 +80,15 @@ export interface DownloadTaskScopeStatus {
 
 export interface DownloadTaskQueueOptions {
     maxConcurrent?: number;
+    uploadConcurrency?: number;
+    maxInFlight?: number;
+    maxStagedBytes?: number;
     idFactory?: () => string;
     onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
 }
 
 export type DownloadFileTaskState = 'pending' | 'active' | 'success' | 'failed' | 'cancelled';
+export type DownloadFilePhase = 'downloading' | 'retrying' | 'waiting_upload' | 'uploading' | 'waiting_storage';
 
 export interface DownloadTaskExecutionResult {
     status: 'success' | 'failed';
@@ -105,6 +114,10 @@ export interface DownloadFileTaskSnapshot {
     fileName: string;
     status: DownloadFileTaskState;
     error?: string;
+    phase?: DownloadFilePhase;
+    retryAttempt?: number;
+    maxAttempts?: number;
+    reason?: string;
     startTime?: number;
     endTime?: number;
     totalSize?: number;
@@ -138,6 +151,10 @@ export class DownloadTaskQueue {
     private groups = new Map<string, DownloadTaskGroupRecord>();
     private readonly maxHistory = 50;
     private maxConcurrent: number;
+    private readonly uploadConcurrency: number;
+    private readonly maxInFlight: number;
+    private readonly maxStagedBytes: number;
+    private readonly uploadWaiters = new Map<string, { resolve(): void; reject(error: unknown): void; cleanup(): void }>();
     private readonly idFactory: () => string;
     private readonly onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
     private userPaused = false;
@@ -149,6 +166,9 @@ export class DownloadTaskQueue {
 
     constructor(options: DownloadTaskQueueOptions = {}) {
         this.maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent || 1));
+        this.uploadConcurrency = Math.max(1, Math.floor(options.uploadConcurrency || 2));
+        this.maxInFlight = Math.max(1, Math.floor(options.maxInFlight ?? 2));
+        this.maxStagedBytes = Math.max(1, options.maxStagedBytes ?? 4 * 1024 ** 3);
         this.idFactory = options.idFactory || (() => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
         this.onGroupChanged = options.onGroupChanged;
     }
@@ -198,6 +218,17 @@ export class DownloadTaskQueue {
         return this.snapshotGroup(record);
     }
 
+    restoreGroup(input: DownloadTaskGroupInput, settled: { completed: number; failed: number; cancelled: number; paused: boolean }): void {
+        this.ensureGroup(input);
+        const group = this.groups.get(input.id)!;
+        group.completed = settled.completed;
+        group.failed = settled.failed;
+        group.cancelled = settled.cancelled;
+        if (settled.paused) group.stateOverride = 'paused';
+        group.updatedAt = this.nextGroupVersion(group);
+        this.notifyGroup(group);
+    }
+
     async add(
         groupId: string,
         fileName: string,
@@ -238,6 +269,7 @@ export class DownloadTaskQueue {
                 onPendingCancelled,
                 execute: async () => {
                     task.status = 'active';
+                    task.phase = 'downloading';
                     task.startTime = Date.now();
                     task.speedSampler = new DownloadSpeedSampler(task.startTime);
                     group.updatedAt = this.nextGroupVersion(group, task.startTime);
@@ -268,6 +300,8 @@ export class DownloadTaskQueue {
                             reject(error);
                         }
                     } finally {
+                        const waiter = this.uploadWaiters.get(task.id);
+                        if (waiter) { this.uploadWaiters.delete(task.id); waiter.cleanup(); waiter.reject(abortController.signal.reason || new Error('下载任务已结束')); }
                         task.endTime = Date.now();
                         group.updatedAt = this.nextGroupVersion(group, task.endTime);
                         const activeIndex = this.active.findIndex(item => item.id === task.id);
@@ -282,6 +316,7 @@ export class DownloadTaskQueue {
                         if (['completed', 'cancelled'].includes(this.snapshotGroup(group).state)) this.scopeResumeOverrides.delete(group.id);
                         this.notifyGroup(group);
                         this.processNext();
+                        this.processUploads();
                     }
                 },
             };
@@ -377,6 +412,9 @@ export class DownloadTaskQueue {
         return {
             ...this.counts(),
             maxConcurrent: this.maxConcurrent,
+            maxInFlight: this.maxInFlight,
+            maxStagedBytes: this.maxStagedBytes,
+            reservedBytes: this.active.reduce((sum, task) => sum + this.reservationSize(task), 0),
             paused: this.isGloballyPaused(),
             userPaused: this.userPaused,
             diskPressurePaused: Boolean(this.systemPause),
@@ -410,9 +448,68 @@ export class DownloadTaskQueue {
         return this.maxConcurrent;
     }
 
+    setRetrying(taskId: string, attempt: number, maxAttempts: number, reason: string): void {
+        const task = this.active.find(item => item.id === taskId);
+        if (!task) return;
+        task.phase = 'retrying';
+        task.retryAttempt = attempt;
+        task.maxAttempts = maxAttempts;
+        task.reason = reason;
+        this.stopProgress(taskId);
+    }
+
+    async beginUpload(taskId: string): Promise<void> {
+        const task = this.active.find(item => item.id === taskId);
+        if (!task) throw new Error('下载任务已结束');
+        task.abortController.signal.throwIfAborted();
+        if (task.phase === 'uploading') return;
+        task.phase = 'waiting_upload';
+        task.reason = '源文件已下载，等待保存';
+        this.stopProgress(taskId);
+        const pending = new Promise<void>((resolve, reject) => {
+            const abort = () => {
+                this.uploadWaiters.delete(taskId);
+                reject(task.abortController.signal.reason);
+            };
+            task.abortController.signal.addEventListener('abort', abort, { once: true });
+            this.uploadWaiters.set(taskId, { resolve, reject, cleanup: () => task.abortController.signal.removeEventListener('abort', abort) });
+        });
+        this.processUploads();
+        this.processNext();
+        await pending;
+    }
+
+    waitForStorage(taskId: string, reason: string): void {
+        const task = this.active.find(item => item.id === taskId);
+        if (!task) return;
+        task.phase = 'waiting_storage';
+        task.reason = reason;
+        this.stopProgress(taskId);
+        this.processUploads();
+    }
+
+    private processUploads(): void {
+        let available = this.uploadConcurrency - this.active.filter(task => task.phase === 'uploading').length;
+        for (const [id, waiter] of this.uploadWaiters) {
+            if (available <= 0) break;
+            const task = this.active.find(item => item.id === id);
+            if (!task || task.abortController.signal.aborted) continue;
+            this.uploadWaiters.delete(id);
+            waiter.cleanup();
+            task.phase = 'uploading';
+            task.reason = undefined;
+            const group = this.groups.get(task.groupId);
+            if (group) { group.updatedAt = this.nextGroupVersion(group); this.notifyGroup(group); }
+            available--;
+            waiter.resolve();
+        }
+    }
+
     resetProgress(taskId: string): void {
         const task = this.active.find(item => item.id === taskId);
         if (!task) return;
+        task.phase = 'downloading';
+        task.reason = undefined;
         task.speedSampler?.reset(Date.now());
         this.updateProgress(taskId, 0, task.totalSize);
     }
@@ -429,6 +526,7 @@ export class DownloadTaskQueue {
         const task = this.active.find(item => item.id === taskId);
         if (task) {
             task.downloadedSize = validBytes(downloaded);
+            if (task.phase === 'retrying') { task.phase = 'downloading'; task.reason = undefined; }
             task.speedSampler?.update(task.downloadedSize, Date.now());
             if (validBytes(total) > 0) task.totalSize = total;
             const group = this.groups.get(task.groupId);
@@ -676,8 +774,12 @@ export class DownloadTaskQueue {
         return counts;
     }
 
+    private reservationSize(task: DownloadFileTask): number {
+        return Math.max(validBytes(task.totalSize), validBytes(task.downloadedSize), 64 * 1024 ** 2);
+    }
+
     private processNext(): void {
-        while (!this.isGloballyPaused() && this.active.length < this.maxConcurrent && this.queue.length > 0) {
+        while (!this.isGloballyPaused() && this.active.length < this.maxInFlight && this.active.filter(task => task.phase === 'downloading' || task.phase === 'retrying').length < this.maxConcurrent && this.queue.length > 0) {
             const runnableIndex = this.queue.findIndex(task => {
                 const group = this.groups.get(task.groupId);
                 return group
@@ -685,6 +787,10 @@ export class DownloadTaskQueue {
                     && !['pausing', 'paused', 'cancelling', 'cancelled'].includes(group.stateOverride || '');
             });
             if (runnableIndex < 0) break;
+            const next = this.queue[runnableIndex];
+            const reserved = this.active.reduce((sum, task) => sum + this.reservationSize(task), 0);
+            // A file larger than the staging budget may run alone, never beside another file.
+            if (this.active.length > 0 && reserved + this.reservationSize(next) > this.maxStagedBytes) break;
             const [task] = this.queue.splice(runnableIndex, 1);
             if (!task) break;
             void task.execute();
@@ -746,6 +852,10 @@ export class DownloadTaskQueue {
             fileName: task.fileName,
             status: task.status,
             error: task.error,
+            phase: task.phase,
+            retryAttempt: task.retryAttempt,
+            maxAttempts: task.maxAttempts,
+            reason: task.reason,
             startTime: task.startTime,
             endTime: task.endTime,
             totalSize: task.totalSize,
@@ -853,6 +963,10 @@ export class DownloadTaskQueue {
             state = settled > 0 ? 'completed' : 'waiting';
         }
         const scopedPause = this.getScopedUserPause(group);
+        const downloading = activeTasks.filter(task => task.phase === 'downloading');
+        const retrying = activeTasks.filter(task => task.phase === 'retrying');
+        const uploading = activeTasks.filter(task => task.phase === 'uploading');
+        const waitingUpload = activeTasks.filter(task => task.phase === 'waiting_upload' || task.phase === 'waiting_storage');
         if ((this.isGloballyPaused() || scopedPause) && ['running', 'waiting', 'pausing'].includes(state)) {
             state = 'paused';
         }
@@ -871,6 +985,11 @@ export class DownloadTaskQueue {
             state,
             total,
             active: activeTasks.length,
+            downloading: downloading.length,
+            uploading: uploading.length,
+            waitingUpload: waitingUpload.length,
+            retrying: retrying.length,
+            stage: downloading.length + retrying.length > 0 ? 'downloading' : uploading.length + waitingUpload.length > 0 ? 'uploading' : 'waiting',
             pending: pendingTasks.length,
             completed: group.completed,
             failed: group.failed,
@@ -880,9 +999,9 @@ export class DownloadTaskQueue {
             byteProgressKnown: total > 0 && (group.settledKnown || 0) + [...activeTasks, ...pendingTasks].filter(task => validBytes(task.totalSize) > 0).length === total,
             speedBytesPerSecond: ['running', 'pausing'].includes(state) ? activeTasks.reduce((sum, task) => sum + (task.speedSampler?.speed(Date.now()) || 0), 0) : 0,
             speedUpdatedAt: Date.now(),
-            currentFileName: activeTasks[0]?.fileName,
+            currentFileName: downloading[0]?.fileName || retrying[0]?.fileName || activeTasks[0]?.fileName,
             reason: !['completed', 'cancelled'].includes(state)
-                ? this.systemPause?.reason || (state === 'paused' && (scopedPause || this.userPaused)
+                ? this.systemPause?.reason || activeTasks.find(task => task.reason)?.reason || (state === 'paused' && (scopedPause || this.userPaused)
                     ? scopedPause?.reason || '用户已暂停下载队列' : undefined)
                 : undefined,
             systemPause: ['completed', 'cancelled'].includes(state) ? undefined : this.systemPause,

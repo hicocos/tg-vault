@@ -3,7 +3,7 @@ import axios from 'axios';
 import OSS from 'ali-oss';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl as getS3SignedUrl } from '@aws-sdk/s3-request-presigner';
-import { createClient, WebDAVClient } from 'webdav';
+import { AuthType, createClient, WebDAVClient } from 'webdav';
 import { google, type drive_v3 } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
@@ -326,6 +326,7 @@ function webDavDeleteError(error: unknown): Error {
 export class WebDAVStorageProvider implements IStorageProvider {
     name = 'webdav';
     private client: WebDAVClient;
+    private authenticationReady = false;
 
     constructor(
         public id: string,
@@ -346,7 +347,8 @@ export class WebDAVStorageProvider implements IStorageProvider {
     ) {
         this.client = createClient(url, {
             username: username,
-            password: password
+            password: password,
+            authType: username || password ? AuthType.Auto : AuthType.None,
         });
     }
 
@@ -381,6 +383,7 @@ export class WebDAVStorageProvider implements IStorageProvider {
                 'WebDAV probe',
                 this.probeTimeoutMs,
             );
+            this.authenticationReady = true;
         } catch (error) {
             throw storageProbeError(this.name, error);
         }
@@ -388,6 +391,7 @@ export class WebDAVStorageProvider implements IStorageProvider {
 
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
         try {
+            if (!this.authenticationReady && (this.username || this.password)) await this.probe();
             const remotePath = folder ? `${folder}/${fileName}` : fileName;
             if (folder) {
                 await this.withRequestTimeout(
@@ -483,10 +487,16 @@ export class OneDriveStorageProvider implements IStorageProvider {
      * 生成 OAuth 授权 URL
      */
     static generateAuthUrl(clientId: string, tenantId: string = 'common', redirectUri: string, state?: string): string {
-        const scope = encodeURIComponent('Files.ReadWrite.All offline_access');
-        const encodedRedirect = encodeURIComponent(redirectUri);
-        const stateParam = state ? `&state=${encodeURIComponent(state)}` : '';
-        return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?client_id=${clientId}&scope=${scope}&response_type=code&redirect_uri=${encodedRedirect}&response_mode=query${stateParam}`;
+        const params = new URLSearchParams({
+            client_id: clientId,
+            scope: 'Files.ReadWrite.All offline_access',
+            response_type: 'code',
+            redirect_uri: redirectUri,
+            response_mode: 'query',
+            prompt: 'select_account',
+        });
+        if (state) params.set('state', state);
+        return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/authorize?${params}`;
     }
 
     /**
@@ -1232,36 +1242,6 @@ export class StorageManager {
     // 初始化：从数据库加载配置
     async init() {
         try {
-            // 0. 确保表存在
-            await query(`
-                CREATE TABLE IF NOT EXISTS system_settings (
-                    key VARCHAR(255) PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                
-                CREATE TABLE IF NOT EXISTS storage_accounts (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    type VARCHAR(50) NOT NULL,
-                    name VARCHAR(255) NOT NULL,
-                    config JSONB NOT NULL,
-                    is_active BOOLEAN DEFAULT false,
-                    created_at TIMESTAMPTZ DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ DEFAULT NOW()
-                );
-                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_status VARCHAR(20);
-                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probe_error TEXT;
-                ALTER TABLE storage_accounts ADD COLUMN IF NOT EXISTS last_probed_at TIMESTAMPTZ;
-
-                -- 确保 files 表有 storage_account_id 字段
-                DO $$ 
-                BEGIN 
-                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='files' AND column_name='storage_account_id') THEN
-                        ALTER TABLE files ADD COLUMN storage_account_id UUID;
-                    END IF;
-                END $$;
-            `);
-
             // 1. 迁移旧配置（如果存在且尚未迁移）
             await this.migrateLegacyConfig();
 
@@ -1555,31 +1535,16 @@ export class StorageManager {
         this.providers.delete(key);
     }
 
-    // 添加新的 OneDrive 账户 (如果 Client ID 已存在则更新现有记录)
+    // 每次授权创建独立账户；Client ID 标识应用，不标识 Microsoft 用户。
     async addOneDriveAccount(name: string, clientId: string, clientSecret: string, refreshToken: string, tenantId: string = 'common') {
         const config = JSON.stringify(encryptStorageConfig({ clientId, clientSecret, refreshToken, tenantId }));
-
-        // 检查是否已存在相同 Client ID 的账户（兼容旧明文/新加密 config，避免 JSONB 里明文可查敏感字段）
-        const existingAccounts = await query('SELECT id, config FROM storage_accounts WHERE type = $1', ['onedrive']);
-        const existing = existingAccounts.rows.find((row: any) => decryptStorageConfig(row.config || {}).clientId === clientId);
-
-        let targetId: string;
-        if (existing) {
-            targetId = existing.id;
-            console.log(`[StorageManager] Updating existing OneDrive account: ${targetId} (ClientID: ${clientId.substring(0, 8)}...)`);
-            await query(
-                'UPDATE storage_accounts SET name = $1, config = $2, updated_at = NOW() WHERE id = $3',
-                [name, config, targetId]
-            );
-        } else {
-            const res = await query(
-                `INSERT INTO storage_accounts (type, name, config, is_active) 
-                 VALUES ($1, $2, $3, $4) RETURNING id`,
-                ['onedrive', name, config, false]
-            );
-            targetId = res.rows[0].id;
-            console.log(`[StorageManager] Added new OneDrive account: ${targetId}`);
-        }
+        const res = await query(
+            `INSERT INTO storage_accounts (type, name, config, is_active)
+             VALUES ($1, $2, $3, $4) RETURNING id`,
+            ['onedrive', name, config, false]
+        );
+        const targetId = res.rows[0].id;
+        console.log(`[StorageManager] Added new OneDrive account: ${targetId}`);
 
         // 初始化/更新内存中的 Provider
         const oneDrive = new OneDriveStorageProvider(targetId, clientId, clientSecret, refreshToken, tenantId);
@@ -1733,17 +1698,13 @@ export class StorageManager {
             const pendingName = await this.getSetting('onedrive_pending_name');
             const finalName = name || pendingName || 'OneDrive Account';
 
-            await this.addOneDriveAccount(finalName, clientId, clientSecret, refreshToken, tenantId);
+            const accountId = await this.addOneDriveAccount(finalName, clientId, clientSecret, refreshToken, tenantId);
 
             // 关键修复：一旦账户成功进入 storage_accounts 表，清理所有临时/旧设置，防止启动时触发 migrateLegacyConfig
             console.log('[StorageManager] Cleaning up temporary settings after successful account add/update...');
             await query("DELETE FROM system_settings WHERE key IN ('onedrive_client_id', 'onedrive_client_secret', 'onedrive_refresh_token', 'onedrive_tenant_id', 'onedrive_pending_name')");
 
-            // 自动开启新账户
-            const res = await query('SELECT id FROM storage_accounts WHERE type = $1 ORDER BY created_at DESC LIMIT 1', ['onedrive']);
-            if (res.rows[0]) {
-                await this.switchAccount(res.rows[0].id);
-            }
+            await this.switchAccount(accountId);
         }
     }
 

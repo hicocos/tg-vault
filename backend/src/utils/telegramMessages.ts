@@ -10,6 +10,7 @@ import { formatBytes, getTypeEmoji } from './telegramUtils.js';
 export { getProviderDisplayName } from './providerMetadata.js';
 import { getProviderDisplayName } from './providerMetadata.js';
 import { DEFAULT_LOCALE, formatBytes as formatLocalizedBytes, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
+import { isTelegramEntityResolutionError } from '../services/telegramEntityResolution.js';
 
 interface TaskSystemPauseView {
     kind: 'disk_pressure' | 'storage_cooldown' | 'telegram_flood_wait';
@@ -320,14 +321,15 @@ export function buildUploadSuccess(
 
 /** 单文件上传失败 */
 export function buildUploadFail(fileName: string, error: string, locale: TelegramLocale = DEFAULT_LOCALE): string {
+    const sourceError = isTelegramEntityResolutionError(error)
+        || /CHANNEL_PRIVATE|USER_NOT_PARTICIPANT|USER_BANNED_IN_CHANNEL|CHAT_FORBIDDEN|CHAT_ADMIN_REQUIRED|No eligible Telegram account/i.test(error);
     return [
         t(locale, 'upload.failed'),
         ``,
         `📄 ${fileName}`,
         t(locale, 'upload.reason', { error }),
         ``,
-        t(locale, 'upload.failureRetryNote'),
-        t(locale, 'upload.failureAdvice'),
+        t(locale, sourceError ? 'upload.failureSourceAdvice' : 'upload.failureAdvice'),
     ].join('\n');
 }
 

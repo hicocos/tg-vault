@@ -22,8 +22,9 @@ export interface TelegramAccountSchedulingOptions {
 /**
  * Pure permission-aware weighted least-connections selection.
  * Known source access is preferred over an unprobed account. Within the same
- * access class, the lowest active/weight score wins. Equal-load accounts rotate
- * by last selection, with priority and account id resolving initial ties.
+ * access class, idle accounts win before assigning a second connection; then
+ * lowest active/weight score wins. Equal loads rotate by last selection,
+ * with priority and account id resolving initial ties.
  */
 export function selectWeightedLeastConnectedTelegramAccount<T extends TelegramAccountSchedulingCandidate>(
     candidates: readonly T[],
@@ -44,6 +45,8 @@ export function selectWeightedLeastConnectedTelegramAccount<T extends TelegramAc
     runnable.sort((left, right) => {
         const accessDifference = Number(right.sourceAccessState === 'allowed') - Number(left.sourceAccessState === 'allowed');
         if (accessDifference) return accessDifference;
+        const idleDifference = Number(left.activeConnections > 0) - Number(right.activeConnections > 0);
+        if (idleDifference) return idleDifference;
         const leftLoad = (left.activeConnections + 1) / Math.max(Number.EPSILON, left.weight);
         const rightLoad = (right.activeConnections + 1) / Math.max(Number.EPSILON, right.weight);
         if (leftLoad !== rightLoad) return leftLoad - rightLoad;

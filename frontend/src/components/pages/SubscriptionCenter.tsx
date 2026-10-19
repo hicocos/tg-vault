@@ -2,7 +2,7 @@ import './subscriptions-audit.css';
 import { formatDateTime } from '../../i18n/format';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertCircle, Ban, CheckCircle2, Filter, ListFilter, Plus, RefreshCw, ShieldCheck, Trash2 } from "../ui/icons";
+import { AlertCircle, Ban, CheckCircle2, ChevronDown, Filter, Gauge, ListFilter, Plus, RefreshCw, ShieldCheck, Trash2 } from "../ui/icons";
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import fileApi from '../../services/api';
@@ -17,6 +17,8 @@ import type {
 import { cn } from '../../lib/utils';
 import { errorMessage } from '../../services/unknownError';
 import { isUnauthorizedError } from '../../services/apiActionError';
+import { SubscriptionEditor } from './SubscriptionEditor';
+import { SubscriptionFileTypeSettings } from './SubscriptionFileTypeSettings';
 
 interface SubscriptionCenterProps { onUnauthorized?: () => void; }
 type Tab = 'subscriptions' | 'records';
@@ -56,25 +58,10 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
     const language = i18n.resolvedLanguage || i18n.language;
     const audit = language.startsWith('zh') ? {
         directory: '选择频道', directoryHelp: '点击频道卡片，切换右侧设置和审核记录。', current: '当前频道', selected: '已选择', channelSettings: '过滤设置', scope: '设置和审核记录仅针对当前频道。切换频道将清空未提交的规则。', loadFailed: '加载失败，请点击刷新重试。', zero: '所有统计均为零', stats: '查看统计', attention: '待审核记录',
-        bot: '打开 Telegram Bot', settings: '查看 Bot 连接设置', steps: '如何添加或恢复订阅',
-        step1: '打开已配置的 Telegram Bot 私聊，发送 /tg_sub。',
-        step2: '新增：按向导发送频道用户名或链接，选择目标目录并确认。',
-        step3: '恢复：在订阅管理中选择已有订阅，按向导恢复同步；已保存文件不会被删除。',
-        unavailable: '未获取到可验证的 Bot 用户名，请先检查连接设置。',
     } : language.startsWith('ru') ? {
         directory: 'Выберите канал', directoryHelp: 'Выберите канал, чтобы открыть настройки и историю фильтрации.', current: 'Текущий канал', selected: 'Выбран', channelSettings: 'Настройки фильтра', scope: 'Настройки и история фильтрации относятся только к выбранному каналу. При переключении несохранённое правило будет сброшено.', loadFailed: 'Не удалось загрузить. Нажмите «Обновить», чтобы повторить.', zero: 'Все показатели равны нулю', stats: 'Показать статистику', attention: 'Ожидают проверки',
-        bot: 'Открыть Telegram-бота', settings: 'Настройки подключения бота', steps: 'Как добавить или возобновить подписку',
-        step1: 'Откройте личный чат с настроенным Telegram-ботом и отправьте /tg_sub.',
-        step2: 'Чтобы добавить подписку, отправьте имя пользователя или ссылку на канал, выберите место сохранения и подтвердите выбор.',
-        step3: 'Чтобы возобновить синхронизацию, выберите существующую подписку в списке и следуйте подсказкам. Сохранённые файлы не удаляются.',
-        unavailable: 'Не удалось подтвердить имя пользователя бота. Проверьте настройки подключения.',
     } : {
         directory: 'Choose a channel', directoryHelp: 'Select a channel to open its settings and filter history.', current: 'Current channel', selected: 'Selected', channelSettings: 'Filter settings', scope: 'Settings and filter history apply only to this channel. Switching channels clears the unsaved rule.', loadFailed: 'Could not load. Use Refresh to try again.', zero: 'All statistics are zero', stats: 'Show statistics', attention: 'Awaiting review',
-        bot: 'Open Telegram Bot', settings: 'Bot connection settings', steps: 'How to add or resume a subscription',
-        step1: 'Open a private chat with your configured Telegram Bot and send /tg_sub.',
-        step2: 'To add: send the channel username or link, choose a destination folder and confirm in the wizard.',
-        step3: 'To resume: select an existing subscription in subscription management and follow the prompts. Saved files are retained.',
-        unavailable: 'Could not verify the Bot username. Check the connection settings first.',
     };
     const controls = language.startsWith('zh') ? {
         pause: '暂停订阅', resume: '恢复订阅', remove: '删除订阅', cancel: '取消', failed: '订阅操作失败，请重试。',
@@ -93,8 +80,6 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
         deleteHelp: 'Permanently deletes this subscription, its filter rules, and filter history. This cannot be undone. Saved files are retained. Scans already started and existing download jobs are not cancelled; manage jobs separately in the task center.',
     };
     const locale = i18n.resolvedLanguage || i18n.language;
-    const [botUsername, setBotUsername] = useState<string | null>(null);
-    useEffect(() => { let live = true; void fileApi.getTelegramBotConfig().then(config => { if (live) setBotUsername(typeof config.bot?.username === 'string' && /^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(config.bot.username) ? config.bot.username : null); }).catch(() => {}); return () => { live = false; }; }, []);
     const [tab, setTab] = useState<Tab>('subscriptions');
     const [subscriptions, setSubscriptions] = useState<TelegramSubscription[]>([]);
     const [subscriptionTotal, setSubscriptionTotal] = useState(0);
@@ -113,6 +98,7 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
     const [saving, setSaving] = useState(false);
     const mutationLock = useRef(false);
     const [deleteTarget, setDeleteTarget] = useState<TelegramSubscription | null>(null);
+    const [editor, setEditor] = useState<{ target: TelegramSubscription | null } | null>(null);
     const [error, setError] = useState<string | null>(null);
     const selected = subscriptions.find(item => item.id === selectedId) || null;
 
@@ -165,7 +151,7 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
         } finally {
             if (generation === subscriptionGeneration.current) { setLoading(false); setDirectoryLoading(false); }
         }
-    }, [handleError, subscriptionPage, t]);
+    }, [handleError, subscriptionPage, t, setSubscriptionPage, setSelectedId]);
 
     const loadRules = useCallback(async (subscriptionId: string) => {
         const generation = ++ruleGeneration.current;
@@ -241,6 +227,16 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
         finally { mutationLock.current = false; setSaving(false); }
     };
 
+    const updateFileTypes = async (mode: TelegramSubscription['file_filter_mode'], types: TelegramSubscription['file_filter_types']) => {
+        if (!selected || mutationLock.current || saving || directoryLoading) return;
+        mutationLock.current = true; setSaving(true); setError(null);
+        try {
+            await fileApi.updateSubscriptionFileTypes(selected.id, { fileFilterMode: mode, fileFilterTypes: types });
+            await loadSubscriptions();
+        } catch (caught) { handleError(caught, t('subscriptionCenter.fileTypes.saveFailed')); }
+        finally { mutationLock.current = false; setSaving(false); }
+    };
+
     const addRule = async () => {
         if (!selected || mutationLock.current || saving || directoryLoading || !rulesReady || !rulePattern.trim()) return;
         mutationLock.current = true; setSaving(true); setError(null);
@@ -294,16 +290,19 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
 
     return (
         <section className="tv-operations op-subscriptions-page" aria-labelledby="subscriptions-page-title">
-            <header className="tv-page-header op-page-heading">
-                <div>
-                    <span className="op-eyebrow"><ShieldCheck className="h-3.5 w-3.5" />{t('subscriptionCenter.eyebrow')}</span>
-                    <h1 id="subscriptions-page-title">{t('subscriptionCenter.title')}</h1>
-                    <p>{t('subscriptionCenter.description')}</p>
+            <header className="tv-page-header op-page-heading op-subscription-heading">
+                <h1 id="subscriptions-page-title">{t('subscriptionCenter.title')}</h1>
+                <div className="op-subscription-heading-actions">
+                    <Button className="op-subscription-add" disabled={saving || directoryLoading} onClick={() => setEditor({ target: null })}>
+                        <Plus className="h-4 w-4" aria-hidden="true" />{t('subscriptionCenter.editor.add')}
+                    </Button>
+                    <Button variant="outline" size="icon" className="op-subscription-refresh" aria-label={t('subscriptionCenter.refresh')} title={t('subscriptionCenter.refresh')} disabled={saving || directoryLoading || rulesLoading || decisionsLoading} onClick={() => { void loadSubscriptions(); if (selectedId) void loadRules(selectedId); if (tab === 'records') void loadDecisions(); }}>
+                        <RefreshCw className={cn('h-4 w-4', directoryLoading && 'animate-spin')} aria-hidden="true" />
+                    </Button>
                 </div>
-                <Button variant="outline" className="op-action" disabled={saving || directoryLoading || rulesLoading || decisionsLoading} onClick={() => { void loadSubscriptions(); if (selectedId) void loadRules(selectedId); if (tab === 'records') void loadDecisions(); }}><RefreshCw className="h-4 w-4" />{t('subscriptionCenter.refresh')}</Button>
             </header>
 
-            <details className="audit-subscription-zero"><summary>{Object.values(summary).some(value => value > 0) ? audit.stats : `${audit.zero} · ${audit.stats}`}</summary><dl className="tv-panel op-stat-strip">
+            <details className="audit-subscription-zero"><summary><Gauge className="h-4 w-4" aria-hidden="true" /><span>{t('uiAudit.stats')}</span><ChevronDown className="h-3.5 w-3.5 op-stat-caret" aria-hidden="true" /></summary><dl className="tv-panel op-stat-strip">
                 {[
                     [t('subscriptionCenter.summary.enabled'), summary.enabled, t('subscriptionCenter.summary.enabledDetail')],
                     [t('subscriptionCenter.summary.protected'), summary.protected, t('subscriptionCenter.summary.protectedDetail')],
@@ -317,15 +316,11 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
                     <ListFilter className="h-6 w-6" aria-hidden="true" />
                     <h3>{t('subscriptionCenter.empty.title')}</h3>
                     <p>{t('subscriptionCenter.empty.description')}</p>
-                    <div className="audit-subscription-entry">
-                        {botUsername ? <a className="audit-subscription-link" href={`https://t.me/${botUsername}`} target="_blank" rel="noopener noreferrer">{audit.bot}</a>
-                            : <><p className="op-help">{audit.unavailable}</p><a className="audit-subscription-link" href="/settings/telegram">{audit.settings}</a></>}
-                    </div>
-                    <details className="audit-subscription-steps"><summary>{audit.steps}</summary><ol><li>{audit.step1}</li><li>{audit.step2}</li><li>{audit.step3}</li></ol></details>
+                    <Button className="op-action" disabled={saving || directoryLoading} onClick={() => setEditor({ target: null })}><Plus className="h-4 w-4" />{t('subscriptionCenter.editor.add')}</Button>
                 </div> :
                 <div className="op-subscription-layout">
                     <section className="tv-panel op-subscription-directory" aria-label={audit.directory} aria-busy={directoryLoading}>
-                        <div className="op-table-toolbar"><div><h2>{audit.directory}</h2><p className="op-help">{audit.directoryHelp}</p></div><span className="op-badge op-badge--info">{subscriptionTotal}</span></div>
+                        <div className="op-table-toolbar"><h2>{audit.directory}</h2><span className="op-badge op-badge--info">{subscriptionTotal}</span></div>
                         {directoryLoading && <p className="op-scope-status" role="status">{t('subscriptionCenter.loading')}</p>}
                         <div className="op-channel-cards">
                             {subscriptions.map(item => <button key={item.id} type="button" disabled={saving || directoryLoading} aria-pressed={selectedId === item.id} onClick={() => selectChannel(item.id)} className={cn('op-channel-card', selectedId === item.id && 'is-selected')}>
@@ -336,26 +331,25 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
                             </button>)}
                         </div>
                         <Pagination page={subscriptionPage} pages={subscriptionPages} total={subscriptionTotal} onChange={setSubscriptionPage} />
-                        <details className="audit-subscription-steps op-directory-help"><summary>{audit.steps}</summary>
-                            <div className="audit-subscription-entry">{botUsername ? <a className="audit-subscription-link" href={`https://t.me/${botUsername}`} target="_blank" rel="noopener noreferrer">{audit.bot}</a> : <><p className="op-help">{audit.unavailable}</p><a className="audit-subscription-link" href="/settings/telegram">{audit.settings}</a></>}</div>
-                            <ol><li>{audit.step1}</li><li>{audit.step2}</li><li>{audit.step3}</li></ol>
-                        </details>
                     </section>
 
                     {selected && <div className="op-channel-workspace">
-                        <header className="op-current-channel"><span className="op-eyebrow">{audit.current}</span><h2>{selected.title || selected.source}</h2><p className="op-help">{selected.source_original || selected.source}</p><p className="op-help">{audit.scope}</p></header>
+                        <header className="op-current-channel"><h2>{selected.title || selected.source}</h2><p className="op-help">{selected.source_original || selected.source}</p></header>
                         <section className="tv-panel op-panel" aria-label={selected.title || selected.source}>
                             <div className="op-actions">
+                                <Button variant="outline" disabled={saving || directoryLoading} onClick={() => setEditor({ target: selected })}>{t('subscriptionCenter.editor.edit')}</Button>
                                 <Button variant="outline" disabled={saving || directoryLoading} onClick={() => void mutateSubscription(selected, false)}>{selected.enabled ? controls.pause : controls.resume}</Button>
                                 <Button variant="destructive" disabled={saving || directoryLoading} onClick={() => setDeleteTarget(selected)}>{controls.remove}</Button>
                             </div>
                             <p className="op-help">{selected.enabled ? controls.pauseHelp : controls.resumeHelp}</p>
+                            <p className="op-help">{t('subscriptionCenter.editor.currentDestination', { destination: selected.target_mode === 'fixed' ? selected.target_provider === 'local' ? t('subscriptionCenter.editor.local') : `${selected.target_provider || '—'} / ${selected.target_account_name || selected.target_account_id || '—'}` : t('subscriptionCenter.editor.followGlobal'), folder: selected.folder_override || t('subscriptionCenter.editor.folderPlaceholder') })}</p>
                         </section>
                         <nav className="op-tabs" aria-label={audit.current}>
                             <button type="button" disabled={saving || directoryLoading} aria-pressed={tab === 'subscriptions'} onClick={() => setTab('subscriptions')} className={cn(tab === 'subscriptions' && 'is-active')}><ListFilter className="h-4 w-4" />{audit.channelSettings}</button>
                             <button type="button" disabled={saving || directoryLoading} aria-pressed={tab === 'records'} onClick={() => setTab('records')} className={cn(tab === 'records' && 'is-active')}><ShieldCheck className="h-4 w-4" />{t('subscriptionCenter.tabs.records')}</button>
                         </nav>
                         {tab === 'subscriptions' ? <div className="op-subscription-settings">
+                        <SubscriptionFileTypeSettings key={`${selected.id}:${selected.file_filter_mode}:${selected.file_filter_types.join(',')}`} subscription={selected} disabled={saving || directoryLoading} onSave={updateFileTypes} />
                         <section className="tv-panel op-panel">
                             <div className="op-section-heading">
                                 <div><h2 className="op-break">{audit.channelSettings}</h2><p>{t('subscriptionCenter.subscription.lastScan', { date: dateLabel(selected.last_scan_at, locale, t('subscriptionCenter.dateUnavailable')), messageId: selected.last_message_id })}</p></div>
@@ -406,6 +400,11 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
                     </div>}
                 </div>
             }
+            {editor && <SubscriptionEditor target={editor.target} onClose={() => setEditor(null)} onUnauthorized={onUnauthorized} onSaved={async subscription => {
+                setSelectedId(subscription.id); setEditor(null); setTab('subscriptions');
+                if (subscriptionPage === 1) await loadSubscriptions();
+                else setSubscriptionPage(1);
+            }} />}
             <Dialog open={!!deleteTarget} onClose={() => { if (!mutationLock.current) setDeleteTarget(null); }} labelledBy="subscription-delete-title" describedBy="subscription-delete-impact" alert>
                 <div className="tv-modal-header"><div className="tv-modal-heading">
                     <h3 id="subscription-delete-title" className="tv-modal-title">{controls.remove} — {deleteTarget?.title || deleteTarget?.source}</h3>

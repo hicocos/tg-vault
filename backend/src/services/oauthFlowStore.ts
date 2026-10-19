@@ -53,7 +53,6 @@ export class OAuthFlowStore {
     private readonly now: () => number;
     private readonly stateFactory: () => string;
     private readonly nonceFactory: () => string;
-    private schemaPromise: Promise<void> | null = null;
 
     constructor(options: OAuthFlowStoreOptions = {}) {
         this.db = options.db ?? pool;
@@ -63,44 +62,12 @@ export class OAuthFlowStore {
         this.nonceFactory = options.nonceFactory ?? (() => crypto.randomBytes(24).toString('base64url'));
     }
 
-    private async ensureSchema(): Promise<void> {
-        if (!this.schemaPromise) {
-            this.schemaPromise = (async () => {
-                await this.db.query(`
-                    CREATE TABLE IF NOT EXISTS oauth_pending_flows (
-                        state_hash VARCHAR(64) PRIMARY KEY,
-                        provider VARCHAR(32) NOT NULL,
-                        auth_session_hash VARCHAR(64) NOT NULL,
-                        redirect_uri TEXT NOT NULL,
-                        pending_config JSONB NOT NULL,
-                        flow_nonce VARCHAR(128) NOT NULL,
-                        expires_at TIMESTAMPTZ NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                    )
-                `);
-                await this.db.query('CREATE INDEX IF NOT EXISTS idx_oauth_pending_flows_expiry ON oauth_pending_flows(expires_at)');
-                await this.db.query(`
-                    DELETE FROM oauth_pending_flows older
-                    USING oauth_pending_flows newer
-                    WHERE older.auth_session_hash = newer.auth_session_hash
-                      AND (older.created_at, older.state_hash) < (newer.created_at, newer.state_hash)
-                `);
-                await this.db.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_pending_flows_session ON oauth_pending_flows(auth_session_hash)');
-            })().catch(error => {
-                this.schemaPromise = null;
-                throw error;
-            });
-        }
-        await this.schemaPromise;
-    }
-
     async issue(input: {
         provider: OAuthProvider;
         authSessionToken: string;
         redirectUri: string;
         config: OAuthFlowConfig;
     }): Promise<{ state: string; flowNonce: string; expiresAt: Date }> {
-        await this.ensureSchema();
         const state = this.stateFactory();
         const flowNonce = this.nonceFactory();
         const expiresAt = new Date(this.now() + this.ttlMs);
@@ -136,7 +103,6 @@ export class OAuthFlowStore {
         provider: OAuthProvider;
         authSessionToken: string;
     }): Promise<OAuthPendingFlow> {
-        await this.ensureSchema();
         const result = await this.db.query(
             `DELETE FROM oauth_pending_flows
              WHERE state_hash = $1

@@ -1,6 +1,6 @@
 export const uiAudit = {
   "uiAudit": {
-    "uploadSettings": "Upload settings",
+    "uploadSettings": "Destination",
     "uploadCapabilities": "Upload support",
     "more": "More actions",
     "stats": "Statistics",
@@ -10,7 +10,7 @@ export const uiAudit = {
     "current": "Current storage",
     "configured": "Configured storage",
     "other": "Add another storage type",
-    "storageNote": "Selecting storage does not verify its connection. The results below reflect the last check. Switching only affects future operations; existing files stay where they are.",
+    "storageNote": "Switching affects new operations only; existing files stay in place. Connection status reflects the last check.",
     "switchTo": "Use this storage",
     "switchNote": "Switch from {{from}} to {{to}}. Existing files will not be moved, and uploads already created keep their original destination.",
     "favorites": "No favorites yet",

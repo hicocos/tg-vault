@@ -27,19 +27,21 @@ export function isBotQuarantined(config: TelegramBotPublicConfig): boolean {
         || config.actionCode === 'BOT_CLEANUP_UNCONFIRMED'
         || config.actionCode === 'operator_review_required' || config.actionCode === 'BOT_REVIEW_REQUIRED');
 }
-export function botFaultPresentation(config: TelegramBotPublicConfig) {
+export function botFaultPresentation(config: TelegramBotPublicConfig, now = Date.now()) {
     const quarantined = isBotQuarantined(config);
     const offline = quarantined || (config.configured && config.enabled
         && (config.status !== 'ready' || !config.runtimeReady || config.connected === false));
-    const codedAction: Record<string, string> = { BOT_CHECK_CREDENTIALS: 'authAction', BOT_RETRY_NETWORK: 'retryAction', BOT_WAIT_CONNECTION: 'waitAction' };
-    const action = quarantined ? 'cleanupBlocked'
+    const retryBlockedReason = quarantined ? 'cleanupBlocked'
         : !config.configured ? 'configureAction'
         : !config.enabled ? 'disabledAction'
-        : config.actionCode && codedAction[config.actionCode] ? codedAction[config.actionCode]
-        : config.status === 'auth_failed' ? 'authAction'
-        : config.busy || config.nextRetryAt || config.status === 'starting' || config.status === 'reconnecting' ? 'waitAction'
+        : config.busy ? 'busy'
+        : config.nextRetryAt || config.status === 'starting' ? 'waitAction'
+        : config.retryAllowedAt && Date.parse(config.retryAllowedAt) > now ? 'retryCooldown'
+        : !offline ? 'alreadyConnected' : null;
+    const action = retryBlockedReason && retryBlockedReason !== 'alreadyConnected' ? retryBlockedReason
+        : config.status === 'auth_failed' || config.actionCode === 'BOT_CHECK_CREDENTIALS' ? 'authAction'
         : offline ? 'retryAction' : null;
-    return { quarantined, offline, action,
+    return { quarantined, offline, action, retryBlockedReason,
         startupError: config.startupError || (!quarantined ? config.lastError : null),
         cleanupError: config.cleanupError || (quarantined ? config.lastError : null),
     };

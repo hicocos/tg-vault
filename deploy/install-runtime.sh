@@ -42,8 +42,8 @@ PY
 import json, sys
 from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({'services': {
-    service: {'image': f'tg-vault-{service}:source-{sys.argv[2]}'}
-    for service in ('backend', 'frontend')}}))
+    service: {'image': f'tg-vault-{"backend" if service == "db-migrate" else service}:source-{sys.argv[2]}'}
+    for service in ('backend', 'frontend', 'db-migrate')}}))
 PY
   INSTALL_COMPOSE_ARGS+=(-f "$INSTALL_SOURCE_IMAGE_FILE")
 }
@@ -134,6 +134,14 @@ start_installation() {
   # The first install MUST start its dependency. Existing database containers are
   # never recreated for an application upgrade; stopped ones may be started.
   installer_compose up -d --no-build --no-deps --no-recreate --wait --wait-timeout "$timeout" postgres
+  INSTALL_STAGE=stop-application
+  # Quiesce old workers before DDL. On failure leave the old app stopped: its
+  # image may no longer be compatible with a partially upgraded database.
+  installer_compose stop backend frontend
+  INSTALL_STAGE=database-plan
+  installer_compose run --rm --no-deps --pull never backend node dist/scripts/database.js plan
+  INSTALL_STAGE=database-migrate
+  installer_compose run --rm --no-deps --pull never backend node dist/scripts/database.js migrate
   INSTALL_STAGE=application
   installer_compose up -d --no-build --pull never --no-deps --wait --wait-timeout "$timeout" backend frontend
   INSTALL_STAGE=verify

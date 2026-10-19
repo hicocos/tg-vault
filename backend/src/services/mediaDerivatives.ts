@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { query } from '../db/index.js';
 import { generateMediaPreview, generateThumbnail, getImageDimensions } from '../utils/thumbnail.js';
+import { mediaConcurrency } from '../utils/mediaControl.js';
 
 export type MediaDerivativeStatus = 'queued' | 'processing' | 'ready' | 'failed' | 'not_required';
 
@@ -22,36 +23,23 @@ interface MediaDerivativeRow {
     derivative_cleanup_source: boolean;
 }
 
-const concurrency = Math.max(1, Math.min(4, Number.parseInt(process.env.MEDIA_DERIVATIVE_CONCURRENCY || '2', 10) || 2));
+const concurrency = mediaConcurrency;
 const timeoutMs = Math.max(10_000, Number.parseInt(process.env.MEDIA_DERIVATIVE_TIMEOUT_MS || '120000', 10) || 120_000);
 const queue: MediaDerivativeJob[] = [];
 const queuedIds = new Set<string>();
 let active = 0;
 
-/**
- * A deadline records failure without releasing the concurrency slot early.
- * The underlying Sharp/FFmpeg operation is awaited to settlement before cleanup
- * and before another job starts, so timed-out work cannot escape the bound.
- */
-async function settleWithDeadline<T>(promise: Promise<T>, label: string): Promise<T> {
-    let timer: NodeJS.Timeout | undefined;
-    let timedOut = false;
+/** Abort the underlying work at its deadline; do not release until it settles. */
+async function settleWithDeadline<T>(work: (signal: AbortSignal) => Promise<T>, label: string): Promise<T> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error(`${label}超时`)), timeoutMs);
+    timer.unref?.();
     try {
-        const result = await Promise.race([
-            promise.then(value => ({ value })),
-            new Promise<{ timeout: true }>(resolve => {
-                timer = setTimeout(() => { timedOut = true; resolve({ timeout: true }); }, timeoutMs);
-                timer.unref?.();
-            }),
-        ]);
-        if ('timeout' in result) {
-            await promise.catch(() => undefined);
-            throw new Error(`${label}超时`);
-        }
-        return result.value;
+        const value = await work(controller.signal);
+        controller.signal.throwIfAborted();
+        return value;
     } finally {
-        if (timer) clearTimeout(timer);
-        if (timedOut) console.warn(`[MediaDerivatives] ${label} 已超过 ${timeoutMs}ms，等待底层进程退出后释放队列槽位`);
+        clearTimeout(timer);
     }
 }
 
@@ -73,13 +61,13 @@ async function processJob(job: MediaDerivativeJob): Promise<void> {
 
     try {
         const thumbnail = requiredResult(
-            await settleWithDeadline(generateThumbnail(job.sourcePath, job.storedName, job.mimeType), '缩略图生成'),
+            await settleWithDeadline(signal => generateThumbnail(job.sourcePath, job.storedName, job.mimeType, signal), '缩略图生成'),
             '缩略图',
         );
-        const dimensions = await settleWithDeadline(getImageDimensions(job.sourcePath, job.mimeType), '媒体尺寸读取');
+        const dimensions = await settleWithDeadline(signal => getImageDimensions(job.sourcePath, job.mimeType, signal), '媒体尺寸读取');
         if (!(dimensions.width > 0 && dimensions.height > 0)) throw new Error('媒体尺寸无效');
         const preview = await settleWithDeadline(
-            generateMediaPreview(job.sourcePath, job.storedName, job.mimeType, job.fileId), '预览生成',
+            signal => generateMediaPreview(job.sourcePath, job.storedName, job.mimeType, job.fileId, signal), '预览生成',
         );
 
         await query(

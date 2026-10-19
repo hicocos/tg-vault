@@ -19,6 +19,23 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Match the PostgreSQL 16.15 image pinned by docker-compose.yml.
+        image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+        env:
+          POSTGRES_DB: tgvault_ci
+          POSTGRES_USER: tgvault_ci
+          POSTGRES_PASSWORD: ci-only-disposable-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tgvault_ci -d tgvault_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://tgvault_ci:ci-only-disposable-password@127.0.0.1:5432/tgvault_ci
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -28,12 +45,23 @@ jobs:
           cache-dependency-path: |
             backend/package-lock.json
             frontend/package-lock.json
+      - name: Use matching PostgreSQL dump client
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: |
+          cat > "$RUNNER_TEMP/pg_dump" <<'SH'
+          #!/bin/sh
+          exec docker exec --env PGHOST --env PGPORT --env PGUSER --env PGPASSWORD --env PGDATABASE --env PGSSLMODE "$POSTGRES_SERVICE_ID" pg_dump "$@"
+          SH
+          chmod +x "$RUNNER_TEMP/pg_dump"
+          echo "PG_DUMP=$RUNNER_TEMP/pg_dump" >> "$GITHUB_ENV"
+          echo "POSTGRES_SERVICE_ID=$POSTGRES_SERVICE_ID" >> "$GITHUB_ENV"
       - name: Verify backend
         working-directory: backend
-        run: npm ci && npm audit --omit=dev --audit-level=high && npm run schema:check && npm run typecheck && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=high && node --import tsx --test scripts/*.test.ts && npm run schema:check && npm run typecheck && npm run build
       - name: Verify frontend
         working-directory: frontend
-        run: npm ci && npm audit --omit=dev --audit-level=high && npm run lint && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=high && node --experimental-strip-types --test scripts/*.test.ts && npm run lint && npm run build
       - name: Generate CycloneDX SBOM release assets
         run: |
           npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file backend-sbom.cdx.json backend/package-lock.json

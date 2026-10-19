@@ -10,12 +10,16 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
         SOURCE_VERSION: ${SOURCE_VERSION:-worktree}
   backend:
-    image: tg-vault-backend:source
+    image: &backend-source-image tg-vault-backend:source
     pull_policy: never
-    build:
+    build: &backend-source-build
       context: ./backend
       sbom: true
       provenance: mode=max
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-unknown}
         SOURCE_VERSION: ${SOURCE_VERSION:-worktree}
+  db-migrate:
+    image: *backend-source-image
+    pull_policy: never
+    build: *backend-source-build

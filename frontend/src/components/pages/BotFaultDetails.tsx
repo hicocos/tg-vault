@@ -17,5 +17,6 @@ export function BotFaultDetails({ config }: { config: TelegramBotPublicConfig })
         {fault.startupError && <p className="text-destructive">{t('settings.botConnection.startupError')}: {errorText(fault.startupError)}</p>}
         {fault.cleanupError && <p className="text-destructive">{t('settings.botConnection.cleanupError')}: {errorText(fault.cleanupError)}</p>}
         {fault.action && <p className="text-muted-foreground">{t(`settings.botConnection.${fault.action}`)}</p>}
+        {fault.retryBlockedReason === 'retryCooldown' && config.retryAllowedAt && <p className="text-muted-foreground">{t('settings.botConnection.retryAllowedAt')}: {formatDateTime(config.retryAllowedAt, language)}</p>}
     </div>;
 }

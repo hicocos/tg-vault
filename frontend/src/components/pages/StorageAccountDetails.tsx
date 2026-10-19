@@ -73,10 +73,10 @@ export function StorageAccountDetails({ account, onSaved }: { account: StorageAc
             <Pencil className="mr-1.5 h-3.5 w-3.5 shrink-0" />{t('storageAccount.details')} · {t('storageAccount.rename')}
         </Button>
         <Dialog open={open} onClose={() => { if (!saving) setOpen(false); }} labelledBy={titleId} closeOnEscape={!saving} closeOnBackdrop={!saving} className="w-full max-w-2xl">
-            <div className="overflow-hidden rounded-xl border border-border bg-background shadow-xl">
+            <div className="settings-surface overflow-hidden rounded-xl border border-border bg-background shadow-xl">
                 <header className="flex items-start justify-between gap-4 border-b border-border p-5">
                     <div className="min-w-0"><h3 id={titleId} className="break-words text-lg font-semibold">{t('storageAccount.details')}</h3><p className="mt-1 break-words text-sm text-muted-foreground">{getProviderMetadata(account.type).label} · {details?.name || account.name}</p></div>
-                    <Button size="sm" variant="ghost" disabled={saving} onClick={() => setOpen(false)} aria-label={t('storageAccount.close')}><X className="h-4 w-4" /></Button>
+                    <Button size="sm" variant="ghost" className="settings-icon-button p-0" disabled={saving} onClick={() => setOpen(false)} aria-label={t('storageAccount.close')}><X className="h-4 w-4" /></Button>
                 </header>
                 <div className="max-h-[70vh] space-y-5 overflow-y-auto p-5">
                     {loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" />{t('storageAccount.loading')}</p>}
@@ -91,10 +91,10 @@ export function StorageAccountDetails({ account, onSaved }: { account: StorageAc
                             {saved && <p role="status" className="text-sm text-emerald-600">{t('storageAccount.saved')}</p>}
                         </form>
                         <section><h4 className="mb-3 text-sm font-semibold">{t('storageAccount.configuration')}</h4><dl className="divide-y divide-border rounded-lg border border-border px-3">
-                            {Object.entries(details.fields).map(([key, value]) => <div key={key} className="grid gap-1 py-3 text-sm sm:grid-cols-[150px_minmax(0,1fr)]"><dt className="text-muted-foreground">{t(`storageAccount.fields.${key}`)}</dt><dd className="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{typeof value === 'boolean' ? t(value ? 'storageAccount.yes' : 'storageAccount.no') : value || '—'}</dd></div>)}
+                            {Object.entries(details.fields).map(([key, value]) => <div key={key} className="grid min-w-0 grid-cols-1 gap-1 py-3 text-sm sm:grid-cols-[150px_minmax(0,1fr)]"><dt className="min-w-0 text-muted-foreground">{t(`storageAccount.fields.${key}`)}</dt><dd className="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{typeof value === 'boolean' ? t(value ? 'storageAccount.yes' : 'storageAccount.no') : value || '—'}</dd></div>)}
                             {!Object.keys(details.fields).length && <p className="py-3 text-sm text-muted-foreground">{t('storageAccount.empty')}</p>}
                         </dl></section>
-                        <section><h4 className="mb-2 flex items-center gap-2 text-sm font-semibold"><KeyRound className="h-4 w-4" />{t('storageAccount.credentials')}</h4><p className="mb-3 text-xs leading-5 text-muted-foreground">{t('storageAccount.privacy')}</p><dl className="grid gap-2 sm:grid-cols-2">{Object.entries(details.secrets).map(([key, present]) => <div key={key} className="flex flex-wrap justify-between gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs"><dt>{t(`storageAccount.fields.${key}`)}</dt><dd className="font-medium">{t(present ? 'storageAccount.configured' : 'storageAccount.notConfigured')}</dd></div>)}</dl></section>
+                        <section><h4 className="mb-2 flex items-center gap-2 text-sm font-semibold"><KeyRound className="h-4 w-4 shrink-0" />{t('storageAccount.credentials')}</h4><p className="mb-3 text-xs leading-5 text-muted-foreground">{t('storageAccount.privacy')}</p><dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">{Object.entries(details.secrets).map(([key, present]) => <div key={key} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs"><dt className="min-w-0">{t(`storageAccount.fields.${key}`)}</dt><dd className="min-w-0 font-medium">{t(present ? 'storageAccount.configured' : 'storageAccount.notConfigured')}</dd></div>)}</dl></section>
                         <dl className="space-y-2 border-t border-border pt-4 text-xs text-muted-foreground"><div><dt>{t('storageAccount.id')}</dt><dd className="mt-1 [overflow-wrap:anywhere]">{details.id}</dd></div>{(['createdAt', 'updatedAt'] as const).map(key => <div key={key}><dt>{t(`storageAccount.${key}`)}</dt><dd>{details[key] ? formatDateTime(details[key], i18n.resolvedLanguage || i18n.language) : '—'}</dd></div>)}</dl>
                     </>}
                 </div>

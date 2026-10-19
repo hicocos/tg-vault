@@ -1,13 +1,21 @@
 import { Router, type Request, type Response } from 'express';
 import { pool, query } from '../db/index.js';
 import { requireAuth } from './auth.js';
-import { createSubscriptionDownloadJob } from '../services/telegramChannelJobs.js';
+import {
+    createSubscriptionDownloadJob,
+    subscribeTelegramChannel,
+    updateTelegramSubscriptionConfiguration,
+    type TelegramSubscriptionConfiguration,
+} from '../services/telegramChannelJobs.js';
 import { claimTelegramAdRestore, markTelegramAdRestoreFailure, markTelegramAdRestoreSuccess } from '../services/telegramAdRestore.js';
 import {
     listTelegramSubscriptionAdDecisions,
     markTelegramSubscriptionAdDecision,
 } from '../services/telegramSubscriptionAdFilter.js';
 import type { TelegramAdFilterMode, TelegramAdRuleAction, TelegramAdRuleKind } from '../services/telegramAdClassifier.js';
+import { getConfiguredTelegramAllowedUsers } from '../utils/authSettings.js';
+import { sanitizeCustomStoragePath } from '../utils/telegramPathSettings.js';
+import { parseTelegramSubscriptionFileFilter } from '../utils/telegramSubscriptionFileFilter.js';
 
 const router = Router();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -25,6 +33,122 @@ function validateUuid(value: unknown): string | null {
     return UUID_PATTERN.test(normalized) ? normalized : null;
 }
 
+async function listSubscriptionRecipients(): Promise<Array<{ userId: string }>> {
+    const allowedUsers = await getConfiguredTelegramAllowedUsers();
+    const result = await query(
+        `SELECT user_id FROM telegram_auth
+         WHERE ($1::bigint[] IS NULL OR user_id = ANY($1::bigint[]))
+         ORDER BY user_id`,
+        [allowedUsers.length ? allowedUsers : null],
+    );
+    return result.rows
+        .filter(row => Number.isSafeInteger(Number(row.user_id)) && Number(row.user_id) > 0)
+        .map(row => ({ userId: String(row.user_id) }));
+}
+
+function parseSubscriptionConfiguration(body: unknown): TelegramSubscriptionConfiguration {
+    if (!body || typeof body !== 'object') throw new Error('请提交订阅配置');
+    const input = body as Record<string, unknown>;
+    if (input.folderOverride !== null && typeof input.folderOverride !== 'string') {
+        throw new Error('folderOverride 必须是路径字符串或 null');
+    }
+    const folderOverride = typeof input.folderOverride === 'string' && input.folderOverride.trim()
+        ? sanitizeCustomStoragePath(input.folderOverride)
+        : null;
+    if (input.targetMode !== 'follow_global' && input.targetMode !== 'fixed') {
+        throw new Error('targetMode 必须是 follow_global 或 fixed');
+    }
+    if (input.adFilterMode !== 'off' && input.adFilterMode !== 'conservative' && input.adFilterMode !== 'aggressive') {
+        throw new Error('adFilterMode 必须是 off、conservative 或 aggressive');
+    }
+    let targetProvider: string | null = null;
+    let targetAccountId: string | null = null;
+    if (input.targetMode === 'fixed') {
+        if (typeof input.targetProvider !== 'string' || !input.targetProvider.trim()) {
+            throw new Error('固定订阅目标必须指定存储提供商');
+        }
+        targetProvider = input.targetProvider.trim();
+        if (input.targetAccountId !== null) {
+            if (typeof input.targetAccountId !== 'string' || !validateUuid(input.targetAccountId)) {
+                throw new Error('无效的存储账户 ID');
+            }
+            targetAccountId = validateUuid(input.targetAccountId);
+        }
+        if (targetProvider === 'local' && targetAccountId) throw new Error('本地存储目标不能绑定云存储账户');
+        if (targetProvider !== 'local' && !targetAccountId) throw new Error('固定云存储目标必须指定存储账户');
+    }
+    return { folderOverride, targetMode: input.targetMode, targetProvider, targetAccountId, adFilterMode: input.adFilterMode,
+        ...parseTelegramSubscriptionFileFilter(input) };
+}
+
+router.get('/options', requireAuth, async (_req: Request, res: Response) => {
+    try {
+        res.json({ recipients: await listSubscriptionRecipients() });
+    } catch (error) {
+        console.error('获取订阅通知用户失败:', error);
+        res.status(500).json({ error: '获取订阅通知用户失败' });
+    }
+});
+
+router.post('/', requireAuth, async (req: Request, res: Response) => {
+    const source = req.body?.source;
+    const userId = req.body?.userId;
+    if (typeof source !== 'string' || !source.trim()) return res.status(400).json({ error: '请输入 Telegram 订阅来源' });
+    if (typeof userId !== 'string' || !/^[1-9]\d*$/.test(userId) || !Number.isSafeInteger(Number(userId))) {
+        return res.status(400).json({ error: '请选择有效的 Bot 通知用户' });
+    }
+    try {
+        const configuration = parseSubscriptionConfiguration(req.body);
+        const recipients = await listSubscriptionRecipients();
+        if (!recipients.some(recipient => recipient.userId === userId)) {
+            return res.status(403).json({ error: '该通知用户未通过 Telegram Bot 身份验证或不在允许名单中' });
+        }
+        const subscription = await subscribeTelegramChannel(
+            Number(userId), userId, source.trim(), configuration.folderOverride, undefined, configuration,
+        );
+        res.status(201).json({ subscription });
+    } catch (error) {
+        console.error('创建 Telegram 订阅失败:', error);
+        res.status(400).json({ error: error instanceof Error ? error.message : '创建 Telegram 订阅失败' });
+    }
+});
+
+router.put('/:subscriptionId/config', requireAuth, async (req: Request, res: Response) => {
+    const subscriptionId = validateUuid(req.params.subscriptionId);
+    if (!subscriptionId) return res.status(400).json({ error: '无效的订阅 ID' });
+    try {
+        const configuration = parseSubscriptionConfiguration(req.body);
+        const subscription = await updateTelegramSubscriptionConfiguration(subscriptionId, configuration);
+        if (!subscription) return res.status(404).json({ error: '订阅不存在' });
+        res.json({ subscription });
+    } catch (error) {
+        console.error('更新订阅配置失败:', error);
+        res.status(400).json({ error: error instanceof Error ? error.message : '更新订阅配置失败' });
+    }
+});
+
+router.patch('/:subscriptionId/file-types', requireAuth, async (req: Request, res: Response) => {
+    const subscriptionId = validateUuid(req.params.subscriptionId);
+    if (!subscriptionId) return res.status(400).json({ error: '无效的订阅 ID' });
+    try {
+        if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)
+            || Object.keys(req.body).some(key => key !== 'fileFilterMode' && key !== 'fileFilterTypes')) {
+            throw new Error('请仅提交 fileFilterMode 和 fileFilterTypes');
+        }
+        const preferences = parseTelegramSubscriptionFileFilter(req.body);
+        const result = await query(
+            `UPDATE telegram_channel_subscriptions
+             SET file_filter_mode = $2, file_filter_types = $3::text[], updated_at = NOW()
+             WHERE id = $1::uuid RETURNING *`,
+            [subscriptionId, preferences.fileFilterMode, preferences.fileFilterTypes],
+        );
+        if (!result.rows[0]) return res.status(404).json({ error: '订阅不存在' });
+        res.json({ subscription: result.rows[0] });
+    } catch (error) {
+        res.status(400).json({ error: error instanceof Error ? error.message : '更新文件类型偏好失败' });
+    }
+});
+
 router.get('/', requireAuth, async (req: Request, res: Response) => {
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
     const offset = Math.max(0, Number(req.query.offset || 0));
@@ -34,21 +158,22 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
                 `SELECT s.id, s.user_id, s.chat_id, s.source, s.source_original, s.source_type, s.title, s.last_message_id,
                         s.folder_override, s.enabled, s.disabled_reason, s.disabled_at, s.last_scan_at, s.last_success_at,
                         s.last_error, s.last_result, s.next_scan_at, s.target_mode, s.target_provider, s.target_account_id,
-                        s.ad_filter_mode, s.created_at, s.updated_at,
+                        s.ad_filter_mode, s.file_filter_mode, s.file_filter_types, s.created_at, s.updated_at,
+                        a.name AS target_account_name,
                         jsonb_build_object(
                             'blocked_count', COUNT(d.id) FILTER (WHERE d.decision = 'blocked'),
                             'review_count', COUNT(d.id) FILTER (WHERE d.decision = 'review'),
                             'reviewed_count', COUNT(d.id) FILTER (WHERE d.manual_label IS NOT NULL)
                         ) AS ad_stats
                  FROM telegram_channel_subscriptions s
+                 LEFT JOIN storage_accounts a ON a.id = s.target_account_id
                  LEFT JOIN telegram_subscription_ad_decisions d ON d.subscription_id = s.id
-                 WHERE s.enabled = TRUE OR s.disabled_reason IS DISTINCT FROM '用户手动取消订阅'
-                 GROUP BY s.id
+                 GROUP BY s.id, a.name
                  ORDER BY s.updated_at DESC
                  LIMIT $1 OFFSET $2`,
                 [limit, offset],
             ),
-            query(`SELECT COUNT(*)::int AS total FROM telegram_channel_subscriptions s WHERE s.enabled = TRUE OR s.disabled_reason IS DISTINCT FROM '用户手动取消订阅'`),
+            query(`SELECT COUNT(*)::int AS total FROM telegram_channel_subscriptions`),
             query(
                 `SELECT COUNT(DISTINCT s.id)::int AS enabled,
                         COUNT(DISTINCT s.id) FILTER (WHERE s.ad_filter_mode <> 'off')::int AS protected,

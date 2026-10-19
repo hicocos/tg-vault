@@ -1,4 +1,19 @@
 import { Api, type TelegramClient } from 'telegram';
+import { getPeerId } from 'telegram/Utils.js';
+import { normalizeTelegramAccountSourceKey } from './telegramAccountScheduler.js';
+import { isTelegramEntityResolutionError, loadTelegramDialogEntities } from './telegramEntityResolution.js';
+
+type TelegramSourceClient = Pick<TelegramClient, 'getMessages' | 'getEntity' | 'invoke' | 'iterDialogs' | 'session'>;
+
+async function readTelegramSourceMessages(client: TelegramSourceClient, source: Api.TypeEntityLike, request: Parameters<TelegramClient['getMessages']>[1]) {
+    try {
+        return await client.getMessages(source, request);
+    } catch (error) {
+        if (!isTelegramEntityResolutionError(error)) throw error;
+        await loadTelegramDialogEntities(client);
+        return client.getMessages(source, request);
+    }
+}
 
 export class TelegramHistoryUnverifiedError extends Error {
     constructor(readonly reason = 'EMPTY_HISTORY') {
@@ -24,12 +39,12 @@ const VISIBILITY_MAX_AGE_MS = 30_000;
 const publicChannelJoins = new WeakMap<object, Map<string, { flight: Promise<void>; expiresAt: number }>>();
 /** Each account reads first; joining only repairs an unreadable, unjoined public source. */
 export async function verifyTelegramScanVisibility(
-    client: Pick<TelegramClient, 'getMessages' | 'getEntity' | 'invoke' | 'session'>,
+    client: TelegramSourceClient,
     source: Api.TypeEntityLike,
     checkpointId = 0,
 ): Promise<TelegramScanVisibility> {
     let latest: Api.Message | undefined;
-    try { [latest] = await client.getMessages(source, { limit: 1 }); }
+    try { [latest] = await readTelegramSourceMessages(client, source, { limit: 1 }); }
     catch (error) { if (!isChannelReadDenied(error)) throw error; }
     let joined = false;
     if (!latest?.id) {
@@ -98,14 +113,14 @@ export async function verifyTelegramScanVisibility(
 
 /** A missing search/file response is not evidence that the source is readable. */
 export async function getTelegramMessagesWithAccess(
-    client: Pick<TelegramClient, 'getMessages' | 'getEntity' | 'invoke' | 'session'>,
+    client: TelegramSourceClient,
     source: Api.TypeEntityLike,
     request: Parameters<TelegramClient['getMessages']>[1],
     visibility?: TelegramScanVisibility,
 ) {
     let emptyResult: Api.Message[] | undefined;
     try {
-        const messages = await client.getMessages(source, request);
+        const messages = await readTelegramSourceMessages(client, source, request);
         if (messages.some(message => message?.id)) return messages;
         emptyResult = messages;
         if (visibility && Date.now() - visibility.checkedAt < VISIBILITY_MAX_AGE_MS) return messages;
@@ -115,4 +130,60 @@ export async function getTelegramMessagesWithAccess(
     const verified = await verifyTelegramScanVisibility(client, source);
     if (visibility) Object.assign(visibility, verified);
     return emptyResult && !verified.joined ? emptyResult : client.getMessages(source, request);
+}
+
+/** Forward headers contain IDs, not account-portable access hashes. */
+export async function getTelegramForwardedMessage(
+    botClient: Pick<TelegramClient, 'getEntity'>,
+    downloadClient: TelegramSourceClient,
+    message: Api.Message,
+): Promise<Api.Message | undefined> {
+    const forwarded = message.fwdFrom;
+    const source = forwarded?.savedFromPeer && forwarded.savedFromMsgId
+        ? forwarded.savedFromPeer : forwarded?.fromId;
+    const messageId = forwarded?.savedFromPeer && forwarded.savedFromMsgId
+        ? forwarded.savedFromMsgId : forwarded?.channelPost;
+    if (!source || !messageId) return undefined;
+    try {
+        return (await getTelegramMessagesWithAccess(downloadClient, source, { ids: [messageId] }))[0];
+    } catch (error) {
+        if (!isTelegramEntityResolutionError(error) || !(source instanceof Api.PeerChannel)) throw error;
+        let entity;
+        try {
+            entity = await botClient.getEntity(source);
+        } catch (lookupError) {
+            if (isTelegramEntityResolutionError(lookupError) || isChannelReadDenied(lookupError)) throw error;
+            throw lookupError;
+        }
+        if (!(entity instanceof Api.Channel) || !entity.username || !entity.id.eq(source.channelId)) throw error;
+        // Resolve the public name with the selected account; a Bot's hash is not reusable.
+        const publicSource = `@${entity.username}`;
+        const local = await downloadClient.getEntity(publicSource);
+        if (!(local instanceof Api.Channel) || !local.id.eq(source.channelId)) throw new Error('TELEGRAM_FORWARD_SOURCE_MISMATCH');
+        return (await getTelegramMessagesWithAccess(downloadClient, publicSource, { ids: [messageId] }))[0];
+    }
+}
+
+export async function getTelegramDiscussionMessagesWithAccess(
+    client: TelegramSourceClient & Pick<TelegramClient, 'getInputEntity'>,
+    source: Api.TypeEntityLike,
+    request: Parameters<TelegramClient['getMessages']>[1],
+    discussion: { source: string; postId: number },
+) {
+    let peer: Api.TypeInputPeer;
+    try {
+        peer = await client.getInputEntity(source);
+    } catch (error) {
+        if (!isTelegramEntityResolutionError(error)) throw error;
+        const mapped = await client.invoke(new Api.messages.GetDiscussionMessage({
+            peer: discussion.source,
+            msgId: discussion.postId,
+        }));
+        const expected = normalizeTelegramAccountSourceKey(typeof source === 'string' ? source : getPeerId(source));
+        const chat = mapped.chats.find(chat => chat instanceof Api.Channel
+            && normalizeTelegramAccountSourceKey(getPeerId(chat)) === expected);
+        if (!chat) throw new Error('TELEGRAM_DISCUSSION_PEER_MISMATCH');
+        peer = await client.getInputEntity(chat);
+    }
+    return getTelegramMessagesWithAccess(client, peer, request);
 }

@@ -11,23 +11,6 @@ export interface StorageAccountCooldown {
     lastError?: string | null;
 }
 
-export async function ensureStorageCooldownSchema(): Promise<void> {
-    await query(`
-        CREATE TABLE IF NOT EXISTS storage_account_cooldowns (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            storage_account_id UUID REFERENCES storage_accounts(id) ON DELETE CASCADE,
-            provider VARCHAR(50) NOT NULL,
-            reason VARCHAR(100) NOT NULL,
-            cooldown_until TIMESTAMPTZ NOT NULL,
-            last_error TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE(storage_account_id, provider, reason)
-        )
-    `);
-    await query(`CREATE INDEX IF NOT EXISTS idx_storage_account_cooldowns_until ON storage_account_cooldowns(cooldown_until)`);
-}
-
 export async function markStorageAccountCooldown(
     storageAccountId: string | null | undefined,
     provider: string,
@@ -36,7 +19,6 @@ export async function markStorageAccountCooldown(
     error?: string | null,
 ): Promise<void> {
     if (!storageAccountId) return;
-    await ensureStorageCooldownSchema();
     await query(
         `INSERT INTO storage_account_cooldowns (storage_account_id, provider, reason, cooldown_until, last_error, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())
@@ -52,7 +34,6 @@ export async function getStorageAccountCooldown(
     reason = STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT,
 ): Promise<StorageAccountCooldown | null> {
     if (!storageAccountId) return null;
-    await ensureStorageCooldownSchema();
     const result = await query(
         `SELECT storage_account_id, provider, reason, cooldown_until, last_error
          FROM storage_account_cooldowns
@@ -79,7 +60,6 @@ export async function isStorageAccountCooling(storageAccountId: string | null | 
 }
 
 export async function clearExpiredStorageCooldowns(): Promise<number> {
-    await ensureStorageCooldownSchema();
     const result = await query(`DELETE FROM storage_account_cooldowns WHERE cooldown_until <= NOW()`);
     return result.rowCount || 0;
 }

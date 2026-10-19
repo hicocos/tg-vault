@@ -262,7 +262,7 @@ export async function markTransferTasksAfterRestart(): Promise<void> {
          SET status = 'interrupted', stage = 'retry_required', retryable = true,
              error = '服务重启中断了普通 Bot 下载。请在 Telegram 中重新发送原文件后重试。',
              finished_at = NOW(), updated_at = NOW()
-         WHERE source_type = 'telegram_bot' AND status IN ('pending','running','paused')`,
+         WHERE source_type = 'telegram_bot' AND status IN ('pending','running','paused') AND NOT payload ? 'ordinaryFiles'`,
     );
 }
 
@@ -300,7 +300,7 @@ export async function persistOrdinaryTransferTask(group: DownloadTaskGroupSnapsh
            AND (transfer_tasks.status NOT IN ('completed','failed','cancelled')
                 OR (transfer_tasks.status = 'cancelled' AND EXCLUDED.status = 'cancelled'))`,
         [group.id, group.kind, group.title, status,
-            status === 'running' ? 'downloading' : status === 'pending' ? 'waiting' : status,
+            status === 'running' ? group.stage : status === 'pending' ? 'waiting' : status,
             bytes.percent,
             group.userId ?? null, group.chatId || null, group.source || null,
             group.targetProvider || null, group.targetAccountId ?? null, group.targetFolder || null,

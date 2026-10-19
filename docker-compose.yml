@@ -31,7 +31,7 @@ services:
 
   # 后端（暴露到宿主机供 Nginx 反代）
   backend:
-    image: ghcr.io/hicocos/tg-vault-backend:latest
+    image: &backend-image ghcr.io/hicocos/tg-vault-backend:latest
     pull_policy: always
     container_name: tg-vault-backend
     ports:
@@ -39,8 +39,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
+      db-migrate:
+        condition: service_completed_successfully
+    environment: &backend-environment
       - DATABASE_URL=postgresql://tgvault:${DB_PASSWORD_URI:-${DB_PASSWORD:?DB_PASSWORD is required}}@postgres:5432/tgvault
+      - DB_MIGRATION_LOCK_TIMEOUT_MS=${DB_MIGRATION_LOCK_TIMEOUT_MS:-10000}
+      - DB_MIGRATION_STATEMENT_TIMEOUT_MS=${DB_MIGRATION_STATEMENT_TIMEOUT_MS:-300000}
       - PORT=${PORT:-51947}
       - NODE_ENV=production
       - TRUST_PROXY=${TRUST_PROXY:-loopback}
@@ -93,6 +97,19 @@ services:
       - TELEGRAM_FILE_DOWNLOAD_CONCURRENCY=${TELEGRAM_FILE_DOWNLOAD_CONCURRENCY:-2}
       - TELEGRAM_RATE_WINDOW_MS=${TELEGRAM_RATE_WINDOW_MS:-60000}
       - TELEGRAM_RATE_MAX=${TELEGRAM_RATE_MAX:-30}
+      - TELEGRAM_FILE_RATE_MAX=${TELEGRAM_FILE_RATE_MAX:-120}
+      - TELEGRAM_CONTROL_RATE_MAX=${TELEGRAM_CONTROL_RATE_MAX:-60}
+      - TG_MAX_IN_FLIGHT_FILES=${TG_MAX_IN_FLIGHT_FILES:-2}
+      - TG_MAX_PENDING_FILES=${TG_MAX_PENDING_FILES:-500}
+      - TG_STAGING_BUDGET_GB=${TG_STAGING_BUDGET_GB:-4}
+      - TG_SAVE_CONCURRENCY=${TG_SAVE_CONCURRENCY:-1}
+      - MEDIA_CONCURRENCY=${MEDIA_CONCURRENCY:-1}
+      - MEDIA_QUEUE_LIMIT=${MEDIA_QUEUE_LIMIT:-64}
+      - MEDIA_THREADS=${MEDIA_THREADS:-1}
+      - MEDIA_THUMBNAIL_TIMEOUT_MS=${MEDIA_THUMBNAIL_TIMEOUT_MS:-30000}
+      - MEDIA_PROBE_TIMEOUT_MS=${MEDIA_PROBE_TIMEOUT_MS:-15000}
+      - MEDIA_PREVIEW_TIMEOUT_MS=${MEDIA_PREVIEW_TIMEOUT_MS:-120000}
+      - MEDIA_DERIVATIVE_TIMEOUT_MS=${MEDIA_DERIVATIVE_TIMEOUT_MS:-120000}
       - TELEGRAM_HEAVY_RATE_WINDOW_MS=${TELEGRAM_HEAVY_RATE_WINDOW_MS:-600000}
       - TELEGRAM_HEAVY_RATE_MAX=${TELEGRAM_HEAVY_RATE_MAX:-5}
       - TELEGRAM_PIN_FAIL_WINDOW_MS=${TELEGRAM_PIN_FAIL_WINDOW_MS:-900000}
@@ -127,6 +144,10 @@ services:
       - tg-vault-network
     restart: unless-stopped
     stop_grace_period: 35s
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-1536m}
+    mem_reservation: ${BACKEND_MEMORY_RESERVATION:-512m}
+    cpus: ${BACKEND_CPU_LIMIT:-1.5}
+    pids_limit: ${BACKEND_PIDS_LIMIT:-256}
     healthcheck:
       test: [ "CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + process.env.PORT + '/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"" ]
       interval: 15s
@@ -139,6 +160,19 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # 独立迁移进程：只在成功完成后允许启动应用，不继承应用挂载或端口。
+  db-migrate:
+    image: *backend-image
+    pull_policy: always
+    command: ["node", "dist/scripts/database.js", "migrate"]
+    environment: *backend-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - tg-vault-network
+    restart: "no"
+
   # 数据库
   postgres:
     image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
@@ -149,7 +183,6 @@ services:
       - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - tg-vault-network
     restart: unless-stopped

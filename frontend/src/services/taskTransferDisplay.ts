@@ -4,7 +4,8 @@ import { formatBytes } from './formatBytes';
 /** Render server samples, never estimate transfer speed from browser polling. */
 export function taskTransferDisplay(task: UnifiedTask) {
     const downloading = ['running', 'pausing'].includes(task.status)
-        && (task.sourceType === 'telegram_channel' ? Number(task.detail.active) > 0 : task.stage === 'downloading');
+        && (typeof task.detail.downloading === 'number' ? task.detail.downloading > 0
+            : task.sourceType === 'telegram_channel' ? Number(task.detail.active) > 0 : task.stage === 'downloading');
     const sample = task.detail.speedBytesPerSecond;
     const speed = downloading && typeof sample === 'number' && Number.isFinite(sample) && sample >= 0
         ? `${formatBytes(sample)}/s`

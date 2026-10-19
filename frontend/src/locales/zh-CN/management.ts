@@ -7,8 +7,7 @@ export const management = {
   telegramAccounts: {
     title: 'Telegram 用户账号', count: '{{count}} 个', description: "用于读取频道、群组媒体。停用账号会保留登录信息。", add: '添加账号', botRequired: '请先配置 Telegram Bot 的 API ID 与 API Hash，再添加用户账号。', retry: '重试', loading: '正在加载账号…', fallbackName: 'Telegram 账号 {{id}}', privacy: "登录凭证加密保存在服务端，登录二维码在浏览器内生成。",
     status: { disabled: '已停用', ready: '可用', cooldown: '暂时受限', permissionDenied: '权限受限', connecting: '连接中', expired: '登录已失效', error: '异常' },
-    permissions: { notChecked: '尚未检测', allowed: '可访问 {{count}}', denied: '不可访问 {{count}}', unknown: '待检测 {{count}}' },
-    summary: { enabled: '已启用账号', ready: '可用账号', cooldown: '暂时受限', permissions: '来源权限汇总' },
+    summary: { enabled: '已启用账号', ready: '可用账号', cooldown: '暂时受限' },
     scheduling: { title: "账号调度", description: '逐文件选账号：已确认来源权限优先，按权重与负载分配，同负载轮换。合适账号都忙或请求受限时，新请求自动等待，不可用账号跳过。' },
     empty: { title: '尚未绑定 Telegram 用户账号', description: "添加账号后，可通过二维码或手机号登录。" },
     reauth: {
@@ -21,7 +20,7 @@ export const management = {
       completeDescription: '原账号及配置保持不变，实际连接状态请查看账号列表。已停用的账号仍保持停用，需手动启用后才会参与调度。',
       notice: '登录凭证已更新，实际状态请查看账号列表；已停用的账号仍保持停用。',
     },
-    account: { permissions: '来源权限', activeDownloads: '下载中：{{count}}', lastChecked: '权限检测', weight: '调度权重：{{value}}', cooldownUntil: '预计恢复新请求：{{time}}', rateLimitHint: 'Telegram 限流等待时间较长，此账号暂时无法接收新请求，系统会自动重试。', pendingUpdate: "等待更新", lastError: '最近错误', disabledHint: "已停用，不再分配新任务；登录信息保留。", disable: '停用', enable: '重新启用', delete: '删除账号' },
+    account: { dc: '所属 DC：{{value}}', dcUnknown: '未知', dcHint: '从 Telegram 登录会话读取的主数据中心，不代表文件所在 DC 或当前位置。', activeDownloads: '下载中：{{count}}', weight: '调度权重：{{value}}', cooldownUntil: '预计恢复新请求：{{time}}', rateLimitHint: 'Telegram 限流等待时间较长，此账号暂时无法接收新请求，系统会自动重试。', pendingUpdate: "等待更新", lastError: '最近错误', disabledHint: "已停用，不再分配新任务；登录信息保留。", disable: '停用', enable: '重新启用', delete: '删除账号' },
     login: { title: '添加 Telegram 用户账号', description: '支持二维码或手机号登录；手机号登录需要验证码，必要时再输入两步验证密码。登录凭证只在服务端加密保存。', closeAria: '关闭添加账号', chooseTitle: '选择登录方式', chooseDescription: "使用二维码或手机号登录。", qr: '二维码登录', qrDescription: '打开 Telegram 扫描二维码，无需输入手机号。', phone: '手机号登录', phoneDescription: '输入手机号和 Telegram 验证码，必要时再输入两步验证密码。', next: '下一步', qrInstructions: '打开 Telegram，进入“设置 → 设备 → 连接桌面设备”并扫码。', qrAria: 'Telegram 登录二维码', generatingQr: '正在生成二维码', refreshQr: '刷新二维码', usePhone: '改用手机号', back: '返回选择登录方式', phoneLabel: '手机号', phoneHint: '请包含国家或地区区号。输入内容不会在账号列表中显示。', phonePlaceholder: '例如 +86…', sendCode: '发送验证码', backQr: '返回二维码登录', codeLabel: '验证码', codeSent: '验证码已发送到 Telegram', codePlaceholder: '输入验证码', verify: '验证', passwordLabel: '两步验证密码', passwordHint: '此账号已开启 Telegram 两步验证，请输入云密码完成绑定。', passwordPlaceholder: '输入两步验证密码', signIn: '登录', completeTitle: '账号已绑定并自动启用', completeDescription: "下载任务会按账号权限、连接状态和负载分配。", done: '完成' },
     errors: { qrCreate: '二维码生成失败，请改用手机号登录', qrExpired: '二维码已过期，请刷新后重新扫码', login: '登录失败，请重试', status: '登录状态查询失败，请重试', codeSend: '验证码发送失败', codeVerify: '验证码校验失败', password: '两步验证失败', load: '账号列表加载失败', operation: '账号操作失败', operationTitle: '操作失败' },
     unlink: { message: '删除“{{name}}”后，将永久删除该账号已加密保存的登录信息，并立即停止它参与下载调度。\n\n其他 Telegram 账号和已下载文件不会受影响。', title: '删除 Telegram 账号', danger: '将永久删除此账号的登录信息，无法撤销', cancel: '保留账号', confirm: '确认删除' },

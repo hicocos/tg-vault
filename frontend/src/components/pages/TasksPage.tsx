@@ -72,16 +72,16 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
         more: t('uiAudit.taskLabels.more'), details: t('uiAudit.taskLabels.details'),
         history: t('uiAudit.taskLabels.history'), paused: t('uiAudit.taskLabels.paused'),
     };
-    const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches);
+    const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 1280px)').matches);
     useEffect(() => {
         if (typeof window.matchMedia !== 'function') return;
-        const media = window.matchMedia('(max-width: 760px)');
+        const media = window.matchMedia('(max-width: 1280px)');
         const update = () => setMobile(media.matches);
         update();
         media.addEventListener('change', update);
         return () => media.removeEventListener('change', update);
     }, []);
-    // Render native cards on phones, not a table visually disguised with CSS.
+    // Use cards while the workspace cannot comfortably fit the task table.
     const TaskCollection = mobile ? 'div' : 'table';
     const TaskBody = mobile ? 'div' : 'tbody';
     const TaskRow = mobile ? 'article' : 'tr';
@@ -247,7 +247,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
             <header className="tv-page-header op-page-heading">
                 <div>
                     <h1 id="tasks-page-title">{t('tasks.title')}</h1>
-                    <p>{t(initialAccountId ? 'tasks.subtitleScoped' : 'tasks.subtitle')}</p>
+                    {initialAccountId && <p>{t('tasks.subtitleScoped')}</p>}
                     {initialAccountId && <button type="button" className="op-text-button op-scope-link" onClick={onShowAllTasks}>{t('tasks.showAll')}</button>}
                 </div>
                 <Button variant="outline" className="op-action" aria-label={t('tasks.actions.refreshAria')} onClick={() => void loadTasks(true)} disabled={refreshing}>
@@ -288,7 +288,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                         <TaskCollection className={mobile ? "audit-task-collection" : "op-table op-task-table"}>
                             {!mobile && <thead><tr>
                                 {selectionMode && <th scope="col" className="op-select-cell">{t('tasks.selection.enter')}</th>}
-                                <th scope="col">{t('tasks.table.task')}</th><th scope="col">{t('tasks.table.status')}</th><th scope="col">{t('tasks.table.target')}</th><th scope="col">{t('tasks.table.progress')}</th><th scope="col">{t('tasks.table.updated')}</th><th scope="col">{t('tasks.table.actions')}</th>
+                                <th scope="col">{t('tasks.table.task')}</th><th scope="col">{t('tasks.table.status')}</th><th scope="col">{t('tasks.table.target')}</th><th scope="col">{t('tasks.table.progress')}</th><th scope="col">{t('tasks.table.actions')}</th>
                             </tr></thead>}
                             <TaskBody>{visibleTasks.map(task => {
                                 const stageLabel = STAGE_LABELS[task.stage] ? t(STAGE_LABELS[task.stage]) : task.stage;
@@ -315,7 +315,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                     <TaskCell className="op-task-identity">
                                         <span className="op-cell-meta">{SOURCE_LABELS[task.sourceType] ? t(SOURCE_LABELS[task.sourceType]) : task.sourceType}</span>
                                         <h3 title={task.title}>{task.title}</h3>
-                                        {!mobile && <details className="op-task-details"><summary>{audit.details}</summary><span className="op-task-id" title={task.id}><code>{task.id}</code><button type="button" className="op-icon-button" title={t('tasks.actions.copyId')} aria-label={t('tasks.actions.copyId')} onClick={() => void navigator.clipboard.writeText(task.id)}><Copy className="h-3.5 w-3.5" /></button></span></details>}
+                                        <time className="op-cell-meta" dateTime={task.updatedAt}>{formatDateTime(task.updatedAt, locale)}</time>
                                     </TaskCell>
                                     <TaskCell className="audit-task-status"><span className={cn('op-badge', noMatches ? 'op-badge--muted' : statusTone(task.status))}><StatusIcon status={noMatches ? 'cancelled' : task.status} runningLabel={t('tasks.loading.running')} />{statusLabel}</span>{showStage && <small className="op-cell-meta">{stageLabel}</small>}</TaskCell>
                                     <TaskCell className="op-task-target" title={taskTarget(task)}>{t('tasks.target.label', { target: taskTarget(task) })}</TaskCell>
@@ -324,27 +324,32 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                         {task.counts.total > 0 && <small className="op-cell-meta">{task.sourceType === 'telegram_channel'
                                             ? t('tasks.progress.channelItems', { processed: task.detail.processed ?? task.counts.completed, total: task.counts.total, completed: task.counts.completed, failed: task.counts.failed, skipped: task.detail.skipped ?? 0 })
                                             : <>{t('tasks.progress.items', { completed: task.counts.completed, total: task.counts.total })}{task.counts.failed > 0 ? t('tasks.progress.failed', { count: task.counts.failed }) : ''}</>}</small>}
-                                        {task.sourceType === 'telegram_channel' && Number(task.detail.excluded) > 0 && <small className="op-cell-meta">{t('tasks.progress.excluded', { count: Number(task.detail.excluded) })}</small>}
                                         {task.sourceType === 'telegram_channel' && task.status !== 'completed' && !stopped && <small className="op-cell-meta">{t('tasks.progress.channelQueue', { active: task.detail.active ?? 0, pending: task.detail.pending ?? 0 })}</small>}
-                                        {scan && <small className="op-cell-meta">{t('tasks.progress.channelScan', { messages: Number(scan.channelMessagesScanned ?? 0), files: Number(scan.channelMediaFound ?? 0) })}</small>}
+                                        {['telegram_channel', 'telegram_bot'].includes(task.sourceType) && ['running', 'pending', 'pausing', 'paused'].includes(task.status) && typeof task.detail.downloading === 'number' && <small className="op-cell-meta">{t('tasks.progress.transferStages', { downloading: task.detail.downloading, uploading: task.detail.uploading ?? 0, waiting: task.detail.waitingUpload ?? 0, retrying: task.detail.retrying ?? 0 })}</small>}
+                                        {scan && task.detail.scanStatus !== 'done' && !stopped && <small className="op-cell-meta">{t('tasks.progress.channelScan', { messages: Number(scan.channelMessagesScanned ?? 0), files: Number(scan.channelMediaFound ?? 0) })}</small>}
+                                        {scan && task.detail.scanStatus !== 'done' && !stopped && (commentMessagesScanned > 0 || commentMediaFound > 0) && <small className="op-cell-meta">{t('tasks.progress.commentScan', { messages: commentMessagesScanned, files: commentMediaFound })}</small>}
                                         {scan && Number(scan.waitUntil || 0) > tasksObservedAt && <small className="op-cell-meta">{t('tasks.progress.scanWait', { time: formatDateTime(new Date(Number(scan.waitUntil)).toISOString(), locale) })}</small>}
-                                        {scan && (commentMessagesScanned > 0 || commentMediaFound > 0) && <small className="op-cell-meta">{t('tasks.progress.commentScan', { messages: commentMessagesScanned, files: commentMediaFound })}</small>}
-                                        {lastMessageDate && <small className="op-cell-meta">{t('tasks.progress.scanDate', { time: formatDateTime(lastMessageDate, locale) })}</small>}
                                         {task.sourceType === 'telegram_channel' && task.detail.scanStatus !== 'done' && !stopped && <small className="op-cell-meta">{t('tasks.progress.scanningHint')}</small>}
                                         {task.status === 'awaiting_selection' && <small className="op-cell-meta">{t('tasks.progress.selectionHint')}</small>}
                                         {transfer.showBytes && <small className="op-cell-meta">{t(task.sourceType === 'telegram_channel' ? (task.detail.fileSelectionConfirmed ? 'tasks.progress.selectedData' : 'tasks.progress.savedData') : 'tasks.progress.data', { transferred: transfer.transferred, total: transfer.total })}</small>}
                                         {Number(task.detail.savedUnknownCount) > 0 && <small className="op-cell-meta">{t('tasks.progress.unknownSizes', { count: Number(task.detail.savedUnknownCount) })}</small>}
                                         {(detailSpeed || detailEta) && <small className="op-cell-meta">{detailSpeed ? t('tasks.progress.speed', { speed: detailSpeed }) : ''}{detailSpeed && detailEta ? ' · ' : ''}{detailEta ? t('tasks.progress.eta', { eta: detailEta }) : ''}</small>}
+                                        <details className="op-task-details">
+                                            <summary>{audit.details}</summary>
+                                            <span className="op-task-id"><code>{task.id}</code><button type="button" className="op-icon-button" title={t('tasks.actions.copyId')} aria-label={t('tasks.actions.copyId')} onClick={() => void navigator.clipboard.writeText(task.id)}><Copy className="h-3.5 w-3.5" /></button></span>
+                                            {scan && <small className="op-cell-meta">{t('tasks.progress.channelScan', { messages: Number(scan.channelMessagesScanned ?? 0), files: Number(scan.channelMediaFound ?? 0) })}</small>}
+                                            {scan && (commentMessagesScanned > 0 || commentMediaFound > 0) && <small className="op-cell-meta">{t('tasks.progress.commentScan', { messages: commentMessagesScanned, files: commentMediaFound })}</small>}
+                                            {lastMessageDate && <small className="op-cell-meta">{t('tasks.progress.scanDate', { time: formatDateTime(lastMessageDate, locale) })}</small>}
+                                            {task.sourceType === 'telegram_channel' && Number(task.detail.excluded) > 0 && <small className="op-cell-meta">{t('tasks.progress.excluded', { count: Number(task.detail.excluded) })}</small>}
+                                        </details>
                                         {(task.counts.failed > 0 || task.error) && <TaskFailureDetails task={task} onUnauthorized={onUnauthorized} />}
                                     </TaskCell>
-                                    <TaskCell className="op-task-date"><time dateTime={task.updatedAt}>{t('tasks.updated', { time: formatDateTime(task.updatedAt, locale) })}</time></TaskCell>
                                     <TaskCell className="op-task-actions">{!selectionMode && <div className="op-actions">
                                         {['telegram_channel', 'telegram_bot'].includes(task.sourceType) && ['running', 'pending', 'waiting', 'pausing', 'paused'].includes(task.status) && <Button size="sm" variant="outline" disabled={acting} className="op-action" onClick={() => void controlChannel(task, ['paused', 'pausing'].includes(task.status) ? 'resume' : 'pause')}>{t(['paused', 'pausing'].includes(task.status) ? 'tasks.actions.continue' : 'tasks.actions.pause')}</Button>}
                                         {task.retryable && <Button size="sm" variant="outline" disabled={acting} className="op-action" onClick={() => requestAction(task, 'retry')}>{task.sourceType === 'web_upload' ? <UploadCloud className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}{taskActionLabel(task, 'retry')}</Button>}
                                         {task.cancellable && <Button size="sm" variant="outline" disabled={acting} className="op-action op-danger-button" onClick={() => requestAction(task, 'cancel')}><Ban className="h-4 w-4" />{taskActionLabel(task, 'cancel')}</Button>}
                                         {task.dismissible && <Button size="sm" variant="ghost" disabled={acting} className="op-action op-danger-button" onClick={() => void prepareDismissal({ tasks: [task] })}><Trash2 className="h-4 w-4" />{t('tasks.actions.deleteRecord')}</Button>}
                                     </div>}</TaskCell>
-                                    {mobile && <TaskCell className="op-task-details-mobile"><details className="op-task-details"><summary>{audit.details}</summary><span className="op-task-id"><code>{task.id}</code><button type="button" className="op-icon-button" title={t('tasks.actions.copyId')} aria-label={t('tasks.actions.copyId')} onClick={() => void navigator.clipboard.writeText(task.id)}><Copy className="h-3.5 w-3.5" /></button></span></details></TaskCell>}
                                 </TaskRow>;
                             })}</TaskBody>
                         </TaskCollection>

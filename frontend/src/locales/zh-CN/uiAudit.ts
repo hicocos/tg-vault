@@ -1,6 +1,6 @@
 export const uiAudit = {
   "uiAudit": {
-    "uploadSettings": "上传设置",
+    "uploadSettings": "上传位置",
     "uploadCapabilities": "上传能力",
     "more": "更多操作",
     "stats": "统计",
@@ -10,7 +10,7 @@ export const uiAudit = {
     "current": "当前存储",
     "configured": "已配置存储",
     "other": "添加其他存储类型",
-    "storageNote": "当前选择不代表连接健康；以下为最近验证结果。切换只影响后续操作，不迁移历史文件。",
+    "storageNote": "切换仅影响后续操作，不迁移已有文件。连接状态以最近验证为准。",
     "switchTo": "设为当前存储",
     "switchNote": "当前：{{from}} → 目标：{{to}}。不会迁移历史文件；已创建的上传任务保持原目标。",
     "favorites": "还没有收藏文件",

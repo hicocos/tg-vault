@@ -107,7 +107,6 @@ export const FilesPage = (props: FilesPageProps) => {
             <header className="tv-page-header tv-files-heading">
                 <div>
                     <h1>{t(currentCategory === 'favorites' ? 'sidebar.favorites' : 'sidebar.files')}</h1>
-                    <p>{t(currentCategory === 'favorites' ? 'app.favoritesSubtitle' : 'app.filesSubtitle')}</p>
                 </div>
                 <div className="tv-files-create-actions"><Button onClick={onUpload}><Upload aria-hidden="true" />{t('app.upload')}</Button><Button variant="outline" size="sm" onClick={onCreateFolder}><FolderPlus aria-hidden="true" />{t(currentFolder ? 'files.newSubfolder' : 'files.createFolder')}</Button></div>
             </header>

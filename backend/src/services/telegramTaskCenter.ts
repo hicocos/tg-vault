@@ -1,8 +1,9 @@
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 import type { TransferTaskRecord } from './transferTasks.js';
-import { telegramChannelJobTaskState, telegramChannelJobCounts } from './unifiedTaskMapper.js';
+import { telegramChannelJobTaskState, telegramChannelJobCounts, mapTelegramChannelJob } from './unifiedTaskMapper.js';
 import { DEFAULT_LOCALE, TELEGRAM_LOCALES, formatDate, t, type TelegramLocale } from '../i18n/telegram.js';
 import { getProviderDisplayName } from '../utils/providerMetadata.js';
+import { formatBytes } from '../utils/fileMetadata.js';
 
 export type TaskCenterSourceType = 'memory' | 'channel';
 export type TaskCenterKind = 'single' | 'album' | 'channel';
@@ -14,6 +15,7 @@ export type TaskCenterProtection = {
     autoResume: boolean;
     retryAt?: string;
     recheckMs?: number;
+    showNotice?: boolean;
 };
 
 export interface TaskCenterItem {
@@ -38,6 +40,7 @@ export interface TaskCenterItem {
     reason?: string;
     protection?: TaskCenterProtection;
     scanProgressText?: string;
+    byteProgressText?: string;
     createdAt: number;
     updatedAt: number;
 }
@@ -235,6 +238,7 @@ export function buildTaskCenterDetail(
         ...(source ? [t(locale, 'taskCenter.detail.source', { value: markdownText(source) })] : []),
         t(locale, 'taskCenter.detail.progress', { value: markdownText(progressLine(item, locale)) }),
         ...(item.scanProgressText ? [item.scanProgressText] : []),
+        ...(item.byteProgressText ? [item.byteProgressText] : []),
         ...(currentFileName ? [t(locale, 'taskCenter.detail.currentFile', { value: markdownText(currentFileName) })] : []),
         ...(storageLabel ? [t(locale, 'taskCenter.detail.storage', { value: markdownText(storageLabel) })] : []),
         ...(targetFolder ? [t(locale, 'taskCenter.detail.targetFolder', { value: markdownText(targetFolder) })] : []),
@@ -244,7 +248,7 @@ export function buildTaskCenterDetail(
         t(locale, 'taskCenter.detail.id', { value: item.id }),
     ];
     const systemBlocked = Boolean(item.protection);
-    if (systemBlocked) {
+    if (systemBlocked && item.protection!.showNotice !== false) {
         const protection = item.protection!;
         const recovery = protection.autoResume
             ? protection.retryAt
@@ -362,13 +366,24 @@ function isChannelSystemPause(row: any, inCooldown: boolean): boolean {
     return inCooldown || row?.status === 'cooling';
 }
 
+function telegramFloodWaitDuration(until: number, locale: TelegramLocale): string {
+    const seconds = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    if (seconds < 3600) return t(locale, 'taskCenter.cooldown.seconds', { count: seconds });
+    const hours = Math.ceil(seconds / 360) / 10;
+    return t(locale, 'taskCenter.cooldown.hours', { count: hours });
+}
+
 function channelSystemPauseReason(row: any, locale: TelegramLocale): string | undefined {
     if (!isChannelSystemPause(row, Boolean(row?.cooldown_until && safeTime(row.cooldown_until, 0) > Date.now()))) return undefined;
     const until = row?.cooldown_until ? new Date(row.cooldown_until) : undefined;
     const providerLimit = /Google Drive|上传额度|daily_upload_limit/i.test(String(row?.error || ''));
+    if (!providerLimit && Number(row.telegram_downloader_count) !== 1) return undefined;
     const cause = t(locale, providerLimit ? 'taskCenter.cooldown.storageLimit' : 'taskCenter.cooldown.floodWait');
     if (!until || Number.isNaN(until.getTime())) return t(locale, 'taskCenter.cooldown.autoResume', { cause });
-    return t(locale, 'taskCenter.cooldown.autoResumeAt', { cause, time: formatDate(until, locale) });
+    return t(locale, 'taskCenter.cooldown.autoResumeAt', {
+        cause,
+        time: providerLimit ? formatDate(until, locale) : telegramFloodWaitDuration(until.getTime(), locale),
+    });
 }
 
 export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT_LOCALE): TaskCenterItem | null {
@@ -379,13 +394,16 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
     const cooldownUntil = row.cooldown_until ? new Date(row.cooldown_until) : undefined;
     const inCooldown = Boolean(row.cooldown_until && safeTime(row.cooldown_until, 0) > Date.now())
         || (row.status === 'cooling' && (!row.cooldown_until || safeTime(row.cooldown_until, 0) > Date.now()));
+    const storageCooldown = /Google Drive|上传额度|daily_upload_limit/i.test(String(row.error || ''));
+    const showFloodWait = Number(row.telegram_downloader_count) === 1;
     const protection: TaskCenterProtection | undefined = inCooldown
         ? {
-            kind: /Google Drive|上传额度|daily_upload_limit/i.test(String(row.error || '')) ? 'storage_cooldown' : 'telegram_flood_wait',
+            kind: storageCooldown ? 'storage_cooldown' : 'telegram_flood_wait',
             reason: channelSystemPauseReason(row, locale) || t(locale, 'taskCenter.cooldown.system'),
             autoResume: true,
+            showNotice: storageCooldown || showFloodWait,
             retryAt: cooldownUntil && !Number.isNaN(cooldownUntil.getTime())
-                ? formatDate(cooldownUntil, locale)
+                ? storageCooldown ? formatDate(cooldownUntil, locale) : telegramFloodWaitDuration(cooldownUntil.getTime(), locale)
                 : undefined,
         }
         : undefined;
@@ -429,12 +447,19 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
     const scan = checkpoint.progress || checkpoint;
     const scanProgressText = ['date_range', 'tag_download'].includes(String(row.kind)) ? [
         t(locale, 'bot.legacy.channelScan', { scanned: safeNumber(scan.channelMessagesScanned), found: safeNumber(scan.channelMediaFound) }),
-        safeNumber(scan.waitUntil) > Date.now() ? t(locale, 'channelCard.scanWait', { time: formatDate(new Date(Number(scan.waitUntil)), locale) }) : '',
+        showFloodWait && safeNumber(scan.waitUntil) > Date.now()
+            ? t(locale, 'channelCard.scanWait', { duration: telegramFloodWaitDuration(Number(scan.waitUntil), locale) }) : '',
         safeNumber(scan.commentMessagesScanned) > 0 || safeNumber(scan.commentMediaFound) > 0
             ? t(locale, 'bot.legacy.commentScan', { scanned: safeNumber(scan.commentMessagesScanned), found: safeNumber(scan.commentMediaFound) }) : '',
         scan.lastMessageDate ? t(locale, 'channelCard.scanDate', { time: formatDate(scan.lastMessageDate, locale) }) : '',
         safeNumber(options.excludedCount) > 0 ? t(locale, 'channelCard.excluded', { count: safeNumber(options.excludedCount) }) : '',
     ].filter(Boolean).join('\n') : undefined;
+    const task = mapTelegramChannelJob(row, new Map());
+    const byteProgressText = task.bytes.total > 0 || task.bytes.transferred > 0
+        ? t(locale, task.detail.fileSelectionConfirmed ? 'channelCard.selectedData' : 'channelCard.savedData', {
+            transferred: `${formatBytes(task.bytes.transferred, true)}${task.detail.savedBytesKnown === false ? '+' : ''}`,
+            total: task.bytes.total > 0 ? `${formatBytes(task.bytes.total, true)}${task.detail.bytesKnown === false ? '+' : ''}` : '—',
+        }) : undefined;
     return {
         sourceType: 'channel',
         id,
@@ -457,9 +482,13 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
             options.storageAccountName || row.storage_account_name || (options.storageAccountId
                 ? String(options.storageAccountId).slice(0, 8) : t(locale, 'commands.unnamedAccount')),
         ].join(' / '),
-        reason: protection?.reason ?? (row.status === 'paused' ? t(locale, 'taskCenter.reason.userPaused') : row.error || undefined),
+        reason: protection?.kind === 'telegram_flood_wait'
+            ? showFloodWait ? protection.reason : undefined
+            : protection?.reason ?? (row.status === 'paused' ? t(locale, 'taskCenter.reason.userPaused')
+                : /FLOOD[_ ](?:TEST[_ ]PHONE[_ ])?WAIT/i.test(String(row.error || '')) ? undefined : row.error || undefined),
         protection,
         scanProgressText,
+        byteProgressText,
         createdAt: safeTime(row.created_at),
         updatedAt: safeTime(row.queue_updated_at || row.updated_at),
     };

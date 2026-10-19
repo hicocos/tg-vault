@@ -20,7 +20,7 @@ function exactOrigin(value: string, variable: string): string {
 export function getOAuthRouteConfig(
     provider: OAuthProvider,
     env: NodeJS.ProcessEnv = process.env,
-): { redirectUri: string; frontendOrigin: string } {
+): { redirectUri: string; callbackOrigin: string; frontendOrigin: string } {
     const callbackBase = env.OAUTH_CALLBACK_BASE_URL || env.VITE_API_URL || '';
     const frontendBase = env.OAUTH_FRONTEND_ORIGIN || env.CORS_ORIGIN?.split(',').map(value => value.trim()).find(Boolean) || '';
     if (!callbackBase) throw new Error('必须配置 OAUTH_CALLBACK_BASE_URL 或 VITE_API_URL 以固定 OAuth callback URI');
@@ -28,6 +28,7 @@ export function getOAuthRouteConfig(
     const frontendOrigin = exactOrigin(frontendBase, 'OAUTH_FRONTEND_ORIGIN/CORS_ORIGIN');
     return {
         redirectUri: `${callbackOrigin}${CALLBACK_PATHS[provider]}`,
+        callbackOrigin,
         frontendOrigin,
     };
 }

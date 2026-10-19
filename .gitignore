@@ -54,10 +54,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Local-only tests, coverage, and tool caches
-**/*.test.*
-**/*.spec.*
-**/__tests__/
+# Coverage and local tool caches
 coverage/
 .nyc_output/
 .pytest_cache/

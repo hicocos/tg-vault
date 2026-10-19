@@ -2,7 +2,7 @@
 
 [首页](../README.md) · [配置参考](../docs/configuration.md) · [本地存储](../docs/local-storage.md)
 
-标准部署使用 **Docker Compose + 宿主机 HTTPS 反向代理**。Compose 包含 `postgres`、`backend`、`frontend`，不包含证书管理服务。默认 Web/API 端口仅绑定宿主机 `127.0.0.1`。
+标准部署使用 **Docker Compose + 宿主机 HTTPS 反向代理**。Compose 包含 `postgres`、独立迁移服务 `db-migrate`、`backend`、`frontend`，不包含证书管理服务。默认 Web/API 端口仅绑定宿主机 `127.0.0.1`。
 
 ## 1. 前置条件
 
@@ -54,21 +54,45 @@ INSTALL_STORAGE_PATH=/mnt/archive/tg-vault-data \
 1. 校验部署配置与原有 `/data` 挂载。
 2. 拉取 GHCR 最新前后端镜像（`latest`），核对两端源码修订一致；拉取失败、架构不支持或发布不完整时再顺序本地构建。
 3. 启动并等待 PostgreSQL 健康，已有数据库容器使用 `--no-recreate` 保留。
-4. 替换前后端并等待健康检查；后端启动自动初始化/迁移数据库。
+4. 停止旧 backend/frontend，使用本次选定的 backend 镜像依次运行数据库 `plan` 和 `migrate`；迁移成功后以 `--no-deps` 替换前后端并等待健康检查，避免再触发一次迁移。迁移失败时应用保持停止，不自动重启旧镜像。
 
 默认等待 180 秒，可用 `INSTALL_HEALTH_TIMEOUT=600 ./deploy/install.sh` 调整（30–1800 秒）。应用镜像始终使用 `latest`，不会使用旧缓存冒充拉取成功；已拉取后启动阶段禁止再次拉取。强制源码构建使用 `--build`，需要时加 `--compat`；构建版本信息从 package 与 Git 临时读取。替换前完成镜像准备，失败不自动清库或重置密钥。
 
-手动运行 Compose 需要自行准备 `.env` 和数据库密码；密码包含 URL 保留字符时还要为连接串提供 URL 编码后的 `DB_PASSWORD_URI`，数据库原密码不变。直接 Compose 使用历史 named volume 默认值，不会执行安装器的目录选择/密钥保护逻辑。已确认配置后可运行：
+手动运行 Compose 需要自行准备 `.env` 和数据库密码；密码包含 URL 保留字符时还要为连接串提供 URL 编码后的 `DB_PASSWORD_URI`，数据库原密码不变。直接 Compose 使用历史 named volume 默认值，不会执行安装器的目录选择/密钥保护逻辑。首次安装确认配置后可运行：
 
 ```bash
 docker compose config --quiet
-docker compose pull backend frontend
+docker compose pull backend frontend db-migrate
 docker compose up -d --no-build --pull never --wait
 ```
 
-基础 Compose 只负责运行；本地编译配置位于 `docker-compose.build.yml`，建议由安装器 `--build` 调用。前后端镜像发布支持 amd64/arm64；其他平台会尝试源码兜底。首次安装不能只启动 `--no-deps backend frontend`，必须先有 PostgreSQL。
+基础 Compose 的独立 `db-migrate` 服务使用与 backend 相同的镜像和数据库配置；PostgreSQL 健康后运行迁移，成功退出后才允许 backend 启动。普通 `docker compose up` 也适用于空库，不再向 PostgreSQL 挂载 `init.sql`。backend 启动和就绪检查只验证迁移状态，不执行 DDL；下载执行的重启恢复仍仅由应用启动负责。本地编译配置位于 `docker-compose.build.yml`，backend 与 db-migrate 共享同一构建镜像，建议由安装器 `--build` 调用。前后端镜像发布支持 amd64/arm64；其他平台会尝试源码兜底。首次安装不能只启动 `--no-deps backend frontend`，必须先有 PostgreSQL 并完成迁移。
 
 容器构建/后端运行使用 Node.js 24，前端运行由 Nginx 提供。后端通过镜像自带的进程外监督器启动；不要覆盖为 `node dist/index.js`，否则绕过活性保护。监督器针对 `/livez` 连续失败重启进程组，单纯 `/readyz` 降级不会触发此重启。
+
+### 工作区清理与源码部署
+
+以本地工作区为准部署时，所有构建、启动和运维命令都同时使用 `-f docker-compose.yml -f docker-compose.build.yml`；例如 `docker compose -f docker-compose.yml -f docker-compose.build.yml ps --all`。仅使用基础 Compose 会选择 GHCR 发布镜像，不代表当前工作区。更新仍按下文先核对数据库、再替换应用的流程执行，保留已有 PostgreSQL 容器和数据卷。
+
+部署目录保留源码、锁文件、构建/部署脚本、配置、Git 元数据及实际数据和密钥；依赖、`dist`、缓存与日志不纳入 Git。Docker 在镜像内安装依赖并构建，宿主机无需另行生成产物。行为回归测试属于源码，应保留在仓库；开发检查使用独立克隆，见[开发与发布](../docs/development.md)。不要用 `git clean -fdx` 清理部署目录，也不要删除仍被容器引用的文件或目录。
+
+### 数据库命令与手动升级
+
+数据库 CLI 为 `node dist/scripts/database.js status|plan|migrate|check`。`status` 与 `plan` 只读：查看账本、校验迁移文件并显示待执行迁移，不建表、不修复数据；`check` 只读验证数据库是否为当前版本。只有显式 `migrate` 执行初始化及迁移，历史迁移无需手工逐个应用。`DB_MIGRATION_LOCK_TIMEOUT_MS` 默认 `10000` 毫秒，限制迁移锁等待；`DB_MIGRATION_STATEMENT_TIMEOUT_MS` 默认 `300000` 毫秒，限制迁移语句执行时间。
+
+已有部署必须先完成第 7 节的协调备份并准备好目标镜像，再停止旧应用，不能让旧 workers 与 DDL 同时运行。以下命令逐条执行；任何一步失败立即停止，保持应用停止，不继续最后一步：
+
+```bash
+docker compose pull backend frontend db-migrate
+docker compose up -d --no-build --no-deps --no-recreate --wait postgres
+docker compose stop backend frontend
+docker compose run --rm --no-deps --pull never backend node dist/scripts/database.js plan
+docker compose run --rm --no-deps --pull never backend node dist/scripts/database.js migrate
+docker compose up -d --no-build --pull never --no-deps --wait backend frontend
+```
+
+所有命令必须使用同一套 Compose 覆盖文件和选定镜像；自定义 backend 镜像时也要将 db-migrate 指向完全相同的镜像。迁移失败先检查错误与账本，保留数据库并前向修复后重试；不要删除数据卷、篡改已发布迁移或将失败隐藏为成功。
+
 
 ## 4. 配置宿主机反向代理
 
@@ -79,7 +103,7 @@ docker compose up -d --no-build --pull never --wait
 
 标准部署保留后端 `PORT=51947`。反向代理应转发完整路径、Host、真实客户端 IP、`X-Forwarded-For` 与 `X-Forwarded-Proto`，支持 `Range`/`If-Range`，为上传与媒体响应设置合理超时，不公共缓存鉴权响应。API 上传请求体上限至少容纳默认 32 MiB 分片及 multipart 开销；例如 `client_max_body_size 64m` 可用于默认分片配置，非分片请求仍受此上限限制。
 
-TLS 证书由宿主机或面板管理；不要运行 `docker compose run certbot`。[`nginx-site.conf`](nginx-site.conf) 和 [`nginx-site-init.conf`](nginx-site-init.conf) 是旧单域名示例，不是可直接套用的双域名配置。使用前替换域名、证书路径，补齐 API 站点，核对旧 `/uploads`、`/thumbnails` 路由与公共缓存规则。加载前执行 `nginx -t`；初始 HTTP 站点仅用于证书申请，不用于登录或传输凭证。
+TLS 证书由宿主机或面板管理；Compose 没有 `certbot` 服务。[`nginx-site-init.conf`](nginx-site-init.conf) 仅提供双域名 ACME HTTP 验证，不代理应用；签发两个域名的证书后，用 [`nginx-site.conf`](nginx-site.conf) 的双域名 HTTPS 配置替换。替换域名、证书路径和非默认 API 端口，确认 ACME webroot 已存在；不要同时加载两份示例。执行 `nginx -t` 通过后再加载。示例保留上游鉴权与缓存头，不单独暴露文件目录。
 
 **管理员初始化前，仅允许自己访问 Web 和 API 两个入口**（例如临时代理 IP 白名单）。第一个完成初始化的人会设置管理员密码；没有默认管理员凭证或额外安装口令。HTTPS 生效后创建至少 8 位的强密码，再开放服务。在设置中配置 Telegram 与 TOTP，明确 Bot 用户允许列表后再分享 Bot。
 
@@ -95,7 +119,7 @@ TLS 证书由宿主机或面板管理；不要运行 `docker compose run certbot
 
 安装器从 `origin` 更新当前分支，只接受快进；本地修改、detached HEAD 或无法快进时停止，不丢弃文件或强行合并。已有地址按 Enter 保留；原数据库和文件挂载保留，不自动迁移数据。已手动更新、固定发布源码或离线部署可使用 `--skip-source-update`。也可通过安装器绝对路径调用，它会定位项目目录。
 
-替换前后端会短暂中断服务；仅重启旧容器不会升级源码或容器内 Node。数据库迁移由后端自动执行，不需要手工应用某个历史迁移。需要回退时，不能假设旧镜像兼容新 schema：先在隔离环境验证，必要时恢复升级前同一批数据库、文件与密钥。
+替换前后端会短暂中断服务；仅重启旧容器不会升级源码或容器内 Node。数据库迁移在新应用启动前由独立 CLI 明确执行，应用不会自行迁移。迁移失败后即使已提交部分迁移也不得自动恢复旧应用；优先前向修复。需要回退时，不能假设旧镜像兼容新 schema：先在隔离环境验证，必要时恢复升级前同一批数据库、文件与密钥，再运行匹配镜像。
 
 部署后检查：
 
@@ -108,6 +132,8 @@ docker inspect --format='{{index .Config.Labels "org.opencontainers.image.revisi
 ```
 
 两端镜像标签应对应预期源码提交/版本；另用浏览器检查实际 Web/API HTTPS 地址、登录、文件访问与 Telegram 状态。不要仅凭容器运行就认定公网部署完成。
+
+从旧版编译部署切换到预构建镜像时，自定义 Compose 也必须把 `.env` 的 `VITE_API_URL` 作为前端容器环境变量传入，不能继续只写在 build args。打开 `/runtime-config.js` 核对生效值；显式空值会使用 Web 同源 `/api`。OAuth 回调必须与实际登录 API 使用同一主机，否则 host-only Cookie 不会随回调发送。Web 与 API 分域时，前后端镜像应配套更新，以保持 `callbackOrigin` 授权结果契约一致。
 
 ## 6. 常用运维命令
 
@@ -200,4 +226,4 @@ docker compose logs --tail=200 postgres
 
 ### HTTPS、502 或登录失败
 
-检查宿主机代理、证书、Web/API upstream、请求体与超时限制，核对构建时的 API 地址和运行时 CORS。同站 HTTPS 子域名与安全 Cookie 应一致。Compose 内没有 `nginx` 或 `certbot` 服务；只调整实际负责入口的代理。提交日志前脱敏，不公开 `.env`、session 或数据库归档。
+检查宿主机代理、证书、Web/API upstream、请求体与超时限制，核对前端容器启动时注入的 API 地址和运行时 CORS。同站 HTTPS 子域名与安全 Cookie 应一致。Compose 内没有 `nginx` 或 `certbot` 服务；只调整实际负责入口的代理。提交日志前脱敏，不公开 `.env`、session 或数据库归档。

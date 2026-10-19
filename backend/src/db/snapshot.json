@@ -1,0 +1,91 @@
+{
+  "baselineChecksum": "9e7cc7ee2f07f9563d0bb8bdcfdd54719c0b9c203bf9023fd2c88ff1d15235c1",
+  "schemaChecksum": "54e874c5652232f808855f926b60c8c20e1cbf1521df2f74bc8cb4ad139c9a89",
+  "migrations": [
+    {
+      "version": "2026082901",
+      "name": "file_search_trigram",
+      "checksum": "858cf0b70874599efbd186d5205b96261d9c8c4fa804b9923ff4fd0c5d6c94e4"
+    },
+    {
+      "version": "2026082902",
+      "name": "media_derivatives",
+      "checksum": "f3fe86f606e39e0d49da7d06d6887202ad71293e36af658bea9ccfb979e80ad5"
+    },
+    {
+      "version": "2026082903",
+      "name": "durable_media_derivatives",
+      "checksum": "9f5252ed2abc40bd00c34a9f841d2582f820245a5099f9c19d53c7f8cbee20ed"
+    },
+    {
+      "version": "2026082904",
+      "name": "telegram_multi_accounts",
+      "checksum": "81abaa14e0140a60594b68a5f68726ae87b3e77de6201270d13152f0505bfebd"
+    },
+    {
+      "version": "2026083101",
+      "name": "telegram_subscription_ad_filter",
+      "checksum": "0609f51de49611dd5c587c2c89ef671f652aba4711e4d0ccb61c15f318c18fe6"
+    },
+    {
+      "version": "2026083102",
+      "name": "telegram_ad_restore_idempotency",
+      "checksum": "b4a28ec29c7e95b15598ef2131aae32ebed21f935b2ae5f30ff5a6391c244f9b"
+    },
+    {
+      "version": "2026090101",
+      "name": "telegram_user_locale",
+      "checksum": "37ef3b951eea6a287a49e2e8786dd64204d54d4213dddb1a47b1b14d6d1a46e8"
+    },
+    {
+      "version": "2026090103",
+      "name": "remove_legacy_ytdlp_tasks",
+      "checksum": "45b05d2c962d58f70f0b5affae7e075ef11184bb6fbf1a7763f5bf4574640bc8"
+    },
+    {
+      "version": "2026090201",
+      "name": "add_russian_locale",
+      "checksum": "f2e98370cb50269d1c159c04e3edebfc23ea160976f6f668c1db86fb30c3a94e"
+    },
+    {
+      "version": "2026101201",
+      "name": "telegram_background_job_status_text",
+      "checksum": "8af195d59090b451a40746f012d14a3a34b6b522d78fd43cc579755d59f6b6d1"
+    },
+    {
+      "version": "2026101401",
+      "name": "telegram_download_file_category",
+      "checksum": "c930c890fe1ae6b77d5e18e85c6582581f40dc1e6b9106b0e78b85b6fc7d01a9"
+    },
+    {
+      "version": "2026101402",
+      "name": "telegram_download_exclusions",
+      "checksum": "6db3b3b5c39740b5fc9f91e19075b224a5b70f3a9fe680c9fa3b07ed448d3180"
+    },
+    {
+      "version": "2026101501",
+      "name": "telegram_download_attempt_recovery",
+      "checksum": "ab11ac4da8f6f5653dd05d1f15514f4b45977a4b036cfc846c8a1ebd516831c8"
+    },
+    {
+      "version": "2026101502",
+      "name": "telegram_compacted_bytes",
+      "checksum": "596f48065310bc32dfff298fff8289b9ad459768386ba4eaf2f2c1e5f42b2063"
+    },
+    {
+      "version": "2026101503",
+      "name": "telegram_compacted_counts",
+      "checksum": "a1be1af317f8ffced59d01bfc224fc7c67b66b89b76165d18685d20bc991dd21"
+    },
+    {
+      "version": "2026101801",
+      "name": "telegram_subscription_file_filter",
+      "checksum": "4d4b751768d1eb60f4a02fef26a4d98803615a33c778fa489ae552f6bb6f7992"
+    },
+    {
+      "version": "2026101802",
+      "name": "database_schema_ownership",
+      "checksum": "490c97455b697e986ebd398787085f44330843f5a3b9f4fb815383a732b47181"
+    }
+  ]
+}

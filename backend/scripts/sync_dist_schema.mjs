@@ -25,4 +25,7 @@ if (process.argv.includes('--check')) {
     await copyFile(source, destination);
     await mkdir(migrationDestination, { recursive: true });
     await Promise.all(migrationFiles.map(name => copyFile(new URL(name, migrationSource), new URL(name, migrationDestination))));
+    await Promise.all(['baseline.sql', 'snapshot.json'].map(name => copyFile(
+        new URL(`../src/db/${name}`, import.meta.url), new URL(`../dist/${name}`, import.meta.url),
+    )));
 }

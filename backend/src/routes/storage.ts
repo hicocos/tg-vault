@@ -8,6 +8,8 @@ import fs from 'fs';
 import axios from 'axios';
 import crypto from 'crypto';
 import { rateLimit } from 'express-rate-limit';
+import { StringSession } from 'telegram/sessions/index.js';
+import { decryptCredential } from '../utils/credentialCrypto.js';
 import { getSetting, setSetting } from '../utils/settings.js';
 import { changeTelegramPin, ensureTelegramPinConfigured, getConfiguredTelegramAllowedUsers, parseTelegramAllowedUserIds, setTelegramAllowedUsersAndReconcile, TelegramPinChangeError } from '../utils/authSettings.js';
 import { activateTelegramUserAccount, disableTelegramUserAccount, enableTelegramUserAccount, getTelegramUserAccountStatus, isTelegramUserClientReady, telegramUserWebLogin, unlinkTelegramUserAccount } from '../services/telegramUserClient.js';
@@ -540,39 +542,33 @@ router.get('/config/telegram-user', requireAuth, async (_req: Request, res: Resp
 router.get('/config/telegram-user/accounts', requireAuth, async (_req: Request, res: Response) => {
     noStore(res);
     const accounts = await telegramAccountRepository.listAccounts();
-    const accessByAccount = await telegramAccountRepository.listAccessForAccounts(accounts.map(account => account.id));
     const publicAccounts = accounts.map(account => {
-        const { permissions, summary: permissionSummary } = accessByAccount.get(account.id)!;
-        const allowed = permissionSummary.allowed;
-        const denied = permissionSummary.denied;
-        const unknown = permissionSummary.unknown;
-        const lastCheckedAt = permissionSummary.lastCheckedAt?.toISOString?.() || null;
+        const client = telegramUserClientPool.getAccountClient(account.id);
+        let dcId = client?.session.dcId || null;
+        if (!dcId) {
+            try {
+                dcId = new StringSession(decryptCredential(account.session)).dcId || null;
+            } catch {
+                // Unreadable credentials must not hide other accounts or guess a DC.
+            }
+        }
         return {
             id: account.id,
             userId: account.telegramUserId,
             username: account.username,
             displayName: account.displayName,
+            dcId,
             enabled: account.enabled,
-            connected: Boolean(telegramUserClientPool.getAccountClient(account.id)?.connected),
-            health: !account.enabled ? 'disabled' : account.healthState === 'session_expired' ? 'expired' : account.cooldownUntil && new Date(account.cooldownUntil).getTime() > Date.now() ? 'cooldown' : telegramUserClientPool.getAccountClient(account.id) ? 'ready' : 'error',
-            checkedAt: lastCheckedAt,
+            connected: Boolean(client?.connected),
+            health: !account.enabled ? 'disabled' : account.healthState === 'session_expired' ? 'expired' : account.cooldownUntil && new Date(account.cooldownUntil).getTime() > Date.now() ? 'cooldown' : client ? 'ready' : 'error',
             lastError: account.lastError,
             cooldownUntil: account.cooldownUntil ? new Date(account.cooldownUntil).toISOString() : null,
-            permissionSummary: { allowed, denied, unknown, total: permissionSummary.total, lastCheckedAt },
-            permissions: permissions.map(row => ({ sourceId: row.sourceKey, sourceName: row.sourceKey, status: row.accessState, checkedAt: row.checkedAt?.toISOString?.() || null, reason: row.lastError })),
             scheduling: { weight: account.weight, activeDownloads: telegramUserClientPool.getActiveConnections(account.id), lastSelectedAt: null },
         };
     });
-    const aggregate = publicAccounts.reduce((sum, row) => ({
-        allowed: sum.allowed + row.permissionSummary.allowed,
-        denied: sum.denied + row.permissionSummary.denied,
-        unknown: sum.unknown + row.permissionSummary.unknown,
-        total: sum.total + row.permissionSummary.total,
-        lastCheckedAt: !sum.lastCheckedAt || (row.permissionSummary.lastCheckedAt && row.permissionSummary.lastCheckedAt > sum.lastCheckedAt) ? row.permissionSummary.lastCheckedAt : sum.lastCheckedAt,
-    }), { allowed: 0, denied: 0, unknown: 0, total: 0, lastCheckedAt: null as string | null });
     return res.json({
         accounts: publicAccounts,
-        summary: { total: publicAccounts.length, enabled: publicAccounts.filter(row => row.enabled).length, ready: publicAccounts.filter(row => row.health === 'ready').length, coolingDown: publicAccounts.filter(row => row.health === 'cooldown').length, permissions: aggregate },
+        summary: { total: publicAccounts.length, enabled: publicAccounts.filter(row => row.enabled).length, ready: publicAccounts.filter(row => row.health === 'ready').length, coolingDown: publicAccounts.filter(row => row.health === 'cooldown').length },
         scheduling: { strategy: 'weighted_least_connections', description: '权限感知的加权最少连接；同等负载自动轮换账号' },
         accessSweep: getTelegramAccountAccessSweepSummary(),
     });
@@ -751,9 +747,12 @@ router.post('/maintenance/download-items/cleanup', requireAuth, async (req: Requ
 // 获取 OneDrive 授权 URL
 router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: Response) => {
     try {
-        const { clientId, tenantId, clientSecret, name } = req.body;
-        if (!clientId) {
-            return res.status(400).json({ error: '缺少 Client ID' });
+        const clientId = typeof req.body?.clientId === 'string' ? req.body.clientId.trim() : '';
+        const clientSecret = typeof req.body?.clientSecret === 'string' ? req.body.clientSecret.trim() : '';
+        const tenantId = typeof req.body?.tenantId === 'string' ? req.body.tenantId.trim() || 'common' : 'common';
+        const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+        if (!clientId || !clientSecret) {
+            return res.status(400).json({ error: 'Web 应用授权需要 Client ID 和 Client Secret（客户端密码的值 Value，不是账号密码）' });
         }
         const routeConfig = getOAuthRouteConfig('onedrive');
         const flow = await oauthFlowStore.issue({
@@ -774,7 +773,7 @@ router.post('/config/onedrive/auth-url', requireAuth, async (req: Request, res: 
             routeConfig.redirectUri,
             flow.state,
         );
-        res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), frontendOrigin: routeConfig.frontendOrigin });
+        res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), callbackOrigin: routeConfig.callbackOrigin });
     } catch (error) {
         console.error('获取授权 URL 失败:', error);
         res.status(500).json({ error: '获取授权 URL 失败' });
@@ -820,6 +819,9 @@ router.get('/onedrive/callback', async (req: Request, res: Response) => {
                     return fail('Microsoft 返回 AADSTS7000215，Client Secret 无效。请复制客户端密码的值 Value。');
                 }
                 return fail(`授权失败：${description}`);
+            }
+            if (typeof tokens?.refresh_token !== 'string' || !tokens.refresh_token.trim()) {
+                return fail('授权失败：未获得 Refresh Token，请确认已同意离线访问权限后重新授权。');
             }
 
             let accountName = 'OneDrive Account';
@@ -883,7 +885,7 @@ router.post('/config/google-drive/auth-url', requireAuth, async (req: Request, r
             routeConfig.redirectUri,
             flow.state,
         );
-        res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), frontendOrigin: routeConfig.frontendOrigin });
+        res.json({ authUrl, flowNonce: flow.flowNonce, expiresAt: flow.expiresAt.toISOString(), callbackOrigin: routeConfig.callbackOrigin });
     } catch (error) {
         console.error('获取 Google Drive 授权 URL 失败:', error);
         res.status(500).json({ error: '获取授权 URL 失败' });
@@ -1050,7 +1052,7 @@ router.post('/config/openlist', requireAuth, async (req: Request, res: Response)
             return sendStorageEndpointValidationError(res, error);
         }
         const normalizedRoot = `/${String(rootPath || '/').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')}`.replace(/\/$/, '') || '/';
-        if (normalizedRoot.includes('..')) return res.status(400).json({ error: '根目录不能包含 ..' });
+        if (normalizedRoot.split('/').includes('..')) return res.status(400).json({ error: '根目录不能包含 ..' });
 
         const { storageManager } = await import('../services/storage.js');
         const accountId = await storageManager.addOpenListAccount(

@@ -107,7 +107,7 @@ export async function resolvePublicHttpUrl(rawUrl: string): Promise<ResolvedPubl
         throw new Error('链接格式无效');
     }
     if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('仅允许 http/https 链接');
-    const hostname = parsed.hostname;
+    const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
     if (!hostname || ['localhost', 'localhost.localdomain'].includes(hostname.toLowerCase())) throw new Error('不允许访问本机地址');
     const directIpVersion = net.isIP(hostname);
     const resolved = directIpVersion

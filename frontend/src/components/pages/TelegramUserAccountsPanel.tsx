@@ -2,9 +2,9 @@ import { formatDateTime } from '../../i18n/format';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { CheckCircle2, Clock3, KeyRound, LoaderCircle, Plus, Power, PowerOff, RefreshCw, ShieldAlert, ShieldCheck, Trash2, UserRound, X } from '../ui/icons';
+import { CheckCircle2, KeyRound, LoaderCircle, Plus, Power, PowerOff, RefreshCw, Server, ShieldAlert, ShieldCheck, Trash2, UserRound, X } from '../ui/icons';
 import { QRCodeSVG } from 'qrcode.react';
-import { fileApi, type TelegramPermissionSummary, type TelegramUserAccount, type TelegramUserAccountsOverview, type TelegramUserLoginStatus } from '../../services/api';
+import { fileApi, type TelegramUserAccount, type TelegramUserAccountsOverview, type TelegramUserLoginStatus } from '../../services/api';
 import { errorMessage } from '../../services/unknownError';
 import { invalidateSettingsRequests } from '../../services/settingsRequestCache';
 import { cn } from '../../lib/utils';
@@ -12,18 +12,10 @@ import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
 import { SettingsGuide, SettingsMetric } from './SettingsPresentation';
 
-const EMPTY_PERMISSIONS: TelegramPermissionSummary = {
-    allowed: 0,
-    denied: 0,
-    unknown: 0,
-    total: 0,
-    lastCheckedAt: null,
-};
-
 function blankOverview(): TelegramUserAccountsOverview {
     return {
         accounts: [],
-        summary: { total: 0, enabled: 0, ready: 0, coolingDown: 0, permissions: EMPTY_PERMISSIONS },
+        summary: { total: 0, enabled: 0, ready: 0, coolingDown: 0 },
         scheduling: {
             strategy: 'weighted_least_connections',
             description: '',
@@ -59,18 +51,6 @@ function formatTime(value: string | null | undefined, locale: string): string | 
     if (!value) return null;
     const timestamp = Date.parse(value);
     return Number.isNaN(timestamp) ? null : formatDateTime(timestamp, locale);
-}
-
-function PermissionSummary({ summary, compact = false }: { summary: TelegramPermissionSummary; compact?: boolean }) {
-    const { t } = useTranslation();
-    if (!summary.total) return <span className="text-muted-foreground">{t('management.telegramAccounts.permissions.notChecked')}</span>;
-    return (
-        <span className={cn('inline-flex flex-wrap items-center gap-x-2 gap-y-1', compact ? 'text-[12px]' : 'text-[13px]')}>
-            <span className="settings-text-success">{t('management.telegramAccounts.permissions.allowed', { count: summary.allowed })}</span>
-            <span className="settings-text-danger">{t('management.telegramAccounts.permissions.denied', { count: summary.denied })}</span>
-            <span className="text-muted-foreground">{t('management.telegramAccounts.permissions.unknown', { count: summary.unknown })}</span>
-        </span>
-    );
 }
 
 function LoginDialog({
@@ -308,7 +288,7 @@ function LoginDialog({
                         {(busy || login?.status === 'waiting_for_scan') && <div className="settings-qr settings-qr--login">
                             {login?.status === 'waiting_for_scan' && login.qrCode ? <QRCodeSVG value={login.qrCode} size={192} level="M" marginSize={4} aria-label={t('management.telegramAccounts.login.qrAria')} /> : <LoaderCircle className="h-8 w-8 animate-spin text-primary" aria-label={t('management.telegramAccounts.login.generatingQr')} />}
                         </div>}
-                        <div className="flex flex-col justify-center gap-2 sm:flex-row">
+                        <div className="flex flex-col flex-wrap justify-center gap-2 sm:flex-row">
                             <Button variant="outline" onClick={() => void startQr()} disabled={busy}><RefreshCw className="mr-2 h-4 w-4" />{t('management.telegramAccounts.login.refreshQr')}</Button>
                             <Button variant="ghost" onClick={usePhone} disabled={busy}>{t('management.telegramAccounts.login.usePhone')}</Button>
                         </div>
@@ -454,7 +434,6 @@ export function TelegramUserAccountsPanel({
                 <SettingsMetric label={t('management.telegramAccounts.summary.enabled')}>{overview.summary.enabled}<span className="settings-metric__denominator">/ {overview.summary.total}</span></SettingsMetric>
                 <SettingsMetric label={t('management.telegramAccounts.summary.ready')} tone="success">{readyCount}</SettingsMetric>
                 {limitedCount > 0 && <SettingsMetric label={t('management.telegramAccounts.summary.cooldown')} tone="warning">{limitedCount}</SettingsMetric>}
-                <SettingsMetric label={t('management.telegramAccounts.summary.permissions')}><PermissionSummary summary={overview.summary.permissions} compact /></SettingsMetric>
             </div>
 
             <div className="settings-telegram__workspace">
@@ -467,7 +446,6 @@ export function TelegramUserAccountsPanel({
                 {overview.accounts.map(account => {
                     const status = statusView(account, t, now);
                     const busy = busyAccountId === account.id;
-                    const rateLimited = /FLOOD|Too many requests/i.test(account.lastError || '');
                     return <article key={account.id} className="settings-telegram-account">
                         <div className="settings-telegram-account__layout">
                             <div className="min-w-0 flex-1">
@@ -476,16 +454,15 @@ export function TelegramUserAccountsPanel({
                                     <span className={cn('tv-badge settings-status', status.className)}>{status.label}</span>
                                 </div>
                                 <div className="settings-telegram-account__facts">
-                                    <p><ShieldCheck className="mr-1 inline h-3.5 w-3.5" />{t('management.telegramAccounts.account.permissions')}: <PermissionSummary summary={account.permissionSummary} compact /></p>
+                                    <p title={t('management.telegramAccounts.account.dcHint')}><Server className="mr-1 inline h-3.5 w-3.5" />{t('management.telegramAccounts.account.dc', { value: account.dcId ? `DC ${account.dcId}` : t('management.telegramAccounts.account.dcUnknown') })}</p>
                                     <p><Power className="mr-1 inline h-3.5 w-3.5" />{t('management.telegramAccounts.account.activeDownloads', { count: account.scheduling.activeDownloads })}</p>
-                                    <p><Clock3 className="mr-1 inline h-3.5 w-3.5" />{t('management.telegramAccounts.account.lastChecked')}: {formatTime(account.checkedAt, locale) || t('management.telegramAccounts.permissions.notChecked')}</p>
                                     <p>{t('management.telegramAccounts.account.weight', { value: account.scheduling.weight })}</p>
                                 </div>
                                 {isLongRateLimit(account, now) && <div className="mt-2 text-[12px] leading-5 text-muted-foreground">
                                     <p>{t('management.telegramAccounts.account.rateLimitHint')}</p>
                                     {account.cooldownUntil && <p>{t('management.telegramAccounts.account.cooldownUntil', { time: formatTime(account.cooldownUntil, locale) || t('management.telegramAccounts.account.pendingUpdate') })}</p>}
                                 </div>}
-                                {account.lastError && account.health !== 'disabled' && (!rateLimited || account.health === 'error' || account.health === 'expired') && <p className="mt-2 break-words text-[12px] settings-text-danger">{t('management.telegramAccounts.account.lastError')}: {account.lastError}</p>}
+                                {account.enabled && account.lastError && (account.health === 'error' || account.health === 'expired') && <p className="mt-2 break-words text-[12px] settings-text-danger">{account.lastError}</p>}
                                 {account.health === 'expired' && <p className="mt-2 text-[12px] settings-text-danger">{t('management.telegramAccounts.reauth.expiredHint')}</p>}
                                 {!account.enabled && <p className="mt-2 text-[12px] text-muted-foreground">{t('management.telegramAccounts.account.disabledHint')}</p>}
                             </div>

@@ -9,7 +9,7 @@ export interface OAuthPopupMessage {
 }
 
 export interface ExpectedOAuthPopupMessage {
-    frontendOrigin: string;
+    callbackOrigin: string;
     popup: Window;
     provider: OAuthPopupProvider;
     flowNonce: string;
@@ -19,7 +19,7 @@ export function isTrustedOAuthPopupMessage(
     event: MessageEvent,
     expected: ExpectedOAuthPopupMessage,
 ): event is MessageEvent<OAuthPopupMessage> {
-    if (event.origin !== expected.frontendOrigin || event.source !== expected.popup) return false;
+    if (event.origin !== expected.callbackOrigin || event.source !== expected.popup) return false;
     const data = event.data;
     if (!data || typeof data !== 'object') return false;
     return (data.type === 'oauth_success' || data.type === 'oauth_failure')

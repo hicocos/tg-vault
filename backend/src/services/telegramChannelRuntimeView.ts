@@ -21,6 +21,11 @@ export function channelRuntimeView<T extends Record<string, unknown>>(row: T, li
         runtime_pending: pending,
         runtime_status: paused ? (active > 0 ? 'pausing' : 'paused') : undefined,
         speed_bytes_per_second: live?.speedBytesPerSecond || 0,
+        runtime_stage: live?.stage,
+        runtime_downloading: live?.downloading || 0,
+        runtime_uploading: live?.uploading || 0,
+        runtime_waiting_upload: live?.waitingUpload || 0,
+        runtime_retrying: live?.retrying || 0,
         current_file_name: live?.currentFileName || null,
     };
 }
