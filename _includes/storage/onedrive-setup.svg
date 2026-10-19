@@ -1,0 +1,35 @@
+<svg id="onedrive-setup-figure" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" role="img" aria-labelledby="onedrive-setup-title onedrive-setup-desc">
+  <title id="onedrive-setup-title">OneDrive 应用注册与授权路线</title>
+  <desc id="onedrive-setup-desc">先从 TG Vault 复制回调，在微软注册 Web 应用，复制应用客户端 ID 与 Secret 的 Value，最后回到 TG Vault 授权并在微软页面登录网盘账号。此图为操作示意而非控制台截图。</desc>
+  <style>#onedrive-setup-figure text{font-family:system-ui,'Noto Sans CJK SC','Microsoft YaHei',sans-serif;fill:currentColor}#onedrive-setup-figure .title{font-size:26px;font-weight:700}#onedrive-setup-figure .label{font-size:20px;font-weight:650}#onedrive-setup-figure .body{font-size:18px}#onedrive-setup-figure .small{font-size:16px}#onedrive-setup-figure rect,#onedrive-setup-figure path{fill:none;stroke:currentColor;stroke-width:1.5}#onedrive-setup-figure .route{stroke-width:2;stroke-dasharray:5 5}</style>
+  <text x="30" y="42" class="title">OneDrive：先配置应用，再登录网盘账号</text>
+  <text x="30" y="74" class="small">操作路线示意 · 不是微软控制台截图 · 不包含真实凭据</text>
+  <rect x="30" y="104" width="420" height="182" rx="12"/>
+  <text x="50" y="138" class="label">① TG Vault · OneDrive 表单</text>
+  <text x="50" y="175" class="body">复制页面显示的「重定向 URI」</text>
+  <text x="50" y="208" class="small">https://你的后端域名</text>
+  <text x="50" y="234" class="small">/api/storage/onedrive/callback</text>
+  <text x="50" y="268" class="small">不使用 OpenList 的回调地址</text>
+  <rect x="510" y="104" width="420" height="182" rx="12"/>
+  <text x="530" y="138" class="label">② Microsoft Entra · 应用注册</text>
+  <text x="530" y="175" class="body">新注册 → 平台选择「Web」</text>
+  <text x="530" y="208" class="body">粘贴 ① 的回调，账户类型选对</text>
+  <text x="530" y="241" class="small">个人网盘需允许个人 Microsoft 账户</text>
+  <path class="route" d="M450 194H510m-9-6 9 6-9 6"/>
+  <rect x="510" y="332" width="420" height="182" rx="12"/>
+  <text x="530" y="366" class="label">③ Microsoft Entra · 复制凭据</text>
+  <text x="530" y="403" class="body">概述 → Application (client) ID</text>
+  <text x="530" y="436" class="body">证书和密码 → 新客户端密码</text>
+  <text x="530" y="469" class="body">复制「Value」，不是「Secret ID」</text>
+  <text x="530" y="497" class="small">Value 仅创建时显示，请妥善保存</text>
+  <path class="route" d="M720 286V332m-6-9 6 9 6-9"/>
+  <rect x="30" y="332" width="420" height="182" rx="12"/>
+  <text x="50" y="366" class="label">④ TG Vault · 保存并授权</text>
+  <text x="50" y="403" class="body">填写 Client ID、租户、Secret Value</text>
+  <text x="50" y="436" class="body">允许弹窗 → 在微软页面登录网盘</text>
+  <text x="50" y="469" class="body">同意权限 → 返回后试传小文件</text>
+  <text x="50" y="497" class="small">本站的「账户名称」只是显示备注</text>
+  <path class="route" d="M510 423H450m9-6-9 6 9 6"/>
+  <text x="30" y="562" class="label">Client Secret ≠ 微软登录密码</text>
+  <text x="30" y="594" class="body">TG Vault 用应用凭据兑换授权令牌；你的账号密码只在微软官方页面输入。</text>
+</svg>
