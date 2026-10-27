@@ -80,9 +80,6 @@ export interface DownloadTaskScopeStatus {
 
 export interface DownloadTaskQueueOptions {
     maxConcurrent?: number;
-    uploadConcurrency?: number;
-    maxInFlight?: number;
-    maxStagedBytes?: number;
     idFactory?: () => string;
     onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
 }
@@ -151,9 +148,6 @@ export class DownloadTaskQueue {
     private groups = new Map<string, DownloadTaskGroupRecord>();
     private readonly maxHistory = 50;
     private maxConcurrent: number;
-    private readonly uploadConcurrency: number;
-    private readonly maxInFlight: number;
-    private readonly maxStagedBytes: number;
     private readonly uploadWaiters = new Map<string, { resolve(): void; reject(error: unknown): void; cleanup(): void }>();
     private readonly idFactory: () => string;
     private readonly onGroupChanged?: (group: DownloadTaskGroupSnapshot) => void | Promise<void>;
@@ -166,9 +160,6 @@ export class DownloadTaskQueue {
 
     constructor(options: DownloadTaskQueueOptions = {}) {
         this.maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent || 1));
-        this.uploadConcurrency = Math.max(1, Math.floor(options.uploadConcurrency || 2));
-        this.maxInFlight = Math.max(1, Math.floor(options.maxInFlight ?? 2));
-        this.maxStagedBytes = Math.max(1, options.maxStagedBytes ?? 4 * 1024 ** 3);
         this.idFactory = options.idFactory || (() => `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`);
         this.onGroupChanged = options.onGroupChanged;
     }
@@ -412,9 +403,6 @@ export class DownloadTaskQueue {
         return {
             ...this.counts(),
             maxConcurrent: this.maxConcurrent,
-            maxInFlight: this.maxInFlight,
-            maxStagedBytes: this.maxStagedBytes,
-            reservedBytes: this.active.reduce((sum, task) => sum + this.reservationSize(task), 0),
             paused: this.isGloballyPaused(),
             userPaused: this.userPaused,
             diskPressurePaused: Boolean(this.systemPause),
@@ -489,7 +477,7 @@ export class DownloadTaskQueue {
     }
 
     private processUploads(): void {
-        let available = this.uploadConcurrency - this.active.filter(task => task.phase === 'uploading').length;
+        let available = 10 - this.active.filter(task => task.phase === 'uploading').length;
         for (const [id, waiter] of this.uploadWaiters) {
             if (available <= 0) break;
             const task = this.active.find(item => item.id === id);
@@ -774,12 +762,8 @@ export class DownloadTaskQueue {
         return counts;
     }
 
-    private reservationSize(task: DownloadFileTask): number {
-        return Math.max(validBytes(task.totalSize), validBytes(task.downloadedSize), 64 * 1024 ** 2);
-    }
-
     private processNext(): void {
-        while (!this.isGloballyPaused() && this.active.length < this.maxInFlight && this.active.filter(task => task.phase === 'downloading' || task.phase === 'retrying').length < this.maxConcurrent && this.queue.length > 0) {
+        while (!this.isGloballyPaused() && this.active.filter(task => task.phase === 'downloading' || task.phase === 'retrying').length < this.maxConcurrent && this.queue.length > 0) {
             const runnableIndex = this.queue.findIndex(task => {
                 const group = this.groups.get(task.groupId);
                 return group
@@ -787,10 +771,6 @@ export class DownloadTaskQueue {
                     && !['pausing', 'paused', 'cancelling', 'cancelled'].includes(group.stateOverride || '');
             });
             if (runnableIndex < 0) break;
-            const next = this.queue[runnableIndex];
-            const reserved = this.active.reduce((sum, task) => sum + this.reservationSize(task), 0);
-            // A file larger than the staging budget may run alone, never beside another file.
-            if (this.active.length > 0 && reserved + this.reservationSize(next) > this.maxStagedBytes) break;
             const [task] = this.queue.splice(runnableIndex, 1);
             if (!task) break;
             void task.execute();

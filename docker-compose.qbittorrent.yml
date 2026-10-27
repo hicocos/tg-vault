@@ -1,0 +1,13 @@
+# Optional integration for an independently deployed, same-host qBittorrent.
+# Use alongside docker-compose.yml (and docker-compose.build.yml for source builds).
+services:
+  backend:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ${QBITTORRENT_DOWNLOAD_DIR:-/qBittorrent/download}
+        target: /qBittorrent/download
+        read_only: true
+        bind:
+          create_host_path: false

@@ -70,11 +70,11 @@ docker compose up -d --no-build --pull never --wait
 
 容器构建/后端运行使用 Node.js 24，前端运行由 Nginx 提供。后端通过镜像自带的进程外监督器启动；不要覆盖为 `node dist/index.js`，否则绕过活性保护。监督器针对 `/livez` 连续失败重启进程组，单纯 `/readyz` 降级不会触发此重启。
 
-### 工作区清理与源码部署
+### 源码部署
 
-以本地工作区为准部署时，所有构建、启动和运维命令都同时使用 `-f docker-compose.yml -f docker-compose.build.yml`；例如 `docker compose -f docker-compose.yml -f docker-compose.build.yml ps --all`。仅使用基础 Compose 会选择 GHCR 发布镜像，不代表当前工作区。更新仍按下文先核对数据库、再替换应用的流程执行，保留已有 PostgreSQL 容器和数据卷。
+部署当前工作区时，所有 Compose 命令均附加 `-f docker-compose.yml -f docker-compose.build.yml`；只用基础文件会选择 GHCR 镜像。数据库仍按下文先检查、迁移，再替换应用，保留原数据库与数据卷。
 
-部署目录保留源码、锁文件、构建/部署脚本、配置、Git 元数据及实际数据和密钥；依赖、`dist`、缓存与日志不纳入 Git。Docker 在镜像内安装依赖并构建，宿主机无需另行生成产物。行为回归测试属于源码，应保留在仓库；开发检查使用独立克隆，见[开发与发布](../docs/development.md)。不要用 `git clean -fdx` 清理部署目录，也不要删除仍被容器引用的文件或目录。
+不要用 `git clean -fdx` 清理部署目录，或删除被容器引用的文件。依赖和构建在镜像中生成，源码与行为测试保留；开发及发布检查使用[独立副本](../docs/development.md)。
 
 ### 数据库命令与手动升级
 

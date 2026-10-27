@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import axios from 'axios';
 import { isRecord } from '../utils/typeGuards.js';
+import type { StorageUploadProgress } from './storage/contracts.js';
 
 const FRAGMENT_BYTES = 320 * 1024 * 10;
 const MAX_ATTEMPTS = 3;
@@ -14,6 +15,7 @@ interface UploadInput {
     mimeType: string;
     getAccessToken: () => Promise<string>;
     signal?: AbortSignal;
+    onProgress?: StorageUploadProgress;
 }
 
 interface DriveItem {
@@ -140,16 +142,23 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
         let firstError: { error: unknown } | undefined;
         for (let attempt = 0; ; attempt++) {
             input.signal?.throwIfAborted();
+            input.onProgress?.(0, size);
+            let uploading = true;
             try {
                 const response = await axios.put<unknown>(`${input.resourceUrl}:/content`, bytes, {
                     headers: { Authorization: `Bearer ${await input.getAccessToken()}`, 'Content-Type': input.mimeType || 'application/octet-stream', 'Content-Length': String(size) },
                     params: { '@microsoft.graph.conflictBehavior': 'fail' },
                     maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 60_000, signal: input.signal,
+                    onUploadProgress: input.onProgress ? event => {
+                        if (uploading) input.onProgress!(Math.min(size, Math.max(0, event.loaded)), size);
+                    } : undefined,
                 });
                 const item = parseItem(response.data);
                 if (item.name !== input.fileName || item.size !== size) throw new Error('OneDrive simple upload result does not match the local file');
+                input.onProgress?.(size, size);
                 return item.id;
             } catch (error) {
+                uploading = false;
                 input.signal?.throwIfAborted();
                 firstError ??= { error };
                 const details = errorDetails(error);
@@ -158,12 +167,17 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
                     try {
                         const item = await readTarget();
                         if (item) {
-                            if (await matchesLocalFile(item, input, size)) return item.id;
+                            if (await matchesLocalFile(item, input, size)) {
+                                input.onProgress?.(size, size);
+                                return item.id;
+                            }
                             throw firstError.error;
                         }
                     } catch { input.signal?.throwIfAborted(); throw firstError.error; }
                 }
                 if (!details.transient || attempt + 1 >= MAX_ATTEMPTS) throw firstError.error;
+            } finally {
+                uploading = false;
             }
         }
     }
@@ -196,22 +210,31 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
                 if (result.bytesRead === 0) throw new Error('OneDrive local upload file ended unexpectedly');
                 read += result.bytesRead;
             }
+            const fragmentOffset = range.offset;
+            input.onProgress?.(fragmentOffset, size);
+            let uploading = true;
             try {
                 const response = await axios.put<unknown>(uploadUrl, buffer.subarray(0, length), {
                     headers: { 'Content-Length': String(length), 'Content-Range': `bytes ${range.offset}-${range.offset + length - 1}/${size}` },
                     maxBodyLength: Infinity, maxContentLength: Infinity, timeout: 120_000, signal: input.signal,
+                    onUploadProgress: input.onProgress ? event => {
+                        if (uploading) input.onProgress!(Math.min(size, fragmentOffset + Math.min(length, Math.max(0, event.loaded))), size);
+                    } : undefined,
                 });
                 if (response.status === 200 || response.status === 201) {
                     const item = parseItem(response.data);
                     if (item.name !== input.fileName || item.size !== size) throw new Error('OneDrive upload result does not match the local file');
+                    input.onProgress?.(size, size);
                     return item.id;
                 }
                 const next = nextRange(response.data, size);
                 if (!next || next.offset <= range.offset) throw Object.assign(new Error('OneDrive upload made no confirmed progress'), { code: 'UPLOAD_NO_PROGRESS' });
                 range = next;
+                input.onProgress?.(range.offset, size);
                 firstError = undefined;
                 failures = 0;
             } catch (error) {
+                uploading = false;
                 input.signal?.throwIfAborted();
                 firstError ??= { error };
                 const originalError = firstError.error;
@@ -234,7 +257,10 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
                     try { item = await readTarget(); }
                     catch { input.signal?.throwIfAborted(); throw originalError; }
                     if (item) {
-                        if (await matchesLocalFile(item, input, size)) return item.id;
+                        if (await matchesLocalFile(item, input, size)) {
+                            input.onProgress?.(size, size);
+                            return item.id;
+                        }
                         throw originalError;
                     }
                     if (restarts++ >= 1) throw originalError;
@@ -249,13 +275,18 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
                     let item: DriveItem | undefined;
                     try { item = await readTarget(); }
                     catch { input.signal?.throwIfAborted(); throw originalError; }
-                    if (item && await matchesLocalFile(item, input, size)) return item.id;
+                    if (item && await matchesLocalFile(item, input, size)) {
+                        input.onProgress?.(size, size);
+                        return item.id;
+                    }
                     throw originalError;
                 }
                 const progressed = next.offset > range.offset;
                 if (next.offset < range.offset || failures >= MAX_ATTEMPTS && !progressed) throw originalError;
                 range = next;
                 if (progressed) { failures = 0; firstError = undefined; }
+            } finally {
+                uploading = false;
             }
         }
         throw new Error('OneDrive upload completion was not confirmed');

@@ -99,10 +99,7 @@ services:
       - TELEGRAM_RATE_MAX=${TELEGRAM_RATE_MAX:-30}
       - TELEGRAM_FILE_RATE_MAX=${TELEGRAM_FILE_RATE_MAX:-120}
       - TELEGRAM_CONTROL_RATE_MAX=${TELEGRAM_CONTROL_RATE_MAX:-60}
-      - TG_MAX_IN_FLIGHT_FILES=${TG_MAX_IN_FLIGHT_FILES:-2}
       - TG_MAX_PENDING_FILES=${TG_MAX_PENDING_FILES:-500}
-      - TG_STAGING_BUDGET_GB=${TG_STAGING_BUDGET_GB:-4}
-      - TG_SAVE_CONCURRENCY=${TG_SAVE_CONCURRENCY:-1}
       - MEDIA_CONCURRENCY=${MEDIA_CONCURRENCY:-1}
       - MEDIA_QUEUE_LIMIT=${MEDIA_QUEUE_LIMIT:-64}
       - MEDIA_THREADS=${MEDIA_THREADS:-1}
@@ -144,9 +141,6 @@ services:
       - tg-vault-network
     restart: unless-stopped
     stop_grace_period: 35s
-    mem_limit: ${BACKEND_MEMORY_LIMIT:-1536m}
-    mem_reservation: ${BACKEND_MEMORY_RESERVATION:-512m}
-    cpus: ${BACKEND_CPU_LIMIT:-1.5}
     pids_limit: ${BACKEND_PIDS_LIMIT:-256}
     healthcheck:
       test: [ "CMD-SHELL", "node -e \"fetch('http://127.0.0.1:' + process.env.PORT + '/readyz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\"" ]

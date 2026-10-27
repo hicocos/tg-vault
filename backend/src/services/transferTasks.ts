@@ -2,7 +2,7 @@ import { query } from '../db/index.js';
 import { downloadProgressView } from './downloadProgress.js';
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 
-export type TransferTaskSource = 'telegram_bot';
+export type TransferTaskSource = 'telegram_bot' | 'qbittorrent';
 export type TransferTaskStatus =
     | 'pending'
     | 'running'

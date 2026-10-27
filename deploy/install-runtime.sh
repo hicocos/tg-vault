@@ -8,6 +8,10 @@ prepare_install_compose() {
   INSTALL_COMPOSE_ARGS=()
   INSTALL_COMPAT_FILE=''
   INSTALL_SOURCE_IMAGE_FILE=''
+  INSTALL_QBITTORRENT_INTEGRATION="$(read_env QBITTORRENT_HOST_INTEGRATION)"
+  if [[ "$INSTALL_QBITTORRENT_INTEGRATION" == true ]]; then
+    INSTALL_COMPOSE_ARGS=(--project-directory "$PWD" --env-file "$PWD/.env" -f "$PWD/docker-compose.yml" -f "$PWD/docker-compose.qbittorrent.yml")
+  fi
   trap 'rm -f "${INSTALL_COMPAT_FILE:-}" "${INSTALL_SOURCE_IMAGE_FILE:-}"' EXIT
 }
 
@@ -36,6 +40,9 @@ PY
     INSTALL_COMPOSE_ARGS+=(-f "$INSTALL_COMPAT_FILE")
   else
     INSTALL_COMPOSE_ARGS+=(-f "$PWD/docker-compose.build.yml")
+  fi
+  if [[ "$INSTALL_QBITTORRENT_INTEGRATION" == true ]]; then
+    INSTALL_COMPOSE_ARGS+=(-f "$PWD/docker-compose.qbittorrent.yml")
   fi
   INSTALL_SOURCE_IMAGE_FILE="$(mktemp "${TMPDIR:-/tmp}/tg-vault-source-images.XXXXXX.yml")"
   python3 - "$INSTALL_SOURCE_IMAGE_FILE" "$$" <<'PY'

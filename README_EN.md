@@ -16,6 +16,7 @@ Telegram file transfer and archiving with web file management and multiple stora
 - Web uploads, search, folder organization and media previews.
 - Web and Bot task management: progress, failure details, pause, resume and retry.
 - Local disk, OneDrive, Google Drive, Aliyun OSS, S3, WebDAV and OpenList storage.
+- Optional same-host qBittorrent extension: transfer completed downloads to configured storage, then clean up source files or retain them for seeding.
 - Administrator password, Bot user allowlist and TOTP two-factor authentication.
 
 Channel downloads and subscriptions require a Telegram user account with source access. TG Vault does not bypass Telegram permissions or server limits.
@@ -48,10 +49,6 @@ The script updates source and pulls `latest`, retaining existing configuration a
 - [Configuration and usage](docs/configuration.md) (Chinese): environment variables, Telegram, storage and permissions.
 - [Local storage locations](docs/local-storage.md) (Chinese, with an English summary): mounts, path verification and data protection.
 - [Development and publishing](docs/development.md) (Chinese): isolated development, database CLI, checks and publication boundaries.
-
-## Repository and runtime data
-
-Keep source, lockfiles, deployment scripts and behavioral regression tests in Git. Actual `.env` files, file data, Telegram sessions, keys, backups and build output stay private. Ignored files are not disposable. Review both pending files and Git history before publishing; never clean a deployment directory with `git clean -fdx`.
 
 ## License
 

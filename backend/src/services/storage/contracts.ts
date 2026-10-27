@@ -1,6 +1,13 @@
+export type StorageUploadProgress = (transferredBytes: number, totalBytes: number) => void;
+
+export interface StorageWriteOptions {
+    signal?: AbortSignal;
+    onProgress?: StorageUploadProgress;
+}
+
 export interface PreparedStorageWrite {
     storedPath: string;
-    save(signal?: AbortSignal): Promise<string>;
+    save(signal?: AbortSignal, onProgress?: StorageUploadProgress): Promise<string>;
 }
 
 export interface IStorageProvider {
@@ -15,7 +22,7 @@ export interface IStorageProvider {
      * @param mimeType 文件类型
      * @returns 存储后的路径或标识符
      */
-    saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: { signal?: AbortSignal }): Promise<string>;
+    saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string>;
     /** Allocates a stable object identity before any upload side effect. */
     prepareSaveFile?(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<PreparedStorageWrite>;
 

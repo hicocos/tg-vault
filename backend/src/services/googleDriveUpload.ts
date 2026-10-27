@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isRecord } from '../utils/typeGuards.js';
+import type { StorageUploadProgress } from './storage/contracts.js';
+import { trackUploadProgress } from './storage/uploadProgress.js';
 
 function uploadErrorStatus(error: unknown): number {
     if (!isRecord(error)) return 0;
@@ -18,17 +20,20 @@ export async function uploadGoogleDriveFile(input: {
     create: (body: fs.ReadStream) => Promise<{ id?: string | null }>;
     inspect: () => Promise<{ id?: string | null; name?: string | null; size?: string | null; md5Checksum?: string | null; parents?: string[] | null; trashed?: boolean | null }>;
     signal?: AbortSignal;
+    onProgress?: StorageUploadProgress;
 }): Promise<string> {
     let firstError: unknown;
     let failed = false;
     let checksum: string | undefined;
+    const totalBytes = input.onProgress ? (await fs.promises.stat(input.tempPath)).size : 0;
     for (let attempt = 0; attempt < 3; attempt++) {
         input.signal?.throwIfAborted();
-        const body = fs.createReadStream(input.tempPath);
+        const body = trackUploadProgress(fs.createReadStream(input.tempPath, { signal: input.signal }), totalBytes, input.onProgress);
         try {
             const result = await input.create(body);
             input.signal?.throwIfAborted();
             if (result.id !== input.fileId) throw new Error('Google Drive upload returned an unexpected file ID');
+            input.onProgress?.(totalBytes, totalBytes);
             return input.fileId;
         } catch (error) {
             body.destroy();
@@ -52,7 +57,10 @@ export async function uploadGoogleDriveFile(input: {
                             finally { source.destroy(); }
                             checksum = hash.digest('hex');
                         }
-                        if (checksum === remote.md5Checksum) return input.fileId;
+                        if (checksum === remote.md5Checksum) {
+                            input.onProgress?.(size, size);
+                            return input.fileId;
+                        }
                     }
                 } catch { input.signal?.throwIfAborted(); }
             }

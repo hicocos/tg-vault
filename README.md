@@ -16,6 +16,7 @@ Telegram 文件转存与归档工具，支持 Web 文件管理和多种存储服
 - Web 文件上传、搜索、文件夹整理与媒体预览。
 - Web 与 Bot 任务管理：进度、失败明细、暂停、继续及重试。
 - 本地磁盘、OneDrive、Google Drive、阿里云 OSS、S3、WebDAV 和 OpenList 存储。
+- 可选同机 qBittorrent 扩展：下载完成后转存到已配置存储，默认清理源文件，可保留做种。
 - 管理员密码、Bot 用户允许列表与 TOTP 双重验证。
 
 频道下载与订阅需要有来源访问权限的 Telegram 用户账号，不绕过 Telegram 权限或服务端限制。
@@ -48,10 +49,6 @@ cd tg-vault
 - [配置与使用](docs/configuration.md)：环境变量、Telegram、存储与权限。
 - [本地存储位置](docs/local-storage.md)：挂载、路径确认与数据保护。
 - [开发与发布](docs/development.md)：独立开发环境、数据库 CLI、检查命令及公开发布边界。
-
-## 仓库与数据
-
-仓库保留源码、锁文件、部署脚本和行为回归测试。实际 `.env`、文件数据、Telegram session、密钥、备份及构建产物不提交；被忽略不等于可删除。发布前检查历史提交与待提交文件，不要用 `git clean -fdx` 清理部署目录。
 
 ## 开源协议
 

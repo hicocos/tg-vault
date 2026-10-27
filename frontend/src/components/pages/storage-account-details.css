@@ -1,0 +1,54 @@
+.storage-account-details-trigger.tv-btn { min-height: 44px; max-width: 100%; gap: 6px; padding-inline: 8px; white-space: normal; text-align: start; overflow-wrap: anywhere; }
+.tv-dialog.storage-account-details { display: flex; flex-direction: column; width: 640px; max-height: calc(100dvh - 48px); overflow: hidden; font-size: var(--tv-text-body); line-height: 1.6; }
+.storage-account-details :is(button, input, summary):focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+.storage-account-details .tv-btn { min-height: 44px; height: auto; max-width: 100%; gap: 8px; white-space: normal; overflow-wrap: anywhere; }
+.storage-account-details__header { display: flex; flex-shrink: 0; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 22px; border-bottom: 1px solid hsl(var(--border)); }
+.storage-account-details__header > div { min-width: 0; }
+.storage-account-details__header h3 { margin: 0; font-size: 19px; line-height: 1.4; }
+.storage-account-details__header p { margin: 5px 0 0; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.storage-account-details__header .tv-btn { flex-shrink: 0; width: 44px; padding: 0; }
+.storage-account-details__body { display: flex; flex-direction: column; flex: 1 1 auto; gap: 24px; min-height: 0; min-width: 0; padding: 22px; overflow-y: auto; overscroll-behavior: contain; overflow-wrap: anywhere; }
+.storage-account-details__loading { display: flex; align-items: center; gap: 8px; color: hsl(var(--muted-foreground)); }
+.storage-account-details__rename { display: grid; gap: 10px; min-width: 0; }
+.storage-account-details__rename label { font-size: 16px; font-weight: 600; }
+.storage-account-details__rename > p { margin: 0; color: hsl(var(--muted-foreground)); }
+.storage-account-details__rename input { width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid hsl(var(--input)); border-radius: var(--tv-radius-control); background: hsl(var(--card)); color: hsl(var(--foreground)); }
+.storage-account-details__rename input:disabled { opacity: .65; cursor: not-allowed; }
+.storage-account-details__secondary { display: grid; gap: 10px; min-width: 0; }
+.storage-account-details__privacy, .storage-account-details__hint { margin: 0; color: hsl(var(--muted-foreground)); font-size: var(--tv-text-meta); line-height: 1.7; }
+.storage-account-details__disclosure { min-width: 0; border: 1px solid hsl(var(--border)); border-radius: var(--tv-radius-control); }
+.storage-account-details__disclosure > summary { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 11px 12px; border-radius: inherit; cursor: pointer; list-style: none; font-weight: 500; }
+.storage-account-details__disclosure > summary::-webkit-details-marker { display: none; }
+.storage-account-details__disclosure > summary > span { flex: 1; min-width: 0; }
+.storage-account-details__disclosure > summary > svg { flex-shrink: 0; }
+.storage-account-details__disclosure[open] > summary > svg:last-child { transform: rotate(180deg); }
+.storage-account-details__disclosure-body { padding: 0 12px 12px; }
+.storage-account-details__fields { margin: 6px 0 0; }
+.storage-account-details__fields > div { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 8px; padding: 11px 0; border-top: 1px solid hsl(var(--border)); }
+.storage-account-details__fields dt, .storage-account-details__secrets dt { color: hsl(var(--muted-foreground)); }
+.storage-account-details__fields dd { min-width: 0; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.storage-account-details__secrets { display: grid; gap: 8px; margin: 0; font-size: var(--tv-text-meta); }
+.storage-account-details__secrets > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; padding: 10px; border-radius: var(--tv-radius-control); background: hsl(var(--muted) / .5); }
+.storage-account-details__secrets dd { margin: 0; font-weight: 500; }
+.storage-account-details__metadata { display: grid; gap: 10px; margin: 0; padding-top: 16px; border-top: 1px solid hsl(var(--border)); color: hsl(var(--muted-foreground)); font-size: var(--tv-text-meta); }
+.storage-account-details__metadata > div { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 8px; }
+.storage-account-details__metadata dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.storage-account-details__footer { display: flex; flex-shrink: 0; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 10px 16px; padding: 14px 22px; border-top: 1px solid hsl(var(--border)); background: hsl(var(--muted) / .45); }
+.storage-account-details__feedback { flex: 1 1 180px; min-width: 0; color: hsl(var(--muted-foreground)); overflow-wrap: anywhere; }
+.storage-account-details__feedback:empty { display: none; }
+.storage-account-details__feedback p { margin: 0; }
+.storage-account-details .storage-account-details__error { color: hsl(var(--destructive)); }
+.storage-account-details .storage-account-details__success { color: var(--tv-success, hsl(var(--primary))); }
+
+@media (max-width: 640px) {
+  .tv-dialog-backdrop:has(> .storage-account-details) { align-items: flex-end; padding: 0; }
+  .tv-dialog.storage-account-details { width: 100%; max-width: 100%; max-height: calc(100dvh - max(12px, env(safe-area-inset-top))); border-radius: 18px 18px 0 0; border-bottom: 0; }
+  .storage-account-details__header { padding: 16px max(16px, env(safe-area-inset-right)) 14px max(16px, env(safe-area-inset-left)); }
+  .storage-account-details__header h3 { font-size: 18px; }
+  .storage-account-details__body { gap: 20px; padding: 18px max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .storage-account-details__rename input { font-size: 16px; }
+  .storage-account-details__fields > div, .storage-account-details__metadata > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .storage-account-details__footer { padding: 12px max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .storage-account-details__footer > .tv-btn { width: 100%; }
+  .storage-account-details__feedback { flex-basis: 100%; }
+}

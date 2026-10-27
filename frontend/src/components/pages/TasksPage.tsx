@@ -18,7 +18,7 @@ import { Dialog } from '../ui/Dialog';
 import { errorMessage } from '../../services/unknownError';
 import { TaskFailureDetails } from './TaskFailureDetails';
 
-interface TasksPageProps { onUnauthorized?: () => void; onOpenUploads?: () => void; onShowAllTasks?: () => void; initialAccountId?: string | null; }
+interface TasksPageProps { onUnauthorized?: () => void; onOpenUploads?: () => void; onShowAllTasks?: () => void; initialAccountId?: string | null; qbittorrentEnabled?: boolean; }
 interface TaskNotice { message: string; sequence: number; }
 
 const SOURCE_OPTIONS: Array<{ value: '' | UnifiedTaskSource; labelKey: string }> = [
@@ -26,6 +26,7 @@ const SOURCE_OPTIONS: Array<{ value: '' | UnifiedTaskSource; labelKey: string }>
     { value: 'telegram_bot', labelKey: 'tasks.sources.telegramFile' }, { value: 'telegram_channel', labelKey: 'tasks.sources.channelDownload' },
     { value: 'telegram_target', labelKey: 'tasks.sources.telegramTarget' },
     { value: 'subscription', labelKey: 'tasks.sources.subscription' },
+    { value: 'qbittorrent', labelKey: 'qbittorrent.nav' },
 ];
 const STATUS_OPTIONS = [
     { value: '', labelKey: 'tasks.statuses.all' }, { value: 'pending', labelKey: 'tasks.statuses.pending' },
@@ -47,6 +48,7 @@ const STAGE_LABELS: Record<string, string> = {
     failed: 'tasks.stages.failed', cancelled: 'tasks.statuses.cancelled', interrupted: 'tasks.stages.interrupted',
     retry_required: 'tasks.stages.retryRequired', disabled: 'tasks.statuses.disabled',
     paused: 'tasks.statuses.paused', pausing: 'tasks.statuses.pausing',
+    submitting: 'qbittorrent.stages.submitting', metadata: 'qbittorrent.stages.metadata', cleaning: 'qbittorrent.stages.cleaning', cancelling: 'qbittorrent.stages.cancelling',
 };
 
 function taskKey(task: Pick<UnifiedTask, 'sourceType' | 'id'>): string { return `${task.sourceType}:${task.id}`; }
@@ -65,7 +67,7 @@ function StatusIcon({ status, runningLabel }: { status: string; runningLabel: st
     return <Clock3 className="h-4 w-4" />;
 }
 
-export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initialAccountId }: TasksPageProps) => {
+export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initialAccountId, qbittorrentEnabled = false }: TasksPageProps) => {
     const { t, i18n } = useTranslation();
     const locale = i18n.resolvedLanguage || i18n.language;
     const audit = {
@@ -90,7 +92,8 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
         storage: task.target.accountName || task.target.provider || t('tasks.target.unknownStorage'),
         folder: task.target.folder || t('tasks.target.root'),
     });
-    const [tasks, setTasks] = useState<UnifiedTask[]>([]);
+    const [storedTasks, setTasks] = useState<UnifiedTask[]>([]);
+    const tasks = useMemo(() => storedTasks.filter(task => qbittorrentEnabled || task.sourceType !== 'qbittorrent'), [storedTasks, qbittorrentEnabled]);
     const [tasksObservedAt, setTasksObservedAt] = useState(0);
     const tasksRef = useRef<UnifiedTask[]>([]);
     const [source, setSource] = useState('');
@@ -121,9 +124,8 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
         try {
             const result = await fileApi.getTasks({ source, status, accountId: initialAccountId || undefined, limit: 300 });
             if (generation !== requestGeneration.current) return;
-            const relevantTasks = initialAccountId
-                ? result.tasks.filter(task => task.target.accountId === initialAccountId)
-                : result.tasks;
+            const relevantTasks = result.tasks.filter(task => (qbittorrentEnabled || task.sourceType !== 'qbittorrent')
+                && (!initialAccountId || task.target.accountId === initialAccountId));
             tasksRef.current = relevantTasks;
             setTasks(relevantTasks); setError(null);
             setTasksObservedAt(Date.now());
@@ -135,7 +137,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
         } finally {
             if (generation === requestGeneration.current) { setLoading(false); setRefreshing(false); }
         }
-    }, [initialAccountId, onUnauthorized, scopeFilters, source, status]);
+    }, [initialAccountId, onUnauthorized, scopeFilters, source, status, qbittorrentEnabled]);
 
     useEffect(() => {
         let first = true;
@@ -161,6 +163,12 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
     }, [loadTasks]);
 
     useEffect(() => {
+        if (qbittorrentEnabled) return;
+        if (source === 'qbittorrent') setSource('');
+        setPendingAction(previous => previous?.task.sourceType === 'qbittorrent' ? null : previous);
+    }, [qbittorrentEnabled, source]);
+
+    useEffect(() => {
         if (!notice) return;
         const timer = window.setTimeout(() => setNotice(null), 4_000);
         return () => window.clearTimeout(timer);
@@ -171,7 +179,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
     const dismissibleTasks = useMemo(() => dismissibleTaskSnapshot(tasks, scopeFilters), [scopeFilters, tasks]);
 
     const taskActionLabel = (task: UnifiedTask, action: 'cancel' | 'retry'): string => {
-        if (action === 'retry') return task.sourceType === 'web_upload' ? t('tasks.actions.resume') : t('tasks.actions.retry');
+        if (action === 'retry') return task.sourceType === 'qbittorrent' && task.stage === 'cancelling' ? t('qbittorrent.retryCancel') : task.sourceType === 'web_upload' ? t('tasks.actions.resume') : t('tasks.actions.retry');
         if (task.sourceType === 'subscription') return t('tasks.actions.followDefault');
         if (task.sourceType === 'telegram_target') return t('tasks.actions.clearTarget');
         return t('tasks.actions.cancel');
@@ -273,7 +281,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                         ))}
                     </div>
                     <div className="op-filter-fields">
-                        <label className="op-field"><span>{t('tasks.filters.sourceAria')}</span><select className="tv-field op-input" value={source} onChange={e => setSource(e.target.value)}>{SOURCE_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select></label>
+                        <label className="op-field"><span>{t('tasks.filters.sourceAria')}</span><select className="tv-field op-input" value={source} onChange={e => setSource(e.target.value)}>{SOURCE_OPTIONS.filter(option => qbittorrentEnabled || option.value !== 'qbittorrent').map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select></label>
                         <label className="op-field"><span>{t('tasks.filters.statusAria')}</span><select className="tv-field op-input" value={status} onChange={e => { setStatus(e.target.value); setQuickFilter('all'); }}>{STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{t(o.labelKey)}</option>)}</select></label>
                     </div>
                 </div>
@@ -300,7 +308,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                 const stopped = ['cancelled', 'failed', 'interrupted', 'retry_required', 'disabled'].includes(task.status);
                                 const progress = Number.isFinite(task.progress) ? Math.max(0, Math.min(100, task.progress)) : 0;
                                 const progressLabel = stopped ? audit.history : task.status === 'paused' ? audit.paused : t('tasks.table.progress');
-                                const showStage = !stopped && task.status !== 'completed' && STAGE_LABELS[task.stage] !== STATUS_LABELS[task.status] && stageLabel !== statusLabel;
+                                const showStage = (!stopped || (task.sourceType === 'qbittorrent' && ['cleaning', 'cancelling'].includes(task.stage))) && task.status !== 'completed' && STAGE_LABELS[task.stage] !== STATUS_LABELS[task.status] && stageLabel !== statusLabel;
                                 const transfer = taskTransferDisplay(task);
                                 const detailSpeed = transfer.speed;
                                 const detailEta = task.status === 'running' && typeof task.detail.eta === 'string' ? task.detail.eta : null;
@@ -321,6 +329,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                     <TaskCell className="op-task-target" title={taskTarget(task)}>{t('tasks.target.label', { target: taskTarget(task) })}</TaskCell>
                                     <TaskCell className="op-task-transfer">
                                         {(progress > 0 || stopped || ['running', 'paused'].includes(task.status)) && <div className={cn('audit-task-progress', (stopped || task.status === 'paused') && 'is-historical')}><span className="audit-progress-label">{progressLabel}</span><div className="op-progress-line"><div className="op-progress" role="progressbar" aria-label={`${task.title}: ${progressLabel}`} aria-valuetext={`${progressLabel}: ${Math.round(progress)}%`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}><span style={{ width: `${progress}%` }} /></div><span>{Math.round(progress)}%</span></div></div>}
+                                        {task.sourceType === 'qbittorrent' && typeof task.detail.downloadProgress === 'number' && <small className="op-cell-meta">{t('qbittorrent.download')}: {Math.round(Math.max(0, Math.min(100, task.detail.downloadProgress)))}% · {t('qbittorrent.transfer')}: {Math.round(progress)}%</small>}
                                         {task.counts.total > 0 && <small className="op-cell-meta">{task.sourceType === 'telegram_channel'
                                             ? t('tasks.progress.channelItems', { processed: task.detail.processed ?? task.counts.completed, total: task.counts.total, completed: task.counts.completed, failed: task.counts.failed, skipped: task.detail.skipped ?? 0 })
                                             : <>{t('tasks.progress.items', { completed: task.counts.completed, total: task.counts.total })}{task.counts.failed > 0 ? t('tasks.progress.failed', { count: task.counts.failed }) : ''}</>}</small>}
@@ -341,11 +350,12 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                                             {scan && (commentMessagesScanned > 0 || commentMediaFound > 0) && <small className="op-cell-meta">{t('tasks.progress.commentScan', { messages: commentMessagesScanned, files: commentMediaFound })}</small>}
                                             {lastMessageDate && <small className="op-cell-meta">{t('tasks.progress.scanDate', { time: formatDateTime(lastMessageDate, locale) })}</small>}
                                             {task.sourceType === 'telegram_channel' && Number(task.detail.excluded) > 0 && <small className="op-cell-meta">{t('tasks.progress.excluded', { count: Number(task.detail.excluded) })}</small>}
+                                            {task.sourceType === 'qbittorrent' && <small className="op-cell-meta">{t(task.detail.preserveLocalFiles ? 'qbittorrent.preserved' : 'qbittorrent.deletedAfterTransfer')}</small>}
                                         </details>
                                         {(task.counts.failed > 0 || task.error) && <TaskFailureDetails task={task} onUnauthorized={onUnauthorized} />}
                                     </TaskCell>
                                     <TaskCell className="op-task-actions">{!selectionMode && <div className="op-actions">
-                                        {['telegram_channel', 'telegram_bot'].includes(task.sourceType) && ['running', 'pending', 'waiting', 'pausing', 'paused'].includes(task.status) && <Button size="sm" variant="outline" disabled={acting} className="op-action" onClick={() => void controlChannel(task, ['paused', 'pausing'].includes(task.status) ? 'resume' : 'pause')}>{t(['paused', 'pausing'].includes(task.status) ? 'tasks.actions.continue' : 'tasks.actions.pause')}</Button>}
+                                        {(['telegram_channel', 'telegram_bot'].includes(task.sourceType) || (task.sourceType === 'qbittorrent' && ['submitting', 'metadata', 'downloading', 'paused'].includes(task.stage))) && ['running', 'pending', 'waiting', 'pausing', 'paused'].includes(task.status) && <Button size="sm" variant="outline" disabled={acting} className="op-action" onClick={() => void controlChannel(task, ['paused', 'pausing'].includes(task.status) ? 'resume' : 'pause')}>{t(['paused', 'pausing'].includes(task.status) ? 'tasks.actions.continue' : 'tasks.actions.pause')}</Button>}
                                         {task.retryable && <Button size="sm" variant="outline" disabled={acting} className="op-action" onClick={() => requestAction(task, 'retry')}>{task.sourceType === 'web_upload' ? <UploadCloud className="h-4 w-4" /> : <RotateCcw className="h-4 w-4" />}{taskActionLabel(task, 'retry')}</Button>}
                                         {task.cancellable && <Button size="sm" variant="outline" disabled={acting} className="op-action op-danger-button" onClick={() => requestAction(task, 'cancel')}><Ban className="h-4 w-4" />{taskActionLabel(task, 'cancel')}</Button>}
                                         {task.dismissible && <Button size="sm" variant="ghost" disabled={acting} className="op-action op-danger-button" onClick={() => void prepareDismissal({ tasks: [task] })}><Trash2 className="h-4 w-4" />{t('tasks.actions.deleteRecord')}</Button>}
@@ -357,7 +367,7 @@ export const TasksPage = ({ onUnauthorized, onOpenUploads, onShowAllTasks, initi
                 )}
             </section>
 
-            {pendingAction && <Dialog open onClose={() => { if (!acting) setPendingAction(null); }} labelledBy="task-action-dialog-title" closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><h3 id="task-action-dialog-title" className="font-semibold">{pendingAction.action === 'cancel' ? t('tasks.dialogs.confirmAction', { action: taskActionLabel(pendingAction.task, 'cancel') }) : t('tasks.dialogs.retryTitle')}</h3><p className="mt-2 break-words text-sm text-muted-foreground">{pendingAction.task.title}</p><p className="mt-1 text-xs text-muted-foreground">{t(pendingAction.action === 'cancel' ? 'uiAudit.taskLabels.currentTarget' : 'tasks.dialogs.targetUnchanged', { target: taskTarget(pendingAction.task) })}</p><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setPendingAction(null)}>{t('tasks.actions.back')}</Button><Button variant={pendingAction.action === 'cancel' ? 'destructive' : 'default'} disabled={acting} onClick={() => void confirmAction()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{pendingAction.action === 'cancel' ? taskActionLabel(pendingAction.task, 'cancel') : t('tasks.dialogs.confirmRetry')}</Button></div></div></Dialog>}
+            {pendingAction && <Dialog open onClose={() => { if (!acting) setPendingAction(null); }} labelledBy="task-action-dialog-title" closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><h3 id="task-action-dialog-title" className="font-semibold">{pendingAction.action === 'cancel' ? t('tasks.dialogs.confirmAction', { action: taskActionLabel(pendingAction.task, 'cancel') }) : t(pendingAction.task.sourceType === 'qbittorrent' && pendingAction.task.stage === 'cancelling' ? 'qbittorrent.retryCancel' : 'tasks.dialogs.retryTitle')}</h3><p className="mt-2 break-words text-sm text-muted-foreground">{pendingAction.task.title}</p><p className="mt-1 text-xs text-muted-foreground">{t(pendingAction.action === 'cancel' ? 'uiAudit.taskLabels.currentTarget' : pendingAction.task.sourceType === 'qbittorrent' && pendingAction.task.stage === 'cancelling' ? 'qbittorrent.retryCancelHint' : 'tasks.dialogs.targetUnchanged', { target: taskTarget(pendingAction.task) })}</p>{pendingAction.task.sourceType === 'qbittorrent' && pendingAction.action === 'cancel' && <p className="mt-2 text-xs text-muted-foreground">{t('qbittorrent.cancelDescription')}</p>}<div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setPendingAction(null)}>{t('tasks.actions.back')}</Button><Button variant={pendingAction.action === 'cancel' ? 'destructive' : 'default'} disabled={acting} onClick={() => void confirmAction()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{pendingAction.action === 'cancel' ? taskActionLabel(pendingAction.task, 'cancel') : pendingAction.task.sourceType === 'qbittorrent' && pendingAction.task.stage === 'cancelling' ? t('qbittorrent.retryCancel') : t('tasks.dialogs.confirmRetry')}</Button></div></div></Dialog>}
 
             {dismissalPreview && <Dialog open onClose={() => { if (!acting) setDismissalPreview(null); }} labelledBy="dismiss-title" alert closeOnEscape={!acting} closeOnBackdrop={!acting} className="w-full max-w-md"><div className="tv-panel op-confirm-card"><div className="flex items-start gap-3"><Trash2 className="mt-0.5 h-5 w-5 text-destructive" /><div><h3 id="dismiss-title" className="font-semibold">{t('tasks.dialogs.dismissTitle')}</h3><p className="mt-2 text-sm">{t('tasks.dialogs.dismissCount', { count: dismissalPreview.impact.count })}</p><p className="mt-2 rounded-md bg-muted p-3 text-xs text-muted-foreground">{t('tasks.dialogs.dismissDescription')}</p></div><button className="ml-auto" disabled={acting} onClick={() => setDismissalPreview(null)} aria-label={t('tasks.actions.close')}><X className="h-5 w-5" /></button></div><div className="mt-5 flex justify-end gap-2"><Button variant="outline" disabled={acting} onClick={() => setDismissalPreview(null)}>{t('tasks.actions.back')}</Button><Button variant="destructive" disabled={acting} onClick={() => void confirmDismissal()}>{acting && <IndeterminateSpinner label={t('tasks.loading.action')} size="sm" className="mr-2" />}{t('tasks.actions.confirmDeleteRecord')}</Button></div></div></Dialog>}
         </section>

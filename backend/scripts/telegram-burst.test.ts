@@ -21,46 +21,173 @@ test('50 forwarded files do not spend status or cancellation quota; exhausted bu
     assert.equal(limit.consume(1, 'file').limited, false);
 });
 
-test('slow storage applies count backpressure to a 50-file burst and cancellation releases all work', async () => {
+for (const concurrency of [2, 7]) test(`slow storage does not consume the ${concurrency} configured download slots`, async () => {
     let sequence = 0;
     let downloads = 0;
     let reached!: () => void;
-    const backpressured = new Promise<void>(resolve => { reached = resolve; });
-    const queue = new DownloadTaskQueue({ maxConcurrent: 2, uploadConcurrency: 1, maxInFlight: 2, idFactory: () => String(++sequence) });
+    const refilled = new Promise<void>(resolve => { reached = resolve; });
+    const releases: Array<() => void> = [];
+    const queue = new DownloadTaskQueue({ maxConcurrent: concurrency, idFactory: () => String(++sequence) });
     queue.ensureGroup({ id: 'burst', kind: 'album', title: 'burst', chatId: '1', expectedTotal: 50 });
-    const jobs = Array.from({ length: 50 }, (_, index) => queue.add('burst', String(index), async (signal, id) => {
-        await Promise.resolve();
-        const upload = queue.beginUpload(id!);
-        if (++downloads === 2) reached();
-        await upload;
-        await delay(10000, undefined, { signal });
-    }, 1024));
-    await backpressured;
-    const group = queue.getGroupSnapshot('burst')!;
-    assert.equal(group.active, 2);
-    assert.equal(group.uploading, 1);
-    assert.equal(group.waitingUpload, 1);
-    assert.equal(group.pending, 48);
-    queue.cancelGroup('burst', {});
-    await Promise.all(jobs);
+    const jobs = Array.from({ length: 50 }, (_, index) => {
+        const gate = new Promise<void>(resolve => { releases.push(resolve); });
+        return queue.add('burst', String(index), async (signal, id) => {
+            if (++downloads === concurrency + 3) reached();
+            await gate;
+            signal.throwIfAborted();
+            await queue.beginUpload(id!);
+            await delay(10000, undefined, { signal });
+        }, 1024 ** 3);
+    });
+    try {
+        assert.equal(queue.getGroupSnapshot('burst')!.downloading, concurrency);
+        for (const release of releases.slice(0, 3)) release();
+        await refilled;
+        const group = queue.getGroupSnapshot('burst')!;
+        assert.equal(group.downloading, concurrency);
+        assert.equal(group.uploading, 3);
+        assert.equal(group.waitingUpload, 0);
+        assert.equal(group.pending, 50 - concurrency - 3);
+    } finally {
+        queue.cancelGroup('burst', {});
+        for (const release of releases) release();
+        await Promise.all(jobs);
+    }
     assert.equal(queue.getStats().total, 0);
 });
 
-test('byte budget serializes oversized files and resumes when staged work settles', async () => {
-    let seq = 0;
-    const queue = new DownloadTaskQueue({ maxConcurrent: 4, maxInFlight: 4, maxStagedBytes: 100 * 1024 ** 2, idFactory: () => String(++seq) });
-    queue.ensureGroup({ id: 'bytes', kind: 'album', title: 'bytes', chatId: '1', expectedTotal: 2 });
+test('file concurrency increases open slots and decreases drain active files without interrupting them', async () => {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 2 });
+    queue.ensureGroup({ id: 'concurrency', kind: 'album', title: 'concurrency', chatId: '1', expectedTotal: 9 });
+    const releases: Array<() => void> = [];
+    const started: number[] = [];
+    const jobs = Array.from({ length: 9 }, (_, index) => {
+        const gate = new Promise<void>(resolve => { releases.push(resolve); });
+        return queue.add('concurrency', String(index), async signal => {
+            started.push(index);
+            await gate;
+            assert.equal(signal.aborted, false);
+        }, 1024);
+    });
+    try {
+        assert.deepEqual(started, [0, 1]);
+        queue.setMaxConcurrent(7);
+        assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6]);
+        assert.equal(queue.getStats().pending, 2);
+
+        queue.setMaxConcurrent(1);
+        assert.equal(queue.getStats().active, 7);
+        for (const release of releases.slice(0, 6)) release();
+        await Promise.all(jobs.slice(0, 6));
+        assert.equal(queue.getStats().active, 1);
+        assert.equal(queue.getStats().pending, 2);
+
+        releases[6]();
+        await jobs[6];
+        assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6, 7]);
+        assert.equal(queue.getStats().active, 1);
+        releases[7]();
+        await jobs[7];
+        assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        releases[8]();
+        await jobs[8];
+        assert.equal(queue.getStats().total, 0);
+    } finally {
+        for (const release of releases) release();
+        await Promise.all(jobs);
+    }
+});
+
+test('large downloads fill configured concurrency regardless of combined file size', async () => {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 7 });
+    queue.ensureGroup({ id: 'large', kind: 'channel', title: 'large', chatId: '1', expectedTotal: 10 });
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    let starts = 0;
-    const first = queue.add('bytes', 'large', async () => { starts++; await gate; }, 200 * 1024 ** 2);
-    const second = queue.add('bytes', 'next', async () => { starts++; }, 70 * 1024 ** 2);
-    assert.equal(starts, 1);
-    assert.equal(queue.getStats().pending, 1);
-    release();
-    await Promise.all([first, second]);
-    assert.equal(starts, 2);
-    assert.equal(queue.getStats().reservedBytes, 0);
+    const started: number[] = [];
+    const jobs = Array.from({ length: 10 }, (_, index) => queue.add('large', String(index), async () => {
+        started.push(index);
+        await gate;
+    }, index === 0 ? 5 * 1024 ** 3 : 1024 ** 3));
+    try {
+        assert.deepEqual(started, [0, 1, 2, 3, 4, 5, 6]);
+        assert.equal(queue.getStats().pending, 3);
+    } finally {
+        release();
+        await Promise.all(jobs);
+    }
+});
+
+test('large uploads do not consume the single configured download slot', async () => {
+    const queue = new DownloadTaskQueue({ maxConcurrent: 1 });
+    queue.ensureGroup({ id: 'staging', kind: 'channel', title: 'staging', chatId: '1', expectedTotal: 3 });
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>(resolve => { releaseUpload = resolve; });
+    const started: number[] = [];
+    const first = queue.add('staging', 'oversized', async (_signal, id) => {
+        started.push(0);
+        await queue.beginUpload(id!);
+        await uploadGate;
+    }, 5 * 1024 ** 3);
+    const second = queue.add('staging', 'next', async () => { started.push(1); }, 1024 ** 3);
+    const third = queue.add('staging', 'last', async () => { started.push(2); }, 1024 ** 3);
+    try {
+        await Promise.all([second, third]);
+        assert.deepEqual(started, [0, 1, 2]);
+        assert.equal(queue.getGroupSnapshot('staging')!.uploading, 1);
+        assert.equal(queue.getStats().pending, 0);
+        releaseUpload();
+        await Promise.all([first, second, third]);
+        assert.deepEqual(started, [0, 1, 2]);
+        assert.equal(queue.getStats().total, 0);
+    } finally {
+        releaseUpload();
+        await Promise.all([first, second, third]);
+    }
+});
+
+test('uploads share ten slots across groups, refill on completion, and discard cancelled waiters', async () => {
+    let sequence = 0;
+    const queue = new DownloadTaskQueue({ maxConcurrent: 7, idFactory: () => String(++sequence) });
+    queue.ensureGroup({ id: 'first', kind: 'album', title: 'first', chatId: '1', expectedTotal: 7 });
+    queue.ensureGroup({ id: 'second', kind: 'album', title: 'second', chatId: '1', expectedTotal: 7 });
+    const releases: Array<() => void> = [];
+    const entered: Array<() => void> = [];
+    const started = Array.from({ length: 14 }, () => new Promise<void>(resolve => { entered.push(resolve); }));
+    const acquired: number[] = [];
+    const jobs = Array.from({ length: 14 }, (_, index) => {
+        const gate = new Promise<void>(resolve => { releases.push(resolve); });
+        return queue.add(index < 7 ? 'first' : 'second', String(index), async (_signal, id) => {
+            await queue.beginUpload(id!);
+            acquired.push(index);
+            entered[index]();
+            await gate;
+        }, 1024 ** 3);
+    });
+    try {
+        await Promise.all(started.slice(0, 10));
+        const groups = queue.getSnapshot().groups;
+        assert.equal(groups.reduce((sum, group) => sum + group.uploading, 0), 10);
+        assert.equal(groups.reduce((sum, group) => sum + group.waitingUpload, 0), 4);
+        assert.deepEqual(acquired, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        queue.cancel('14');
+        await jobs[13];
+        releases[0]();
+        await jobs[0];
+        await started[10];
+        assert.equal(queue.getGroupSnapshot('second')!.uploading, 4);
+        assert.equal(queue.getGroupSnapshot('second')!.waitingUpload, 2);
+
+        releases[1]();
+        releases[2]();
+        await Promise.all([jobs[1], jobs[2], started[11], started[12]]);
+        assert.deepEqual(acquired, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        assert.equal(queue.getGroupSnapshot('second')!.waitingUpload, 0);
+    } finally {
+        for (const release of releases) release();
+        await Promise.all(jobs);
+    }
+    assert.equal(queue.getStats().total, 0);
 });
 
 test('disk reservations reject concurrent overcommit and release committed capacity', async () => {

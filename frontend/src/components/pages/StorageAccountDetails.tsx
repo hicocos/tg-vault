@@ -6,7 +6,8 @@ import { getProviderMetadata } from '../../services/providerMetadata';
 import { formatDateTime } from '../../i18n/format';
 import { Button } from '../ui/Button';
 import { Dialog } from '../ui/Dialog';
-import { KeyRound, LoaderCircle, Pencil, X } from '../ui/icons';
+import { ChevronDown, KeyRound, LoaderCircle, Pencil, X } from '../ui/icons';
+import './storage-account-details.css';
 
 interface AccountDetails {
     id: string;
@@ -69,36 +70,62 @@ export function StorageAccountDetails({ account, onSaved }: { account: StorageAc
     };
 
     return <>
-        <Button size="sm" variant="ghost" className="mt-1 max-w-full whitespace-normal text-left" onClick={() => setOpen(true)}>
-            <Pencil className="mr-1.5 h-3.5 w-3.5 shrink-0" />{t('storageAccount.details')} · {t('storageAccount.rename')}
+        <Button size="sm" variant="ghost" className="storage-account-details-trigger" onClick={() => setOpen(true)}>
+            <Pencil className="h-4 w-4 shrink-0" aria-hidden="true" />{t('storageAccount.detailsRename')}
         </Button>
-        <Dialog open={open} onClose={() => { if (!saving) setOpen(false); }} labelledBy={titleId} closeOnEscape={!saving} closeOnBackdrop={!saving} className="w-full max-w-2xl">
-            <div className="settings-surface overflow-hidden rounded-xl border border-border bg-background shadow-xl">
-                <header className="flex items-start justify-between gap-4 border-b border-border p-5">
-                    <div className="min-w-0"><h3 id={titleId} className="break-words text-lg font-semibold">{t('storageAccount.details')}</h3><p className="mt-1 break-words text-sm text-muted-foreground">{getProviderMetadata(account.type).label} · {details?.name || account.name}</p></div>
-                    <Button size="sm" variant="ghost" className="settings-icon-button p-0" disabled={saving} onClick={() => setOpen(false)} aria-label={t('storageAccount.close')}><X className="h-4 w-4" /></Button>
-                </header>
-                <div className="max-h-[70vh] space-y-5 overflow-y-auto p-5">
-                    {loading && <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" />{t('storageAccount.loading')}</p>}
-                    {loadError && <div role="alert" className="space-y-2"><p>{t('storageAccount.loadFailed')}</p><Button variant="outline" onClick={() => setEpoch(value => value + 1)}>{t('storageAccount.retry')}</Button></div>}
-                    {details && <>
-                        <form className="space-y-2" onSubmit={event => { event.preventDefault(); void save(); }}>
-                            <label htmlFor={`${titleId}-name`} className="text-sm font-medium">{t('storageAccount.name')}</label>
-                            <div className="flex flex-col gap-2 sm:flex-row"><input id={`${titleId}-name`} className="min-w-0 flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm" value={name} disabled={saving} onChange={event => { setName(event.target.value); setSaved(false); }} aria-invalid={invalid} autoComplete="off" /><Button type="submit" disabled={invalid || saving || trimmedName === details.name}>{saving && <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />}{t('storageAccount.save')}</Button></div>
-                            <p className="text-xs leading-5 text-muted-foreground">{t('storageAccount.nameHint')}</p>
-                            {invalid && <p className="text-xs text-destructive">{t('storageAccount.invalidName')}</p>}
-                            {saveError && <p role="alert" className="text-sm text-destructive">{t('storageAccount.saveFailed')}</p>}
-                            {saved && <p role="status" className="text-sm text-emerald-600">{t('storageAccount.saved')}</p>}
-                        </form>
-                        <section><h4 className="mb-3 text-sm font-semibold">{t('storageAccount.configuration')}</h4><dl className="divide-y divide-border rounded-lg border border-border px-3">
-                            {Object.entries(details.fields).map(([key, value]) => <div key={key} className="grid min-w-0 grid-cols-1 gap-1 py-3 text-sm sm:grid-cols-[150px_minmax(0,1fr)]"><dt className="min-w-0 text-muted-foreground">{t(`storageAccount.fields.${key}`)}</dt><dd className="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{typeof value === 'boolean' ? t(value ? 'storageAccount.yes' : 'storageAccount.no') : value || '—'}</dd></div>)}
-                            {!Object.keys(details.fields).length && <p className="py-3 text-sm text-muted-foreground">{t('storageAccount.empty')}</p>}
-                        </dl></section>
-                        <section><h4 className="mb-2 flex items-center gap-2 text-sm font-semibold"><KeyRound className="h-4 w-4 shrink-0" />{t('storageAccount.credentials')}</h4><p className="mb-3 text-xs leading-5 text-muted-foreground">{t('storageAccount.privacy')}</p><dl className="grid grid-cols-1 gap-2 sm:grid-cols-2">{Object.entries(details.secrets).map(([key, present]) => <div key={key} className="flex min-w-0 flex-wrap justify-between gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs"><dt className="min-w-0">{t(`storageAccount.fields.${key}`)}</dt><dd className="min-w-0 font-medium">{t(present ? 'storageAccount.configured' : 'storageAccount.notConfigured')}</dd></div>)}</dl></section>
-                        <dl className="space-y-2 border-t border-border pt-4 text-xs text-muted-foreground"><div><dt>{t('storageAccount.id')}</dt><dd className="mt-1 [overflow-wrap:anywhere]">{details.id}</dd></div>{(['createdAt', 'updatedAt'] as const).map(key => <div key={key}><dt>{t(`storageAccount.${key}`)}</dt><dd>{details[key] ? formatDateTime(details[key], i18n.resolvedLanguage || i18n.language) : '—'}</dd></div>)}</dl>
-                    </>}
+        <Dialog open={open} onClose={() => { if (!saving) setOpen(false); }} labelledBy={titleId} closeOnEscape={!saving} closeOnBackdrop={!saving} className="storage-account-details">
+            <header className="storage-account-details__header">
+                <div>
+                    <h3 id={titleId}>{t('storageAccount.details')}</h3>
+                    <p>{getProviderMetadata(account.type).label} · {details?.name || account.name}</p>
                 </div>
+                <Button size="icon" variant="ghost" disabled={saving} onClick={() => setOpen(false)} aria-label={t('storageAccount.close')}><X className="h-5 w-5" aria-hidden="true" /></Button>
+            </header>
+            <div className="storage-account-details__body" aria-busy={loading}>
+                {loading && <p role="status" className="storage-account-details__loading"><LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />{t('storageAccount.loading')}</p>}
+                {loadError && <div role="alert" className="space-y-3"><p>{t('storageAccount.loadFailed')}</p><Button variant="outline" onClick={() => setEpoch(value => value + 1)}>{t('storageAccount.retry')}</Button></div>}
+                {details && <>
+                    <form id={`${titleId}-rename`} className="storage-account-details__rename" onSubmit={event => { event.preventDefault(); void save(); }}>
+                        <label htmlFor={`${titleId}-name`}>{t('storageAccount.name')}</label>
+                        <p id={`${titleId}-name-hint`}>{t('storageAccount.nameHint')}</p>
+                        <input id={`${titleId}-name`} value={name} disabled={saving} maxLength={100} onChange={event => { setName(event.target.value); setSaved(false); }} aria-invalid={invalid} aria-describedby={`${titleId}-name-hint${invalid ? ` ${titleId}-name-error` : ''}`} autoComplete="off" />
+                        {invalid && <p id={`${titleId}-name-error`} className="storage-account-details__error">{t('storageAccount.invalidName')}</p>}
+                    </form>
+                    <div className="storage-account-details__secondary">
+                        <p className="storage-account-details__privacy">{t('storageAccount.privacy')}</p>
+                        <details className="storage-account-details__disclosure">
+                            <summary tabIndex={0}><span>{t('storageAccount.configuration')}</span><ChevronDown className="h-4 w-4" aria-hidden="true" /></summary>
+                            <div className="storage-account-details__disclosure-body">
+                                <p className="storage-account-details__hint">{t('storageAccount.readOnly')}</p>
+                                <dl className="storage-account-details__fields">
+                                    {Object.entries(details.fields).map(([key, value]) => <div key={key}><dt>{t(`storageAccount.fields.${key}`)}</dt><dd>{typeof value === 'boolean' ? t(value ? 'storageAccount.yes' : 'storageAccount.no') : value || '—'}</dd></div>)}
+                                </dl>
+                                {!Object.keys(details.fields).length && <p className="storage-account-details__hint">{t('storageAccount.empty')}</p>}
+                            </div>
+                        </details>
+                        <details className="storage-account-details__disclosure">
+                            <summary tabIndex={0}><KeyRound className="h-4 w-4" aria-hidden="true" /><span>{t('storageAccount.credentials')}</span><ChevronDown className="h-4 w-4" aria-hidden="true" /></summary>
+                            <dl className="storage-account-details__secrets storage-account-details__disclosure-body">
+                                {Object.entries(details.secrets).map(([key, present]) => <div key={key}><dt>{t(`storageAccount.fields.${key}`)}</dt><dd>{t(present ? 'storageAccount.configured' : 'storageAccount.notConfigured')}</dd></div>)}
+                            </dl>
+                        </details>
+                    </div>
+                    <dl className="storage-account-details__metadata">
+                        <div><dt>{t('storageAccount.id')}</dt><dd>{details.id}</dd></div>
+                        {(['createdAt', 'updatedAt'] as const).map(key => <div key={key}><dt>{t(`storageAccount.${key}`)}</dt><dd>{details[key] ? formatDateTime(details[key], i18n.resolvedLanguage || i18n.language) : '—'}</dd></div>)}
+                    </dl>
+                </>}
             </div>
+            {details && <footer className="storage-account-details__footer">
+                <div className="storage-account-details__feedback">
+                    {saving && <p role="status">{t('storageAccount.saving')}</p>}
+                    {saveError && <p role="alert" className="storage-account-details__error">{t('storageAccount.saveFailed')}</p>}
+                    {saved && <p role="status" className="storage-account-details__success">{t('storageAccount.saved')}</p>}
+                </div>
+                <Button type="submit" form={`${titleId}-rename`} disabled={invalid || saving || trimmedName === details.name}>
+                    {saving && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />}{t('storageAccount.save')}
+                </Button>
+            </footer>}
         </Dialog>
     </>;
 }

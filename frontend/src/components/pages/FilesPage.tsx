@@ -111,7 +111,7 @@ export const FilesPage = (props: FilesPageProps) => {
                 <div className="tv-files-create-actions"><Button onClick={onUpload}><Upload aria-hidden="true" />{t('app.upload')}</Button><Button variant="outline" size="sm" onClick={onCreateFolder}><FolderPlus aria-hidden="true" />{t(currentFolder ? 'files.newSubfolder' : 'files.createFolder')}</Button></div>
             </header>
 
-            <section data-testid="file-toolbar" className="tv-panel tv-files-filters w-full flex flex-col" aria-label={t('app.fileTypes.filter')}>
+            <section data-testid="file-toolbar" className="tv-panel tv-files-filters" aria-label={t('app.fileTypes.filter')}>
                 <div data-testid="file-toolbar-primary" className="tv-files-search-row min-w-0">
                     <label className="tv-files-search">
                         <Search aria-hidden="true" />
@@ -146,23 +146,21 @@ export const FilesPage = (props: FilesPageProps) => {
                     </div>
                 )}
             <div className="tv-files-library-toolbar">
-                <div className="tv-files-selection-tools">
-                    <Button variant={selection.active ? 'secondary' : 'outline'} size="sm" aria-pressed={selection.active} onClick={selection.onToggle}>
-                        <CheckSquare aria-hidden="true" /><span>{t(selection.active ? 'files.exitSelection' : 'files.select')}</span>
-                    </Button>
-                    {selection.active && (
-                        <label className="tv-files-select-visible">
-                            <input type="checkbox" checked={allVisibleSelected} ref={element => { if (element) element.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected; }} onChange={event => selection.onSelectVisible(event.target.checked)} disabled={!visibleCount || loading || (!!queryError && !isStale)} />
-                            <span>{t('files.selectVisible')}</span>
-                        </label>
-                    )}
-                </div>
-                <div data-testid="file-toolbar-secondary" className="tv-files-display-tools shrink-0">
+                <Button className="tv-files-selection-toggle" variant={selection.active ? 'secondary' : 'outline'} size="sm" aria-pressed={selection.active} onClick={selection.onToggle}>
+                    <CheckSquare aria-hidden="true" /><span>{t(selection.active ? 'files.exitSelection' : 'files.select')}</span>
+                </Button>
+                <div data-testid="file-toolbar-secondary" className="tv-files-display-tools">
                     <ViewToggle viewMode={viewMode} setViewMode={onViewModeChange} />
-                    <Button variant="outline" size="sm" onClick={onRefresh} disabled={loading} aria-label={t('app.refresh')} title={t('app.refresh')}>
-                        {loading ? <IndeterminateSpinner label={t('files.refreshFiles')} size="sm" /> : <RefreshCw aria-hidden="true" />}{t('app.refresh')}
+                    <Button variant="outline" size="sm" className="tv-files-refresh" onClick={onRefresh} disabled={loading} aria-label={t('app.refresh')} title={t('app.refresh')}>
+                        {loading ? <IndeterminateSpinner label={t('files.refreshFiles')} size="sm" /> : <RefreshCw aria-hidden="true" />}<span className="tv-files-refresh-label">{t('app.refresh')}</span>
                     </Button>
                 </div>
+                {selection.active && (
+                    <label className="tv-files-select-visible">
+                        <input type="checkbox" checked={allVisibleSelected} ref={element => { if (element) element.indeterminate = selectedVisibleCount > 0 && !allVisibleSelected; }} onChange={event => selection.onSelectVisible(event.target.checked)} disabled={!visibleCount || loading || (!!queryError && !isStale)} />
+                        <span>{t('files.selectVisible')}</span>
+                    </label>
+                )}
             </div>
             </section>
 

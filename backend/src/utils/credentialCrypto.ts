@@ -11,18 +11,20 @@ const SENSITIVE_CONFIG_KEYS = new Set([
     'username',
 ]);
 
-const SENSITIVE_SETTING_KEYS = new Set([
-    'onedrive_client_secret',
-    'onedrive_refresh_token',
-    'google_drive_client_secret',
-    'google_drive_refresh_token',
-    'admin_password_hash',
-    'telegram_pin_hash',
-    'telegram_bot_token',
-    'telegram_api_id',
-    'telegram_api_hash',
-    'telegram_user_session',
-]);
+const SENSITIVE_SETTING_KEYS: Record<string, true> = {
+    onedrive_client_secret: true,
+    onedrive_refresh_token: true,
+    google_drive_client_secret: true,
+    google_drive_refresh_token: true,
+    admin_password_hash: true,
+    telegram_pin_hash: true,
+    telegram_bot_token: true,
+    telegram_api_id: true,
+    telegram_api_hash: true,
+    telegram_user_session: true,
+    qbittorrent_username: true,
+    qbittorrent_password: true,
+};
 
 function getCredentialSecret(): string {
     const secret = getOrCreatePersistentSecret('STORAGE_CREDENTIALS_SECRET', 'storage_credentials_secret');
@@ -69,7 +71,7 @@ export function decryptCredential(value: string): string {
 }
 
 export function isSensitiveSettingKey(key: string): boolean {
-    return SENSITIVE_SETTING_KEYS.has(key);
+    return Object.hasOwn(SENSITIVE_SETTING_KEYS, key);
 }
 
 export function encryptSettingValue(key: string, value: string): string {

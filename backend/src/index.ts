@@ -11,6 +11,8 @@ import storageRouter from './routes/storage.js';
 import chunkedUploadRouter from './routes/chunkedUpload.js';
 import tasksRouter from './routes/tasks.js';
 import subscriptionsRouter from './routes/subscriptions.js';
+import qbittorrentRouter from './routes/qbittorrent.js';
+import { startQbTasks, stopQbTasks } from './services/qbittorrentTasks.js';
 import authRouter, { requireAuth } from './routes/auth.js';
 import { createSystemRouter } from './routes/system.js';
 import { requireAuthOrSignedUrl } from './middleware/signedUrl.js';
@@ -191,6 +193,7 @@ app.use('/api/chunked', requireAuth, chunkedUploadRouter);
 app.use('/api/tasks', tasksRouter);
 app.use('/api/subscriptions', subscriptionsRouter);
 app.use('/api/storage', storageRouter);
+app.use('/api/qbittorrent', qbittorrentRouter);
 app.use('/api/system', createSystemRouter(updateChecker));
 
 // 健康检查（不需要认证）
@@ -284,6 +287,7 @@ async function initializeApplication(): Promise<void> {
     await markTransferTasksAfterRestart();
     const { storageManager } = await import('./services/storage.js');
     await storageManager.init();
+    startQbTasks();
     await applyPersistedOrphanCleanupSetting();
     startPeriodicCleanup();
     const twoFactor = await get2FAReadiness();
@@ -358,7 +362,7 @@ async function shutdown(signal: string) {
     readinessProbeTimer = null;
     const forceTimer = setTimeout(() => process.exit(1), 30_000);
     forceTimer.unref();
-    await Promise.allSettled([stopTelegramBot(), shutdownTelegramUserClientPool()]);
+    await Promise.allSettled([stopTelegramBot(), shutdownTelegramUserClientPool(), stopQbTasks()]);
     if (server) {
         server.close(async () => {
             try {

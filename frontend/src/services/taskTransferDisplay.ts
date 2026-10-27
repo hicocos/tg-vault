@@ -6,8 +6,9 @@ export function taskTransferDisplay(task: UnifiedTask) {
     const downloading = ['running', 'pausing'].includes(task.status)
         && (typeof task.detail.downloading === 'number' ? task.detail.downloading > 0
             : task.sourceType === 'telegram_channel' ? Number(task.detail.active) > 0 : task.stage === 'downloading');
-    const sample = task.detail.speedBytesPerSecond;
-    const speed = downloading && typeof sample === 'number' && Number.isFinite(sample) && sample >= 0
+    const uploading = task.sourceType === 'qbittorrent' && task.status === 'running' && task.stage === 'uploading';
+    const sample = task.sourceType === 'qbittorrent' ? uploading ? task.detail.uploadSpeed : task.detail.downloadSpeed : task.detail.speedBytesPerSecond;
+    const speed = (downloading || uploading) && typeof sample === 'number' && Number.isFinite(sample) && sample >= 0
         ? `${formatBytes(sample)}/s`
         : task.status === 'running' && typeof task.detail.speed === 'string' ? task.detail.speed : null;
     const transferred = Number.isFinite(task.bytes.transferred) ? Math.max(0, task.bytes.transferred) : 0;

@@ -35,12 +35,15 @@ import { IndeterminateSpinner } from "./components/ui/IndeterminateSpinner";
 import { UploadCenter } from "./components/pages/UploadCenter";
 import { errorMessage, isErrorNamed } from "./services/unknownError";
 import { useAuthSession } from "./hooks/useAuthSession";
+import { QB_CONFIG_CHANGED, qbittorrentClient } from './services/clients/qbittorrentClient';
+import type { QbConfig } from './services/clients/qbittorrentClient';
 
 const FILE_RENDER_WINDOW_SIZE = 200;
 
 const SettingsPage = lazy(() => import("./components/pages/SettingsPage").then(module => ({ default: module.SettingsPage })));
 const TasksPage = lazy(() => import("./components/pages/TasksPage").then(module => ({ default: module.TasksPage })));
 const SubscriptionCenter = lazy(() => import("./components/pages/SubscriptionCenter").then(module => ({ default: module.SubscriptionCenter })));
+const QbittorrentPage = lazy(() => import('./components/pages/QbittorrentPage').then(module => ({ default: module.QbittorrentPage })));
 const PreviewModal = lazy(() => import("./components/ui/PreviewModal").then(module => ({ default: module.PreviewModal })));
 const UploadQueueModal = lazy(() => import("./components/ui/UploadQueueModal").then(module => ({ default: module.UploadQueueModal })));
 const CreateFolderModal = lazy(() => import("./components/ui/CreateFolderModal").then(module => ({ default: module.CreateFolderModal })));
@@ -174,6 +177,9 @@ function App() {
   const { t } = useTranslation();
   const [currentCategory, setCurrentCategory] = useState(() => initialRoute.kind === 'files' ? initialRoute.category : initialRoute.kind);
   const [taskAccountId, setTaskAccountId] = useState<string | null>(() => initialRoute.kind === 'tasks' ? initialRoute.accountId : null);
+  const [qbConfig, setQbConfig] = useState<QbConfig | null>(null);
+  const [qbConfigError, setQbConfigError] = useState<string | null>(null);
+  const [qbConfigEpoch, setQbConfigEpoch] = useState(0);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [fileRenderWindow, setFileRenderWindow] = useState(0);
   const [selectedFile, setSelectedFile] = useState<FileData | null>(null);
@@ -254,6 +260,26 @@ function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, [applyRoute, initialRoute, navigateRoute]);
 
+  useEffect(() => {
+    if (!isAuthenticated) { setQbConfig(null); setQbConfigError(null); return; }
+    let active = true;
+    let changed = false;
+    const handleConfig = (event: Event) => {
+      changed = true;
+      setQbConfig((event as CustomEvent<QbConfig>).detail);
+      setQbConfigError(null);
+    };
+    window.addEventListener(QB_CONFIG_CHANGED, handleConfig);
+    void qbittorrentClient.getConfig().then(config => {
+      if (active && !changed) { setQbConfig(config); setQbConfigError(null); }
+    }).catch(cause => { if (active && !changed) setQbConfigError(errorMessage(cause)); });
+    return () => { active = false; window.removeEventListener(QB_CONFIG_CHANGED, handleConfig); };
+  }, [isAuthenticated, qbConfigEpoch]);
+
+  useEffect(() => {
+    if (currentCategory === 'downloads' && qbConfig?.enabled === false) navigateRoute(routeForSettings('general'), true);
+  }, [currentCategory, navigateRoute, qbConfig]);
+
   const handleCategoryChange = useCallback((category: string) => {
     navigateRoute(routeForCategory(category));
   }, [navigateRoute]);
@@ -274,7 +300,7 @@ function App() {
   const updateSearchQuery = useCallback((query: string) => {
     clearFileInteractionState();
     setSearchQuery(query);
-    if (!['upload', 'tasks', 'subscriptions', 'settings'].includes(currentCategory)) {
+    if (!['upload', 'tasks', 'downloads', 'subscriptions', 'settings'].includes(currentCategory)) {
       window.history.replaceState({}, '', appRouteHref(routeForCategory(currentCategory, { folder: currentFolder, query })));
     }
   }, [clearFileInteractionState, currentCategory, currentFolder]);
@@ -1192,7 +1218,7 @@ function App() {
 
   return (
     <>
-      <AppLayout activeCategory={currentCategory} onCategoryChange={handleCategoryChange} storageStats={storageStats} onLogout={handleLogout}>
+      <AppLayout activeCategory={currentCategory} onCategoryChange={handleCategoryChange} storageStats={storageStats} onLogout={handleLogout} qbittorrentEnabled={qbConfig?.enabled === true}>
         <div className="flex min-w-0 flex-col min-h-full">
           <BotOfflineNotice settingsPolling={currentCategory === 'settings' && settingsSection === 'telegram'}
             onOpenSettings={() => navigateRoute(routeForSettings('telegram'))} />
@@ -1210,13 +1236,16 @@ function App() {
                 onSectionChange={handleSettingsSectionChange}
               />
             </Suspense>
+          ) : currentCategory === 'downloads' ? (
+            qbConfig?.enabled ? <Suspense fallback={<LazyFallback />}><QbittorrentPage config={qbConfig} /></Suspense>
+              : qbConfigError ? <div className="op-notice op-notice--danger" role="alert">{qbConfigError}<Button variant="outline" onClick={() => setQbConfigEpoch(epoch => epoch + 1)}>{t('qbittorrent.reload')}</Button></div> : <LazyFallback />
           ) : currentCategory === "subscriptions" ? (
             <Suspense fallback={<LazyFallback />}>
               <SubscriptionCenter onUnauthorized={markUnauthenticated} />
             </Suspense>
           ) : currentCategory === "tasks" ? (
             <Suspense fallback={<LazyFallback />}>
-              <TasksPage onUnauthorized={markUnauthenticated} onOpenUploads={() => setIsQueueModalOpen(true)} onShowAllTasks={() => navigateRoute(routeForCategory('tasks'))} initialAccountId={taskAccountId} />
+              <TasksPage onUnauthorized={markUnauthenticated} onOpenUploads={() => setIsQueueModalOpen(true)} onShowAllTasks={() => navigateRoute(routeForCategory('tasks'))} initialAccountId={taskAccountId} qbittorrentEnabled={qbConfig?.enabled === true} />
             </Suspense>
           ) : currentCategory === "upload" ? (
             <UploadCenter

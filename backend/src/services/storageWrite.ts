@@ -1,4 +1,5 @@
 import type { IStorageProvider } from './storage.js';
+import type { StorageWriteOptions } from './storage/contracts.js';
 
 export interface IndexedWriteResult {
     savedPath: string;
@@ -31,13 +32,13 @@ export async function saveAndIndexWithCompensation(
     mimeType: string,
     folder: string | null | undefined,
     indexStoredObject: (storedPath: string) => Promise<void>,
-    options?: { signal?: AbortSignal; beforeSave?: (storedPath?: string) => Promise<void> },
+    options?: StorageWriteOptions & { beforeSave?: (storedPath?: string) => Promise<void> },
 ): Promise<string> {
     const prepared = await provider.prepareSaveFile?.(tempPath, storedName, mimeType, folder);
     options?.signal?.throwIfAborted();
     await options?.beforeSave?.(prepared?.storedPath);
-    const storedPath = prepared ? await prepared.save(options?.signal)
-        : await provider.saveFile(tempPath, storedName, mimeType, folder, { signal: options?.signal });
+    const storedPath = prepared ? await prepared.save(options?.signal, options?.onProgress)
+        : await provider.saveFile(tempPath, storedName, mimeType, folder, options);
     try {
         await indexStoredObject(storedPath);
         return storedPath;

@@ -13,6 +13,8 @@ import { mapTelegramChannelJob, mapTransferTask } from '../services/unifiedTaskM
 import { channelRuntimeView } from '../services/telegramChannelRuntimeView.js';
 import { getTelegramTaskFailures, parseTaskFailurePage } from '../services/telegramTaskFailures.js';
 import crypto from 'node:crypto';
+import { qbEnabled } from '../services/qbittorrentConfig.js';
+import { controlQbTask } from '../services/qbittorrentTasks.js';
 
 const router = Router();
 const CHUNK_DIR = process.env.CHUNK_DIR || './data/chunks';
@@ -65,7 +67,8 @@ async function collectUnifiedTasks(limit: number, accountId?: string): Promise<a
             query('SELECT id, name FROM storage_accounts'),
         ]);
         const accountNames = new Map(accounts.rows.map(row => [String(row.id), String(row.name)]));
-        const tasks = transfers.map(task => mapTransferTask(task, accountNames, task.sourceType === 'telegram_bot' ? getDownloadTaskSnapshot(task.id) : undefined));
+        const showQb = await qbEnabled();
+        const tasks = transfers.filter(task => task.sourceType !== 'qbittorrent' || showQb).map(task => mapTransferTask(task, accountNames, task.sourceType === 'telegram_bot' ? getDownloadTaskSnapshot(task.id) : undefined));
         for (const row of channels.rows) tasks.push(mapTelegramChannelJob(channelRuntimeView(row, getChannelExecutionGroup(String(row.id))), accountNames));
         for (const row of chunks.rows) {
             const total = Number(row.total_size || 0);
@@ -273,7 +276,7 @@ router.get('/:sourceType/:id/failures', requireAuth, async (req: Request, res: R
 router.post('/:sourceType/:id/cancel-confirmation', requireAuth, async (req: Request, res: Response) => {
     const sourceType = String(req.params.sourceType);
     const id = String(req.params.id);
-    if (!['telegram_bot', 'telegram_channel', 'web_upload', 'telegram_target', 'subscription'].includes(sourceType)) {
+    if (!['telegram_bot', 'telegram_channel', 'web_upload', 'telegram_target', 'subscription', 'qbittorrent'].includes(sourceType)) {
         return res.status(400).json({ error: '该任务类型暂不支持取消' });
     }
     const authToken = getAuthToken(req);
@@ -295,7 +298,7 @@ router.post('/:sourceType/:id/:action', requireAuth, async (req: Request, res: R
     const id = String(req.params.id);
     const action = String(req.params.action);
     if (!['cancel', 'retry', 'pause', 'resume'].includes(action)) return res.status(400).json({ error: '不支持的任务操作' });
-    if (['pause', 'resume'].includes(action) && !['telegram_channel', 'telegram_bot'].includes(sourceType)) return res.status(400).json({ error: '该任务类型不支持暂停或继续' });
+    if (['pause', 'resume'].includes(action) && !['telegram_channel', 'telegram_bot', 'qbittorrent'].includes(sourceType)) return res.status(400).json({ error: '该任务类型不支持暂停或继续' });
     if (action === 'cancel') {
         const authToken = getAuthToken(req);
         const confirmationToken = String(req.header('x-confirmation-token') || '');
@@ -312,6 +315,10 @@ router.post('/:sourceType/:id/:action', requireAuth, async (req: Request, res: R
     }
     try {
 
+        if (sourceType === 'qbittorrent') {
+            await controlQbTask(id, action);
+            return res.json({ success: true });
+        }
         if (sourceType === 'telegram_bot') {
             const task = await getTransferTask('telegram_bot', id);
             if (!task) return res.status(404).json({ error: '任务不存在' });

@@ -20,7 +20,7 @@ export function SettingsSection({ title, children, sectionId, className, actions
     );
 }
 
-export function SettingsRow({ icon: Icon, label, value, action, onClick, description, stackActionOnMobile = true }: {
+export function SettingsRow({ icon: Icon, label, value, action, onClick, description, stackActionOnMobile = true, className }: {
     icon: ElementType;
     label: string;
     value?: string;
@@ -28,11 +28,12 @@ export function SettingsRow({ icon: Icon, label, value, action, onClick, descrip
     onClick?: () => void;
     description?: string;
     stackActionOnMobile?: boolean;
+    className?: string;
 }) {
     const labelId = useId();
     return (
         <div
-            className={cn('settings-row', !description && 'settings-row--compact', !stackActionOnMobile && 'settings-row--inline', onClick && 'settings-row--clickable')}
+            className={cn('settings-row', !description && 'settings-row--compact', !stackActionOnMobile && 'settings-row--inline', onClick && 'settings-row--clickable', className)}
             onClick={onClick}
             role={onClick ? 'button' : 'group'}
             aria-labelledby={labelId}

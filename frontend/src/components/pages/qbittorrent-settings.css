@@ -1,0 +1,49 @@
+.qb-extension-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.qb-extension-controls .qb-config-trigger { min-height: 44px; gap: 6px; padding-inline: 11px; font-size: 12px; }
+.qb-extension-settings .settings-row { align-items: center; }
+.qb-extension-switch { border-color: hsl(var(--input)); background: hsl(var(--muted)); }
+.qb-extension-switch.is-enabled { border-color: hsl(var(--primary)); background: hsl(var(--primary)); }
+.qb-extension-switch > span { position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; border-radius: 50%; background: hsl(var(--card)); box-shadow: 0 1px 3px hsl(var(--foreground) / .15); transition: transform .15s; }
+.qb-extension-switch.is-enabled > span { transform: translateX(20px); }
+.qb-extension-feedback { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 18px; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.qb-extension-feedback[role='alert'] { color: var(--tv-danger); }
+.tv-dialog.qb-connection-dialog { display: flex; flex-direction: column; width: 560px; max-height: calc(100dvh - 40px); overflow: hidden; font-size: 13px; }
+.qb-connection-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-shrink: 0; padding: 20px 22px; border-bottom: 1px solid hsl(var(--border)); }
+.qb-connection-header > div { min-width: 0; }
+.qb-connection-header h2 { font-size: 19px; font-weight: 600; line-height: 1.4; }
+.qb-connection-header p { margin-top: 7px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.qb-connection-header > button { flex-shrink: 0; }
+.qb-connection-dialog > form { display: flex; flex-direction: column; min-height: 0; overflow: clip; }
+.qb-connection-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px; }
+.qb-connection-scroll fieldset { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding: 0; margin: 0; border: 0; }
+.qb-connection-scroll input { width: 100%; min-width: 0; min-height: 46px; padding: 10px 12px; }
+.qb-connection-dialog .tv-btn { min-height: 44px; gap: 6px; }
+.qb-connection-test { align-self: flex-start; }
+.qb-connection-results { display: grid; gap: 8px; margin-top: 16px; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.qb-connection-results > div { padding: 9px 11px; border-radius: var(--tv-radius-control); }
+.qb-connection-results > .is-success { color: var(--tv-success); background: var(--tv-success-bg); }
+.qb-connection-results > .is-error { color: var(--tv-danger); background: var(--tv-danger-bg); }
+.qb-connection-feedback { flex-shrink: 0; margin: 0 22px 14px; max-height: 24dvh; overflow-y: auto; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.qb-connection-feedback.is-error { color: var(--tv-danger); }
+.qb-connection-feedback.is-success { color: var(--tv-success); }
+.qb-connection-footer { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-shrink: 0; padding: 14px 22px; border-top: 1px solid hsl(var(--border)); background: hsl(var(--card)); }
+.qb-connection-dialog :is(button, input):focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+@media (max-width: 760px) {
+    .qb-extension-settings .settings-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+    .qb-extension-settings .settings-row__copy { grid-column: 1; grid-row: 1; width: auto; }
+    .qb-extension-settings .settings-row__action, .qb-extension-controls { display: contents; }
+    .qb-extension-controls .settings-switch-target { grid-column: 2; grid-row: 1; }
+    .qb-extension-controls .qb-config-trigger { grid-column: 1 / -1; grid-row: 2; justify-self: start; }
+    .tv-dialog-backdrop:has(> .qb-connection-dialog) { align-items: flex-end; padding: 0; }
+    .tv-dialog.qb-connection-dialog { width: 100%; max-width: 100%; max-height: calc(100dvh - 16px); border-radius: 18px 18px 0 0; border-bottom: 0; }
+    .qb-connection-header { padding: 18px 16px 16px; }
+    .qb-connection-header h2 { font-size: 18px; }
+    .qb-connection-scroll { padding: 18px 16px; }
+    .qb-connection-scroll input { font-size: 16px; }
+    .qb-connection-feedback { margin-inline: 16px; }
+    .qb-connection-footer { padding: 14px 16px max(14px, env(safe-area-inset-bottom)); }
+    .qb-connection-footer > button:last-child { flex: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .qb-extension-switch > span { transition: none; }
+}

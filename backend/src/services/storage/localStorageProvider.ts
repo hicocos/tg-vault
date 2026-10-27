@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeJoin } from '../../utils/localPath.js';
-import { type IStorageProvider, StorageProbeError } from './contracts.js';
+import { type IStorageProvider, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './contracts.js';
 
 export class LocalStorageProvider implements IStorageProvider {
     name = 'local';
@@ -22,13 +22,14 @@ export class LocalStorageProvider implements IStorageProvider {
 
     async prepareSaveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null) {
         const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
-        return { storedPath: safeJoin(destDir, fileName), save: async (signal?: AbortSignal) => {
+        return { storedPath: safeJoin(destDir, fileName), save: async (signal?: AbortSignal, onProgress?: StorageUploadProgress) => {
             signal?.throwIfAborted();
-            return this.saveFile(tempPath, fileName, mimeType, folder);
+            return this.saveFile(tempPath, fileName, mimeType, folder, { signal, onProgress });
         } };
     }
 
-    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
+        options?.signal?.throwIfAborted();
         const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
         if (!fs.existsSync(destDir)) {
             fs.mkdirSync(destDir, { recursive: true });
@@ -44,6 +45,10 @@ export class LocalStorageProvider implements IStorageProvider {
             } else {
                 throw error;
             }
+        }
+        if (options?.onProgress) {
+            const { size } = await fs.promises.stat(destPath);
+            options.onProgress(size, size);
         }
         return destPath; // 返回绝对路径
     }

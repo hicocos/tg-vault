@@ -502,9 +502,6 @@ async function admitOrdinaryTransferTask(input: DownloadTaskGroupInput): Promise
 }
 const downloadQueue = new DownloadTaskQueue({
     maxConcurrent: normalizeFileDownloadConcurrency(process.env.TELEGRAM_FILE_DOWNLOAD_CONCURRENCY),
-    uploadConcurrency: Number(process.env.TG_SAVE_CONCURRENCY || 1),
-    maxInFlight: Number(process.env.TG_MAX_IN_FLIGHT_FILES || 2),
-    maxStagedBytes: Number(process.env.TG_STAGING_BUDGET_GB || 4) * 1024 ** 3,
     onGroupChanged: async group => {
         if (group.hidden) return;
         const now = Date.now();

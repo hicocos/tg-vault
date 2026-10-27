@@ -8,7 +8,7 @@ import { google, type drive_v3 } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
 import { MediaSourceMissingError } from './mediaProxyError.js';
-import { type IStorageProvider, type StorageTargetSnapshot, StorageProbeError } from './storage/contracts.js';
+import { type IStorageProvider, type StorageTargetSnapshot, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './storage/contracts.js';
 import { LocalStorageProvider } from './storage/localStorageProvider.js';
 export { type IStorageProvider, type StorageTargetSnapshot, StorageProbeError } from './storage/contracts.js';
 export { LocalStorageProvider } from './storage/localStorageProvider.js';
@@ -28,6 +28,8 @@ import { validateConfiguredStorageTarget } from './storageTargetReadiness.js';
 import { OpenListStorageProvider } from './openListStorage.js';
 import { uploadGoogleDriveFile } from './googleDriveUpload.js';
 import { uploadOneDriveFile } from './oneDriveUpload.js';
+import { addAbortSignal } from 'node:stream';
+import { trackUploadProgress } from './storage/uploadProgress.js';
 
 export class StorageQuotaCooldownError extends Error {
     provider: string;
@@ -142,10 +144,24 @@ export class AliyunOSSStorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             const objectKey = folder ? `${folder}/${fileName}` : fileName;
-            const result = await this.client.put(objectKey, tempPath);
+            options?.signal?.throwIfAborted();
+            const size = options?.onProgress ? (await fs.promises.stat(tempPath)).size : 0;
+            let client = this.client;
+            if (options?.onProgress || options?.signal) {
+                // Keep the SDK's path-based retries, observing each newly opened attempt independently.
+                client = Object.create(this.client);
+                client.putStream = async (name: string, source: fs.ReadStream, config: unknown) => {
+                    if (options.signal) addAbortSignal(options.signal, source);
+                    trackUploadProgress(source, size, options.onProgress);
+                    try { return await this.client.putStream(name, source, config); }
+                    finally { source.destroy(); }
+                };
+            }
+            const result = await client.put(objectKey, tempPath);
+            options?.onProgress?.(size, size);
             console.log('[AliyunOSS] Upload successful:', result.name);
             return result.name;
         } catch (error: any) {
@@ -237,18 +253,21 @@ export class S3StorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             const objectKey = folder ? `${folder}/${fileName}` : fileName;
             const stats = await fs.promises.stat(tempPath);
+            const body = trackUploadProgress(fs.createReadStream(tempPath, { signal: options?.signal }), stats.size, options?.onProgress);
             const command = new PutObjectCommand({
                 Bucket: this.bucket,
                 Key: objectKey,
-                Body: fs.createReadStream(tempPath),
+                Body: body,
                 ContentType: mimeType,
                 ContentLength: stats.size,
             });
-            await this.client.send(command);
+            try { await this.client.send(command, { abortSignal: options?.signal }); }
+            finally { body.destroy(); }
+            options?.onProgress?.(stats.size, stats.size);
             return objectKey;
         } catch (error: any) {
             console.error('[S3] Upload failed:', error.message);
@@ -389,9 +408,11 @@ export class WebDAVStorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             if (!this.authenticationReady && (this.username || this.password)) await this.probe();
+            options?.signal?.throwIfAborted();
+            const size = options?.onProgress ? (await fs.promises.stat(tempPath)).size : 0;
             const remotePath = folder ? `${folder}/${fileName}` : fileName;
             if (folder) {
                 await this.withRequestTimeout(
@@ -400,10 +421,16 @@ export class WebDAVStorageProvider implements IStorageProvider {
                 );
             }
             await this.withRequestTimeout(
-                signal => this.client.putFileContents(`/${remotePath}`, fs.createReadStream(tempPath), { signal }),
+                async signal => {
+                    const uploadSignal = options?.signal ? AbortSignal.any([signal, options.signal]) : signal;
+                    const body = trackUploadProgress(fs.createReadStream(tempPath, { signal: uploadSignal }), size, options?.onProgress);
+                    try { return await this.client.putFileContents(`/${remotePath}`, body, { signal: uploadSignal }); }
+                    finally { body.destroy(); }
+                },
                 'WebDAV upload',
                 this.uploadTimeoutMs,
             );
+            options?.onProgress?.(size, size);
             console.log('[WebDAV] Upload successful:', remotePath);
             return remotePath;
         } catch (error: any) {
@@ -660,7 +687,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: { signal?: AbortSignal }): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         const token = await this.getAccessToken();
         const uploadFolder = await this.ensureFolderExists(token, folder);
         const targetPath = uploadFolder ? `${uploadFolder}/${fileName}` : fileName;
@@ -670,6 +697,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
                 resourceUrl: `https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}`,
                 getAccessToken: () => this.getAccessToken(),
                 signal: options?.signal,
+                onProgress: options?.onProgress,
             });
             console.log('[OneDrive] Upload successful, file ID:', id);
             return id;
@@ -1032,10 +1060,10 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         if (typeof fileId !== 'string' || !fileId) throw new Error('Google Drive did not allocate an upload file ID');
         return {
             storedPath: fileId,
-            save: async (signal?: AbortSignal): Promise<string> => {
+            save: async (signal?: AbortSignal, onProgress?: StorageUploadProgress): Promise<string> => {
                 try {
                     const storedPath = await uploadGoogleDriveFile({
-                        tempPath, fileId, fileName, folderId, signal,
+                        tempPath, fileId, fileName, folderId, signal, onProgress,
                         create: async body => {
                             const file = await drive.files.create(this.withSharedDriveSupport({
                                 requestBody: { id: fileId, name: fileName, parents: [folderId] },
@@ -1070,8 +1098,8 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         };
     }
 
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
-        return (await this.prepareSaveFile(tempPath, fileName, mimeType, folder)).save();
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
+        return (await this.prepareSaveFile(tempPath, fileName, mimeType, folder)).save(options?.signal, options?.onProgress);
     }
 
     async getFileAvailability(storedPath: string): Promise<{ available: true }> {

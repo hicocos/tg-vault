@@ -1,7 +1,7 @@
 import { aboutCopy } from '../pages/AboutPage';
 import React, { useEffect, useRef, useState } from "react";
 import { MotionConfig } from "framer-motion";
-import { Folder, Settings, Menu, X, Star, LogOut, ListChecks, ListFilter, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles, CircleHelp } from "../ui/icons";
+import { Folder, Settings, Menu, X, Star, LogOut, ListChecks, ListFilter, Monitor, Moon, Sun, UploadCloud, ExternalLink, Sparkles, CircleHelp, Download } from "../ui/icons";
 import { cn } from "../../lib/utils";
 import { useTranslation } from "react-i18next";
 import { normalizeLocale } from "../../i18n/registry";
@@ -64,7 +64,7 @@ const SidebarItem = ({ icon: Icon, label, isActive, href, onNavigate }: SidebarI
     </a>
 );
 
-export const AppLayout = ({ children, activeCategory, onCategoryChange, storageStats, onLogout }: { children: React.ReactNode; activeCategory: string; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null; onLogout?: () => void | Promise<void> }) => {
+export const AppLayout = ({ children, activeCategory, onCategoryChange, storageStats, onLogout, qbittorrentEnabled = false }: { children: React.ReactNode; activeCategory: string; onCategoryChange?: (category: string) => void; storageStats?: StorageStats | null; onLogout?: () => void | Promise<void>; qbittorrentEnabled?: boolean }) => {
     const { t, i18n } = useTranslation();
     const copy = shellCopy[normalizeLocale(i18n.resolvedLanguage || i18n.language)];
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
@@ -199,6 +199,7 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
         { id: "all", href: "/files", icon: Folder, label: t("sidebar.files") },
         { id: "favorites", href: "/files/favorites", icon: Star, label: t("sidebar.favorites") },
         { id: "tasks", href: "/tasks", icon: ListChecks, label: t("sidebar.tasks") },
+        ...(qbittorrentEnabled ? [{ id: 'downloads', href: '/downloads', icon: Download, label: t('qbittorrent.nav') }] : []),
         { id: "subscriptions", href: "/subscriptions", icon: ListFilter, label: t('sidebar.subscriptions') },
         { id: "settings", href: "/settings/general", icon: Settings, label: t("sidebar.settings") },
         { id: "about", href: "/about", icon: CircleHelp, label: aboutCopy[normalizeLocale(i18n.resolvedLanguage || i18n.language)].title },

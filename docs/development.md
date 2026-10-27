@@ -4,18 +4,12 @@
 
 ## 仓库文件边界
 
-| 路径 | 内容 | 是否提交 |
-| --- | --- | --- |
-| `backend/src/`、`frontend/src/` | 应用源码、数据库 baseline、迁移与快照 | 是 |
-| `backend/scripts/`、`frontend/scripts/` | 构建、运行支持脚本与行为回归测试 | 是 |
-| `deploy/`、`docs/`、`.github/` | 部署工具、使用文档与发布流水线 | 是 |
-| `package.json`、`package-lock.json`（两端） | 依赖声明与锁文件 | 是 |
-| `.env.example`、Compose、Dockerfile、`init.sql` | 脱敏配置模板、构建入口与生成的 schema 快照 | 是 |
-| `.env`、`backend/.env`、`frontend/.env*` | 实际地址、数据库连接与部署密钥 | 否 |
-| `data/`、`backend/data/`、备份与 session 文件 | 文件数据、账号会话和持久密钥 | 否；必须保留并独立备份 |
-| `node_modules/`、`dist/`、覆盖率、缓存与日志 | 本地生成内容 | 否 |
+提交源码、行为回归测试、锁文件、部署脚本、脱敏模板及数据库迁移/快照。以下内容仅在本地保留并独立备份，不提交：
 
-`.gitignore` 不会取消已经跟踪的文件，也不会清除历史提交中的秘密。不要用 `git clean -fdx` 清理部署目录：被忽略的数据、配置和密钥也可能被删除。测试属于源码，不应因清理工作区而丢弃；Docker 构建上下文单独排除测试、运行数据和本地配置。
+- 实际 `.env`、文件数据、Telegram session、密钥和存储凭证。
+- 数据库导出、备份、原始日志、依赖、构建产物及缓存。
+
+`.gitignore` 不会取消已跟踪文件或清除历史秘密。不要用 `git clean -fdx` 清理部署目录；Docker 构建上下文另行排除测试与私有数据。
 
 ## 独立开发环境
 
@@ -89,7 +83,7 @@ npm --prefix backend audit --omit=dev --audit-level=high
 npm --prefix frontend audit --omit=dev --audit-level=high
 ```
 
-后端 `build` 使用 esbuild，不替代 TypeScript 类型检查；它同时打包数据库 CLI、baseline、迁移和快照清单。回归测试使用合成数据和注入的客户端，不需要真实 Telegram 账号。测试覆盖资源限制、Bot 断线清理、下载恢复、来源权限、OAuth 弹窗验证与重连判定。
+后端 `build` 不替代类型检查，同时打包数据库 CLI 与迁移资源。回归测试使用合成数据，无需真实 Telegram 或存储账号。
 
 schema 快照检查会创建并删除临时数据库，**必须使用独立、可丢弃的 PostgreSQL 16 服务**，账号需有 `CREATE DATABASE` 权限。不要将它指向生产，即使命令名是 `check`。配置该服务的 `DATABASE_URL` 后运行：
 
@@ -107,11 +101,10 @@ npm --prefix backend run schema:check
 
 ## GitHub 公开发布检查
 
-1. 检查待提交文件和历史：不得包含实际 `.env`、Telegram session、私钥、存储凭证、数据库导出、原始日志或私有文件。截图与问题报告也需移除手机号、用户/聊天标识、真实域名和服务器私有路径。
-2. 若秘密曾提交，先撤销或轮换凭证，再处理所有受影响历史及远端副本；仅删除当前文件或补 `.gitignore` 不足以补救。不要未经协商强推改写历史。
-3. 提交所有新增源码、迁移、快照和行为测试；确认文档链接、两端版本和锁文件一致。不要通过提交依赖或编译产物让构建“可用”。
-4. 在无私有配置、无预装依赖的干净副本执行上述检查，再用无敏感内容的小文件验证实际上传、下载和登录流程。
-5. GitHub Actions 的 `quality` 作业使用独立 PostgreSQL，并依次运行依赖审计、回归、schema/typecheck/lint/build。全部通过后才构建镜像；PR 不推送镜像，默认分支更新 `latest`，`v*` 标签生成版本标签。发布产物还包含 CycloneDX SBOM、镜像 SBOM 与 provenance。
-6. 首次发布需在 GitHub 确认前后端 GHCR 包可公开拉取。Fork 发布前同步修改工作流镜像命名、Compose、安装器中的仓库/镜像地址和更新检查仓库；不要假设 Fork 会自动切换部署来源。
+1. 检查待提交文件与历史中的凭证、session、数据库导出及私有信息；截图与日志也需脱敏。秘密曾提交时先撤销或轮换，再协商清理历史，不能只删当前文件。
+2. 提交完整新增源码与行为测试；两端 `package.json`、锁文件根版本及 `CHANGELOG.md` 保持一致。
+3. 在无私有配置的干净副本完成上述检查，再以无敏感内容的小文件验证登录、上传与下载。
+4. 推送默认分支会在 CI 通过后更新 GHCR `latest`；`v<版本>` 标签发布版本镜像，PR 不推送镜像。CI 同时生成 SBOM 和 provenance；首次发布确认两个 GHCR 包可公开拉取。
+5. CI 通过且镜像就绪后创建 GitHub Release，说明取自更新日志对应版本。Fork 须同步修改镜像、部署来源和更新检测仓库。
 
-未提交的整理不会改变现有运行容器。发布源码、推送 Git 和替换服务器容器是不同操作，部署流程见[部署指南](../deploy/DEPLOY.md)。
+提交、推送与服务器升级是独立操作；本地整理不会替换运行容器，升级见[部署指南](../deploy/DEPLOY.md)。

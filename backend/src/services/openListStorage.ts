@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { IStorageProvider } from './storage.js';
+import type { StorageWriteOptions } from './storage/contracts.js';
+import { trackUploadProgress } from './storage/uploadProgress.js';
 import { fetchPublicHttpUrl } from '../utils/networkSecurity.js';
 
 interface OpenListEnvelope<T = unknown> {
@@ -171,8 +173,10 @@ export class OpenListStorageProvider implements IStorageProvider {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(new Error('OpenList request timed out')), timeoutMs);
         try {
-            return await this.requestFetch(`${this.address}${relativeUrl}`, { ...init, signal: controller.signal });
+            const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
+            return await this.requestFetch(`${this.address}${relativeUrl}`, { ...init, signal });
         } catch (error) {
+            init.signal?.throwIfAborted();
             if ((error as any)?.name === 'AbortError' || controller.signal.aborted) {
                 throw new OpenListRequestError('OpenList 请求超时', { cause: error });
             }
@@ -280,7 +284,8 @@ export class OpenListStorageProvider implements IStorageProvider {
         }
     }
 
-    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null): Promise<string> {
+    async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
+        options?.signal?.throwIfAborted();
         const stats = await fs.promises.stat(tempPath);
         const remoteDirectory = joinRemotePath(this.rootPath, folder);
         const storedPath = joinRemotePath(remoteDirectory, null, fileName);
@@ -288,27 +293,35 @@ export class OpenListStorageProvider implements IStorageProvider {
 
         const uploadOnce = async () => {
             const token = await this.getToken();
-            const body = Readable.toWeb(fs.createReadStream(tempPath)) as ReadableStream;
-            const response = await this.fetchWithTimeout('/api/fs/put', {
-                method: 'PUT',
-                headers: {
-                    Authorization: token,
-                    'File-Path': encodeFilePath(storedPath),
-                    'Content-Type': mimeType || 'application/octet-stream',
-                    'Content-Length': String(stats.size),
-                    'X-File-Size': String(stats.size),
-                    'As-Task': 'false',
-                    Overwrite: 'false',
-                },
-                body,
-                duplex: 'half',
-            } as RequestInit, this.uploadTimeoutMs);
-            return this.parseEnvelope(response);
+            options?.signal?.throwIfAborted();
+            const source = trackUploadProgress(fs.createReadStream(tempPath, { signal: options?.signal }), stats.size, options?.onProgress);
+            const body = Readable.toWeb(source, options?.onProgress ? {
+                strategy: { highWaterMark: source.readableHighWaterMark, size: (chunk: Uint8Array) => chunk.byteLength },
+            } : undefined) as ReadableStream;
+            try {
+                const response = await this.fetchWithTimeout('/api/fs/put', {
+                    method: 'PUT',
+                    headers: {
+                        Authorization: token,
+                        'File-Path': encodeFilePath(storedPath),
+                        'Content-Type': mimeType || 'application/octet-stream',
+                        'Content-Length': String(stats.size),
+                        'X-File-Size': String(stats.size),
+                        'As-Task': 'false',
+                        Overwrite: 'false',
+                    },
+                    body,
+                    signal: options?.signal,
+                    duplex: 'half',
+                } as RequestInit, this.uploadTimeoutMs);
+                return await this.parseEnvelope(response);
+            } finally { source.destroy(); }
         };
 
         try {
             await uploadOnce();
         } catch (error) {
+            options?.signal?.throwIfAborted();
             const code = Number((error as OpenListRequestError)?.code || (error as OpenListRequestError)?.status || 0);
             if (code === 401 || code === 403) {
                 await this.getToken(true);
@@ -316,7 +329,10 @@ export class OpenListStorageProvider implements IStorageProvider {
             } else {
                 try {
                     const remote = await this.getInfo(storedPath);
-                    if (!remote.is_dir && Number(remote.size) === stats.size) return storedPath;
+                    if (!remote.is_dir && Number(remote.size) === stats.size) {
+                        options?.onProgress?.(stats.size, stats.size);
+                        return storedPath;
+                    }
                 } catch {
                     // Preserve the original upload error when the remote result cannot prove success.
                 }
@@ -328,6 +344,7 @@ export class OpenListStorageProvider implements IStorageProvider {
         if (remote.is_dir || Number(remote.size) !== stats.size) {
             throw new OpenListRequestError('OpenList 上传后文件大小校验失败');
         }
+        options?.onProgress?.(stats.size, stats.size);
         return storedPath;
     }
 

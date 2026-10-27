@@ -2,7 +2,7 @@ import { downloadProgressView } from './downloadProgress.js';
 import type { DownloadTaskGroupSnapshot } from './downloadTaskQueue.js';
 import type { TransferTaskRecord } from './transferTasks.js';
 
-export type UnifiedTaskSourceType = 'telegram_bot' | 'telegram_channel' | 'web_upload' | 'subscription' | 'telegram_target';
+export type UnifiedTaskSourceType = 'telegram_bot' | 'telegram_channel' | 'web_upload' | 'subscription' | 'telegram_target' | 'qbittorrent';
 
 export interface UnifiedTask {
     id: string;
@@ -184,11 +184,14 @@ export function mapTransferTask(task: TransferTaskRecord, accountNames: Readonly
         },
         counts: live ? { total: live.total, completed: live.completed, failed: live.failed }
             : { total: task.totalItems, completed: task.completedItems, failed: task.failedItems },
-        bytes: telegram ? { total: telemetry.totalBytes, transferred: telemetry.completedBytes } : { total: task.totalBytes, transferred: task.transferredBytes },
-        detail: telegram ? { ...task.payload, ...live, speedBytesPerSecond: telemetry.speedBytesPerSecond } : task.payload,
+        bytes: telegram ? { total: telemetry.totalBytes, transferred: telemetry.completedBytes }
+            : { total: task.totalBytes, transferred: task.sourceType === 'qbittorrent' && ['submitting', 'metadata', 'downloading'].includes(task.stage) ? Number(task.payload.downloadedBytes ?? Math.floor(task.totalBytes * Number(task.payload.downloadProgress || 0) / 100)) : task.transferredBytes },
+        detail: telegram ? { ...task.payload, ...live, speedBytesPerSecond: telemetry.speedBytesPerSecond }
+            : task.sourceType === 'qbittorrent' ? { downloadProgress: task.payload.downloadProgress, downloadSpeed: task.payload.downloadSpeed, downloadedBytes: task.payload.downloadedBytes, uploadSpeed: task.status === 'running' && task.stage === 'uploading' ? task.payload.uploadSpeed : 0, preserveLocalFiles: task.payload.preserveLocalFiles }
+                : task.payload,
         error: live ? live.reason || (live.failed > 0 ? `${live.failed} 个文件处理失败` : null) : task.error,
         retryable,
-        cancellable: ['pending', 'running', 'pausing', 'paused'].includes(status) || retryable,
+        cancellable: !(task.sourceType === 'qbittorrent' && (task.cancelRequested || ['cleaning', 'cancelling'].includes(task.stage))) && (['pending', 'running', 'pausing', 'paused'].includes(status) || retryable),
         createdAt: task.createdAt,
         updatedAt: live ? new Date(live.updatedAt).toISOString() : task.updatedAt,
         finishedAt: live ? terminal ? new Date(live.updatedAt).toISOString() : null : task.finishedAt,
