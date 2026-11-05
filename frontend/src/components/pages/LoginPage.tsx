@@ -141,7 +141,7 @@ export const LoginPage = ({ onLogin, setupRequired = false, telegramPinRequired 
                 </label>
             </div>
             <a href="/" className="tv-shell-brand">
-                <img src="/logo-160.webp?v=tg-vault" srcSet="/logo-80.webp?v=tg-vault 80w, /logo-160.webp?v=tg-vault 160w" sizes="44px" alt="" width="44" height="44" decoding="async" />
+                <img src="/logo-160.webp?v=logo15-482cd86d" srcSet="/logo-80.webp?v=logo15-482cd86d 80w, /logo-160.webp?v=logo15-482cd86d 160w" sizes="44px" alt="" width="44" height="44" decoding="async" />
                 <span className="tv-brand-copy"><strong>{t('app.title')}</strong><small>{copy.console}</small></span>
             </a>
 

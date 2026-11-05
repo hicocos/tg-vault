@@ -110,7 +110,7 @@
   flex: 0 0 38px;
   border-radius: var(--tv-radius-panel);
   object-fit: contain;
-  box-shadow: 0 4px 12px hsl(var(--primary) / .1);
+  filter: drop-shadow(0 4px 12px hsl(var(--primary) / .1));
 }
 .tv-brand-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .tv-brand-copy strong { font-size: 23px; font-weight: 700; letter-spacing: -.035em; white-space: nowrap; }

@@ -221,7 +221,7 @@ export const AppLayout = ({ children, activeCategory, onCategoryChange, storageS
                     inert={!isDesktop && !mobileOpen} tabIndex={-1}>
                     <div className="tv-sidebar-brand-row">
                         <a href="/" onClick={navigateHome} className="tv-shell-brand" title={t('app.title')}>
-                            <img src="/logo-80.webp?v=tg-vault" alt="" width="38" height="38" decoding="async" />
+                            <img src="/logo-80.webp?v=logo15-482cd86d" alt="" width="38" height="38" decoding="async" />
                             <span className="tv-brand-copy"><strong>{t('app.title')}</strong><small>{copy.console}</small></span>
                         </a>
                         <button ref={closeButtonRef} type="button" className="tv-icon-button tv-mobile-close" onClick={() => setIsMobileMenuOpen(false)} aria-label={t('sidebar.closeNavigation')} title={t('sidebar.closeNavigation')}><X size={18} aria-hidden="true" /></button>

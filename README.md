@@ -2,7 +2,7 @@
   <strong>简体中文</strong> | <a href="README_EN.md">English</a>
 </p>
 
-<p align="center"><img src="backend/logo.png" alt="TG Vault Logo" width="150" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/hicocos/tg-vault/main/backend/logo.png?v=logo15-482cd86d" alt="TG Vault Logo" width="150" /></p>
 
 # TG Vault
 
