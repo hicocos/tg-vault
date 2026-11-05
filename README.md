@@ -6,7 +6,7 @@ permalink: /
 
 {% include nav.html %}
 
-<img class="docs-logo" src="{{ '/assets/logo.png' | relative_url }}" alt="TG Vault Logo">
+<img class="docs-logo" src="{{ '/assets/logo.png?v=logo15-482cd86d' | relative_url }}" alt="TG Vault Logo">
 
 <p class="doc-lead"><strong>把 Telegram 变成你的自动化私有云入口。</strong><br>从 Telegram 或 Web 接收内容，转存到本地磁盘或多个云存储账户，并在同一个 Web 控制台中检索和管理。</p>
 
