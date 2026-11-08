@@ -291,6 +291,14 @@ export async function persistChannelJobAdmission(
         storageAccountId: target.accountId,
     };
     return dependencies.withTransaction(async client => {
+        if (input.params.mcpClientId && input.params.mcpRequestId) {
+            await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+                [`mcp:archive:${input.params.mcpClientId}:${input.params.mcpRequestId}`]);
+            const existing = await client.query(`SELECT id FROM telegram_background_jobs
+                WHERE params->>'mcpClientId'=$1 AND params->>'mcpRequestId'=$2`,
+                [input.params.mcpClientId, input.params.mcpRequestId]);
+            if (existing.rows[0]) return String(existing.rows[0].id);
+        }
         if (target.accountId) await dependencies.lockStorageAccount(client, target.accountId);
         const result = await client.query(
             `INSERT INTO telegram_background_jobs (user_id, chat_id, kind, source, params, status, scan_status, download_status, scan_cursor, ad_decision_id)
@@ -767,6 +775,7 @@ export async function subscribeTelegramChannel(
     folderOverride?: string | null,
     locale: TelegramLocale = DEFAULT_LOCALE,
     configuration?: Omit<TelegramSubscriptionConfiguration, 'folderOverride'>,
+    requiredExistingTarget?: StorageTargetSnapshot,
 ) {
 
     const resolved = await resolveTelegramSource(sourceInput, locale);
@@ -788,13 +797,17 @@ export async function subscribeTelegramChannel(
              file_filter_mode = CASE WHEN $13::boolean THEN EXCLUDED.file_filter_mode ELSE telegram_channel_subscriptions.file_filter_mode END,
              file_filter_types = CASE WHEN $13::boolean THEN EXCLUDED.file_filter_types ELSE telegram_channel_subscriptions.file_filter_types END,
              updated_at = NOW()
+         WHERE NOT $16::boolean OR (telegram_channel_subscriptions.target_mode = 'fixed'
+             AND telegram_channel_subscriptions.target_provider = $17
+             AND telegram_channel_subscriptions.target_account_id IS NOT DISTINCT FROM $18::uuid)
          RETURNING *`,
         [userId, chatId || null, resolved.source, resolved.originalSource, resolved.sourceType, title, latestMessageId, folderOverride || null,
             configuration?.targetMode || 'follow_global',
             configuration?.targetMode === 'fixed' ? configuration.targetProvider : null,
             configuration?.targetMode === 'fixed' ? configuration.targetAccountId : null,
             configuration?.adFilterMode || 'off', Boolean(configuration),
-            configuration?.fileFilterMode || 'all', configuration?.fileFilterTypes || []],
+            configuration?.fileFilterMode || 'all', configuration?.fileFilterTypes || [],
+            Boolean(requiredExistingTarget), requiredExistingTarget?.provider.name || null, requiredExistingTarget?.accountId || null],
     );
     // Web configuration and account validation commit together; unchanged Bot callers
     // retain their existing target/filter settings when restoring a subscription.
@@ -809,18 +822,21 @@ export async function subscribeTelegramChannel(
     return subscription;
 }
 
-export async function updateTelegramSubscriptionConfiguration(subscriptionId: string, configuration: TelegramSubscriptionConfiguration) {
+export async function updateTelegramSubscriptionConfiguration(subscriptionId: string, configuration: TelegramSubscriptionConfiguration, requiredExistingTarget?: StorageTargetSnapshot) {
     return withTelegramSubscriptionTarget(configuration, async client => {
         const result = await client.query(
             `UPDATE telegram_channel_subscriptions
              SET folder_override = $2, target_mode = $3, target_provider = $4,
                  target_account_id = $5, ad_filter_mode = $6,
                  file_filter_mode = $7, file_filter_types = $8::text[], updated_at = NOW()
-             WHERE id = $1::uuid RETURNING *`,
+             WHERE id = $1::uuid AND (NOT $9::boolean OR (target_mode='fixed'
+                 AND target_provider=$10 AND target_account_id IS NOT DISTINCT FROM $11::uuid))
+             RETURNING *`,
             [subscriptionId, configuration.folderOverride, configuration.targetMode,
                 configuration.targetMode === 'fixed' ? configuration.targetProvider : null,
                 configuration.targetMode === 'fixed' ? configuration.targetAccountId : null,
-                configuration.adFilterMode, configuration.fileFilterMode, configuration.fileFilterTypes],
+                configuration.adFilterMode, configuration.fileFilterMode, configuration.fileFilterTypes,
+                Boolean(requiredExistingTarget), requiredExistingTarget?.provider.name || null, requiredExistingTarget?.accountId || null],
         );
         return result.rows[0] || null;
     });
@@ -1088,10 +1104,11 @@ async function putJobIntoStorageCooldown(jobId: string, cooldownUntil: Date, rea
 }
 
 async function applyStorageCooldownIfNeeded(jobId: string): Promise<StorageAccountCooldown | null> {
-    const provider = storageManager.getProvider();
-    const activeAccountId = storageManager.getActiveAccountId();
-    if (provider.name !== 'google_drive' || !activeAccountId) return null;
-    const cooldown = await getStorageAccountCooldown(activeAccountId, provider.name, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
+    const job = await getJob(jobId);
+    const provider = job?.params?.storageProvider;
+    const accountId = job?.params?.storageAccountId;
+    if (provider !== 'google_drive' || !accountId) return null;
+    const cooldown = await getStorageAccountCooldown(accountId, provider, STORAGE_COOLDOWN_REASON_DAILY_UPLOAD_LIMIT);
     if (!cooldown) return null;
     await putJobIntoStorageCooldown(jobId, cooldown.cooldownUntil, `Google Drive 今日上传额度已达上限，自动暂停到 ${cooldown.cooldownUntil.toISOString()}`);
     return cooldown;
@@ -1129,9 +1146,9 @@ async function notifyStorageCooldownOnce(botClient: TelegramClient, job: any, co
 async function handleStorageQuotaCooldownError(botClient: TelegramClient, jobId: string, error: unknown): Promise<boolean> {
     if (!isStorageQuotaCooldownError(error)) return false;
     const cooldownUntil = error.cooldownUntil;
-    await markStorageAccountCooldown(error.storageAccountId || storageManager.getActiveAccountId(), error.provider, error.reason, cooldownUntil, error.message);
-    await putJobIntoStorageCooldown(jobId, cooldownUntil, error.message);
     const job = await getJob(jobId);
+    await markStorageAccountCooldown(error.storageAccountId || job?.params?.storageAccountId, error.provider, error.reason, cooldownUntil, error.message);
+    await putJobIntoStorageCooldown(jobId, cooldownUntil, error.message);
     if (job) await notifyStorageCooldownOnce(botClient, job, cooldownUntil);
     return true;
 }
@@ -1547,6 +1564,23 @@ async function prepareTelegramJobFileSelection(jobId: string): Promise<Array<{ f
             const count = Number(counts.rows.find(row => row.file_category === fileType)?.count || 0);
             return count > 0 ? [{ fileType, count }] : [];
         });
+        if (Array.isArray(job.params.requestedFileTypes)) {
+            const selected: TelegramBatchFileType[] = job.params.requestedFileTypes;
+            await client.query(`UPDATE telegram_download_items SET status='excluded',
+                error='Excluded by archive file-type selection', last_error='Excluded by archive file-type selection',
+                completed_at=NOW(), updated_at=NOW()
+                WHERE job_id=$1 AND status='pending' AND NOT (COALESCE(file_category, 'other')=ANY($2::text[]))`,
+                [jobId, selected]);
+            const excluded = await client.query(`SELECT COUNT(*)::int AS count FROM telegram_download_items
+                WHERE job_id=$1 AND status='excluded'`, [jobId]);
+            const params = { ...job.params, availableFileTypes, selectedFileTypes: selected,
+                fileSelectionConfirmed: true, excludedCount: Number(excluded.rows[0].count) };
+            await client.query(`UPDATE telegram_background_jobs SET params=$2::jsonb,
+                total_count=(SELECT COUNT(*) FROM telegram_download_items WHERE job_id=$1 AND status<>'excluded'),
+                updated_at=NOW() WHERE id=$1`, [jobId, JSON.stringify(params)]);
+            await client.query('COMMIT');
+            return [];
+        }
         if (availableFileTypes.length > 0) {
             const params = { ...job.params, availableFileTypes,
                 selectedFileTypes: availableFileTypes.map(item => item.fileType), fileSelectionConfirmed: false };
@@ -1838,69 +1872,73 @@ async function runSegmentedTelegramJob(botClient: TelegramClient, requestMessage
     return { jobId, ...totals, requested: totals.found + totals.skipped, commentMessagesScanned: Number(cursor.commentMessagesScanned || 0), commentMediaFound: Number(cursor.commentMediaFound || 0) };
 }
 
-export async function enqueueTelegramDateDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, startDateText: string, endDateText: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
+export interface TelegramArchiveAdmission {
+    userId: number;
+    chatId?: string;
+    source: string;
+    mode: 'date' | 'tag';
+    startDate?: string;
+    endDate?: string;
+    tag?: string;
+    folderOverride?: string | null;
+    target: StorageTargetSnapshot;
+    options?: TelegramCommentScanOptions;
+    requestedFileTypes?: TelegramBatchFileType[];
+    largeRangeConfirmed?: boolean;
+    mcpRequest?: { clientId: string; requestId: string };
+}
+
+// Admission has no Bot/message dependency. The existing recovery worker owns execution.
+export async function admitTelegramArchive(input: TelegramArchiveAdmission) {
+    const options = input.options || {};
     const locale = options.locale || DEFAULT_LOCALE;
-
-    const resolved = await resolveTelegramSource(sourceInput, locale);
+    const range = input.mode === 'date' ? parseTelegramDateRange(input.startDate!, input.endDate!) : null;
+    if (range?.requiresLargeRangeConfirmation && !input.largeRangeConfirmed) {
+        throw new Error('LARGE_RANGE_CONFIRMATION_REQUIRED');
+    }
+    const tag = input.mode === 'tag' ? normalizeHashtag(input.tag!, locale) : undefined;
+    const resolved = await resolveTelegramSource(input.source, locale);
     await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource], locale);
-    const source = resolved.source;
-    const range = parseTelegramDateRange(startDateText, endDateText);
-    const { startDate, endDate } = range;
-
-    const target = resolveChannelJobTargetSnapshot(options.target, () => storageManager.getActiveTarget());
     const jobId = await createJob({
-        userId,
-        chatId: requestMessage.chatId?.toString(),
-        kind: 'date_range',
-        source,
-        target,
+        userId: input.userId, chatId: input.chatId, target: input.target,
+        kind: input.mode === 'date' ? 'date_range' : 'tag_download', source: resolved.source,
         params: {
-            mode: 'date',
-            startDate: startDateText,
-            endDate: endDateText,
-            startDateIso: startDate.toISOString(),
-            endDateIso: endDate.toISOString(),
-            dayCount: range.dayCount,
-            largeRange: range.requiresLargeRangeConfirmation,
-            folderOverride: folderOverride || null,
+            mode: input.mode,
+            sourceOriginal: resolved.originalSource,
+            ...(range ? { startDate: input.startDate, endDate: input.endDate,
+                startDateIso: range.startDate.toISOString(), endDateIso: range.endDate.toISOString(),
+                dayCount: range.dayCount, largeRange: range.requiresLargeRangeConfirmation } : { tag }),
+            folderOverride: input.folderOverride || null,
             includeComments: Boolean(options.includeComments),
             commentsMaxPerPost: options.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
             fileSelectionConfirmed: false,
+            requestedFileTypes: input.requestedFileTypes,
             progressMessageId: options.progressMessageId,
+            ...(input.mcpRequest ? { mcpClientId: input.mcpRequest.clientId, mcpRequestId: input.mcpRequest.requestId } : {}),
             locale,
         },
     });
+    return { jobId, source: resolved.source, tag };
+}
+
+export function wakeTelegramArchiveWorker(): void {
+    requestTelegramJobRecovery();
+}
+
+export async function enqueueTelegramDateDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, startDateText: string, endDateText: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
+    const { jobId, source } = await admitTelegramArchive({ userId, chatId: requestMessage.chatId?.toString(),
+        source: sourceInput, mode: 'date', startDate: startDateText, endDate: endDateText, folderOverride, options,
+        target: resolveChannelJobTargetSnapshot(options.target, () => storageManager.getActiveTarget()),
+        // The Bot wizard already confirms long ranges before this submission entrypoint.
+        largeRangeConfirmed: true });
     await options.onCreated?.(jobId);
     return runChannelJob(jobId, () => runSegmentedTelegramJob(botClient, requestMessage, jobId, source, folderOverride, options));
 }
 
-
 export async function enqueueTelegramTagDownload(botClient: TelegramClient, requestMessage: Api.Message, userId: number, sourceInput: string, tagInput: string, folderOverride?: string | null, options: TelegramCommentScanOptions = {}) {
-    const locale = options.locale || DEFAULT_LOCALE;
-
-    const resolved = await resolveTelegramSource(sourceInput, locale);
-    await assertTelegramSourceAllowed(resolved.source, [resolved.originalSource], locale);
-    const source = resolved.source;
-    const tag = normalizeHashtag(tagInput, locale);
-
-    const target = resolveChannelJobTargetSnapshot(options.target, () => storageManager.getActiveTarget());
-    const jobId = await createJob({
-        userId,
-        chatId: requestMessage.chatId?.toString(),
-        kind: 'tag_download',
-        source,
-        target,
-        params: {
-            mode: 'tag',
-            tag,
-            folderOverride: folderOverride || null,
-            includeComments: Boolean(options.includeComments),
-            commentsMaxPerPost: options.commentsMaxPerPost || TELEGRAM_COMMENTS_MAX_PER_POST,
-            fileSelectionConfirmed: false,
-            progressMessageId: options.progressMessageId,
-            locale,
-        },
-    });
+    const { jobId, source, tag } = await admitTelegramArchive({ userId, chatId: requestMessage.chatId?.toString(),
+        source: sourceInput, mode: 'tag', tag: tagInput, folderOverride, options,
+        target: resolveChannelJobTargetSnapshot(options.target, () => storageManager.getActiveTarget()) });
     await options.onCreated?.(jobId);
     const result = await runChannelJob(jobId, () => runSegmentedTelegramJob(botClient, requestMessage, jobId, source, folderOverride, options));
     return { ...result, tag };
@@ -2133,11 +2171,14 @@ export async function retryTelegramBackgroundJobWithQuery(runQuery: TelegramJobQ
                AND j.paused_at IS NULL
                AND j.status IN ('failed', 'completed_with_errors')
                AND (j.cooldown_until IS NULL OR j.cooldown_until <= NOW())
-               AND EXISTS (SELECT 1 FROM retried)
+               AND (EXISTS (SELECT 1 FROM retried)
+                    OR (j.kind IN ('date_range', 'tag_download')
+                        AND j.params ? 'mode'
+                        AND COALESCE(j.scan_status, 'pending') <> 'done'))
              RETURNING j.id
          )
-         SELECT updated_job.id, COUNT(retried.*)::int AS retried
-         FROM updated_job JOIN retried ON retried.job_id = updated_job.id
+         SELECT updated_job.id, COUNT(retried.job_id)::int AS retried
+         FROM updated_job LEFT JOIN retried ON retried.job_id = updated_job.id
          GROUP BY updated_job.id`,
         [userId, `${normalized}%`, chatId || null],
     );
@@ -2604,7 +2645,10 @@ export async function recoverInterruptedTelegramJobs(botClient: TelegramClient):
                AND j.id::text <> ALL($1::text[])
                AND (EXISTS (SELECT 1 FROM telegram_download_items i WHERE i.job_id=j.id AND i.status='pending')
                     OR (j.kind IN ('date_range','tag_download') AND
-                        (COALESCE(j.scan_status,'pending') <> 'done' OR j.params->>'fileSelectionConfirmed' IS DISTINCT FROM 'true')))
+                        (COALESCE(j.scan_status,'pending') <> 'done' OR j.params->>'fileSelectionConfirmed' IS DISTINCT FROM 'true'
+                         OR (j.params ? 'mode'
+                             AND NOT EXISTS (SELECT 1 FROM telegram_download_items i WHERE i.job_id=j.id AND i.status='downloading')
+                             AND NOT EXISTS (SELECT 1 FROM telegram_write_reconciliations r WHERE r.job_id=j.id AND r.status='pending')))))
              ORDER BY j.created_at ASC LIMIT 5`,
             [Array.from(runningChannelJobs.keys())]
         );

@@ -3,6 +3,7 @@ export const SETTINGS_SECTIONS = [
     { id: 'security', labelKey: 'settings.nav.security' },
     { id: 'telegram', labelKey: 'settings.nav.telegram' },
     { id: 'storage', labelKey: 'settings.nav.storage' },
+    { id: 'mcp', labelKey: 'mcp.nav' },
     { id: 'maintenance', labelKey: 'settings.nav.maintenance' },
 ] as const;
 

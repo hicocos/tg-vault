@@ -84,6 +84,23 @@ export async function deleteStorageAccountWithClient(client: LifecycleClient, ac
     const account = accountResult.rows[0];
     if (account.is_active) throw new StorageAccountConflictError('active');
 
+    const mcpUploadReference = await client.query(
+        `SELECT id FROM mcp_uploads WHERE storage_id = $1
+         AND (status = 'reconciliation_required'
+              OR (status NOT IN ('completed','cancelled') AND expires_at > NOW()))
+         LIMIT 1 FOR UPDATE`,
+        [accountId],
+    );
+    if (mcpUploadReference.rows.length > 0) throw new StorageAccountConflictError('upload');
+
+    const mcpBatchReference = await client.query(
+        `SELECT id FROM mcp_file_batches WHERE storage_id = $1
+         AND status IN ('queued','running','pause_requested','paused','cancel_requested','blocked')
+         LIMIT 1 FOR UPDATE`,
+        [accountId],
+    );
+    if (mcpBatchReference.rows.length > 0) throw new StorageAccountConflictError('job');
+
     const taskReference = await client.query(
         `SELECT id FROM telegram_background_jobs
          WHERE finished_at IS NULL AND cancelled_at IS NULL

@@ -1,10 +1,10 @@
 export const qbittorrent = {
     nav: 'BT 下载', title: 'BT 下载', extension: 'qBittorrent 扩展', enabled: '启用 qBittorrent',
-    apiUrl: 'Web API 地址', username: '用户名', password: '密码', savedPassword: '密码已保存，留空保持不变',
+    port: 'WebUI 端口', username: '用户名', password: '密码', savedPassword: '密码已保存，留空保持不变',
     downloadDir: '本地下载目录', targetAccount: '目标存储', targetFolder: '目标文件夹', local: '本地存储',
     preserve: '转存成功后保留本地文件（继续做种）',
     cleanupDefault: '默认在转存成功后删除本地原文件，勾选后保留。',
-    sameServer: '连接本服务器上独立运行的 qBittorrent。两个服务须能访问同一个绝对下载目录。',
+    sameServer: '仅连接本机 qBittorrent，请填写其 WebUI 端口。两个服务须能访问同一个绝对下载目录。',
     configure: '查看 / 修改配置', connectionTitle: 'qBittorrent 连接配置', updating: '正在更新…', saving: '保存中…', testing: '测试中…',
     save: '保存', saved: '已保存', test: '测试连接和目录', apiTest: 'Web API', directoryTest: '下载目录',
     success: '可用', failed: '失败', loading: '加载中…', reload: '刷新', disabled: 'qBittorrent 未启用，请在设置中启用。',

@@ -26,6 +26,10 @@ export interface TaskCenterItem {
     state: TaskCenterState;
     total: number;
     active: number;
+    downloading?: number;
+    uploading?: number;
+    waitingUpload?: number;
+    retrying?: number;
     pending: number;
     completed: number;
     failed: number;
@@ -149,13 +153,25 @@ function formatAge(timestamp: number, now: number, locale: TelegramLocale): stri
     return t(locale, 'taskCenter.age.days', { count: Math.floor(hours / 24) });
 }
 
+export function taskCenterTransferProgress(item: TaskCenterItem, locale: TelegramLocale): string {
+    return [
+        ['active', item.downloading ?? item.active],
+        ['uploading', item.uploading],
+        ['waitingUpload', item.waitingUpload],
+        ['retrying', item.retrying],
+    ].filter(([, count]) => Number(count) > 0)
+        .map(([phase, count]) => t(locale, `taskCenter.progress.${phase}`, { count: Number(count) }))
+        .join(' · ');
+}
+
 function progressLine(item: TaskCenterItem, locale: TelegramLocale): string {
     if (item.progressPercent !== undefined) {
         return `${Math.round(Math.max(0, Math.min(100, item.progressPercent)))}%${item.currentFileName ? ` · ${item.currentFileName}` : ''}`;
     }
     const finished = Math.min(item.total, item.completed + item.failed + item.skipped);
     const parts = [`${finished}/${item.total}`];
-    if (item.active > 0) parts.push(t(locale, 'taskCenter.progress.active', { count: item.active }));
+    const transfers = taskCenterTransferProgress(item, locale);
+    if (transfers) parts.push(transfers);
     if (item.pending > 0) parts.push(t(locale, 'taskCenter.progress.pending', { count: item.pending }));
     if (item.failed > 0) parts.push(t(locale, 'taskCenter.progress.failed', { count: item.failed }));
     if (item.skipped > 0) parts.push(t(locale, 'taskCenter.progress.skipped', { count: item.skipped }));
@@ -342,6 +358,10 @@ export function ordinaryTaskCenterItem(group: DownloadTaskGroupSnapshot & { targ
         state,
         total: group.total,
         active: group.active,
+        downloading: group.downloading,
+        uploading: group.uploading,
+        waitingUpload: group.waitingUpload,
+        retrying: group.retrying,
         pending: group.pending,
         completed: group.completed,
         failed: group.failed,
@@ -468,6 +488,10 @@ export function channelTaskCenterItem(row: any, locale: TelegramLocale = DEFAULT
         state,
         total,
         active,
+        downloading: safeNumber(row.runtime_downloading),
+        uploading: safeNumber(row.runtime_uploading),
+        waitingUpload: safeNumber(row.runtime_waiting_upload),
+        retrying: safeNumber(row.runtime_retrying),
         pending,
         completed,
         failed,

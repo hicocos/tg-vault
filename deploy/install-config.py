@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read and update dotenv files without executing their contents.
 
-Usage: origin VALUE | read KEY PATH | upsert KEY VALUE PATH | remove PATH KEY...
+Usage: origin VALUE | mcp-url API_ORIGIN OVERRIDE | read KEY PATH | upsert KEY VALUE PATH | remove PATH KEY...
 
 Supports single-line assignments, export, quotes, whitespace, inline comments,
 CRLF and Compose escapes. The last assignment wins. Interpolation and multiline
@@ -268,6 +268,26 @@ def normalize_origin(value: str) -> str:
     return value[:-1] if value.endswith("/") else value
 
 
+def resolve_mcp_url(api_origin: str, override: str) -> str:
+    value = override.strip(" \t") if override else normalize_origin(api_origin) + "/mcp"
+    validate_value(value)
+    if any(c.isspace() for c in value):
+        raise ConfigError("MCP_PUBLIC_URL must not contain whitespace")
+    try:
+        parsed = urlsplit(value)
+        normalize_origin(f"{parsed.scheme}://{parsed.netloc}")
+    except ValueError:
+        raise ConfigError("MCP_PUBLIC_URL must have a valid HTTP(S) origin") from None
+    if parsed.scheme != "https" and parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        if not override:
+            # Keep HTTP-only installations usable without enabling remote MCP.
+            return ""
+        raise ConfigError("MCP_PUBLIC_URL requires HTTPS except on loopback")
+    if parsed.query or parsed.fragment or not parsed.path.endswith("/mcp"):
+        raise ConfigError("MCP_PUBLIC_URL must end in /mcp without a query or fragment")
+    return value
+
+
 def main(argv=None) -> int:
     # Explicit arity lets upsert accept secret values beginning with '-' and keeps
     # argparse's "unrecognized arguments" diagnostics from exposing secrets.
@@ -277,14 +297,16 @@ def main(argv=None) -> int:
         parser.print_help()
         return 0
     command = argv[0] if argv else ""
-    expected = {"origin": 2, "read": 3, "upsert": 4}
+    expected = {"origin": 2, "mcp-url": 3, "read": 3, "upsert": 4}
     valid = (command in expected and len(argv) == expected[command]) or (command == "remove" and len(argv) >= 3)
     if not valid:
-        print("usage: install-config.py origin VALUE | read KEY PATH | upsert KEY VALUE PATH | remove PATH KEY...", file=sys.stderr)
+        print("usage: install-config.py origin VALUE | mcp-url API_ORIGIN OVERRIDE | read KEY PATH | upsert KEY VALUE PATH | remove PATH KEY...", file=sys.stderr)
         return 2
     try:
         if command == "origin":
             print(normalize_origin(argv[1]))
+        elif command == "mcp-url":
+            print(resolve_mcp_url(argv[1], argv[2]))
         elif command == "read":
             print(read_env(argv[1], Path(argv[2])))
         elif command == "upsert":

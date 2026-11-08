@@ -19,15 +19,19 @@ export interface BotCommandDefinition {
 export const BOT_COMMANDS: BotCommandDefinition[] = [
     { command: 'start', description: '开始使用 / 验证身份', helpDescription: '身份认证 / 开始使用', category: 'main', menu: true, help: true, requiresAuth: false },
     { command: 'tasks', description: '查看实时任务', helpDescription: '查看实时传输任务队列', category: 'main', aliases: ['task'], menu: true, help: true },
-    { command: 'storage', description: '存储状态 / 删除本地实体文件', helpDescription: '查看存储状态；可确认删除本地实体文件', category: 'main', menu: true, help: true },
-    { command: 'path_rules', description: '保存位置 / 自定义目录', helpDescription: '打开保存位置与自定义目录面板', category: 'main', aliases: ['path', 'save_rules'], menu: true, help: true },
     { command: 'tg_download', description: '按日期 / 标签下载频道文件', helpDescription: '打开按日期或标签下载向导', category: 'main', aliases: ['tg_dl'], menu: true, help: true },
     { command: 'tg_sub', description: '管理频道自动同步', helpDescription: '打开频道订阅管理向导', category: 'channels', aliases: ['tg_subscribe'], menu: true, help: true },
-    { command: 'storage_switch', description: '切换系统默认存储', helpDescription: '切换所有新任务使用的系统默认存储', category: 'settings', aliases: ['switch_storage', 'storage_source'], menu: true, help: true },
-    { command: 'target', description: '设置当前聊天存储目标', helpDescription: '设置下一次或当前聊天持续使用的存储账户；不修改系统默认', category: 'files', menu: true, help: true },
 
-    { command: 'help', description: '查看完整帮助', helpDescription: '显示此帮助', category: 'main', menu: true, help: true, requiresAuth: false },
+    { command: 'target', description: '设置当前聊天存储目标', helpDescription: '设置下一次或当前聊天持续使用的存储账户；不修改系统默认', category: 'files', menu: true, help: true },
+    { command: 'path_rules', description: '保存位置 / 自定义目录', helpDescription: '打开保存位置与自定义目录面板', category: 'main', aliases: ['path', 'save_rules'], menu: true, help: true },
+    { command: 'storage_switch', description: '切换系统默认存储', helpDescription: '切换所有新任务使用的系统默认存储', category: 'settings', aliases: ['switch_storage', 'storage_source'], menu: true, help: true },
+    { command: 'storage', description: '存储状态 / 删除本地实体文件', helpDescription: '查看存储状态；可确认删除本地实体文件', category: 'main', menu: true, help: true },
+
+    { command: 'notifications', description: '通知偏好', helpDescription: '设置成功/失败/订阅摘要、时区和安静时段；安全告警始终即时', category: 'settings', menu: true, help: true },
     { command: 'language', description: '更改 Bot 界面语言', helpDescription: '选择简体中文、English 或 Русский', category: 'settings', aliases: ['lang'], menu: true, help: true, requiresAuth: false },
+    { command: 'status', description: '系统诊断状态', helpDescription: '查看 Bot、账号下载器、存储、磁盘、队列、订阅和对账状态', category: 'settings', menu: true, help: true },
+    { command: 'help', description: '查看完整帮助', helpDescription: '显示此帮助', category: 'main', menu: true, help: true, requiresAuth: false },
+
     { command: 'setup_2fa', description: '配置双重验证', helpDescription: '配置双重验证 (TOTP)', category: 'security', aliases: ['setup-2fa'], menu: false, help: true },
     { command: 'logout', description: '撤销当前 Telegram 用户的 Bot 认证', helpDescription: '立即退出并撤销当前 Telegram 用户的 Bot 认证', category: 'security', menu: false, help: true },
     { command: 'p', description: '设置下一次保存目录', helpDescription: '下一次下载保存到指定目录', category: 'files', usage: '<目录>', help: true },
@@ -41,8 +45,6 @@ export const BOT_COMMANDS: BotCommandDefinition[] = [
     { command: 'stop_tasks', description: '停止当前聊天任务', helpDescription: '预览并停止当前聊天下载任务', category: 'settings', aliases: ['stop', 'cancel_tasks'], help: true },
     { command: 'download_workers', description: '单文件分片并发', helpDescription: '设置单文件分片下载并发', category: 'settings', aliases: ['workers'], help: true },
     { command: 'file_concurrency', description: '文件级下载并发', helpDescription: '设置同时下载的文件数：1–10，上限为启用账号数的两倍，无账号时最多 2', category: 'settings', aliases: ['file_workers', 'download_files'], menu: false, help: true },
-    { command: 'status', description: '系统诊断状态', helpDescription: '查看 Bot、账号下载器、存储、磁盘、队列、订阅和对账状态', category: 'settings', menu: true, help: true },
-    { command: 'notifications', description: '通知偏好', helpDescription: '设置成功/失败/订阅摘要、时区和安静时段；安全告警始终即时', category: 'settings', menu: true, help: true },
     { command: 'duplicate_mode', description: '重复文件处理', helpDescription: '设置重复文件处理策略', category: 'settings', aliases: ['duplicate', 'dup'], help: true },
     { command: 'cleanup_settings', description: '自动清理未索引临时文件', helpDescription: '设置自动清理未登记临时文件的开关', category: 'settings', aliases: ['cleanup'], help: true },
     { command: 'tg_subs', description: '查看频道订阅', helpDescription: '查看频道订阅列表', category: 'channels', aliases: ['tg_subscriptions'], help: true },

@@ -1,5 +1,10 @@
 .git
+.omx
+**/.omx
 .hermes
+output/
+**/.wrangler
+website/
 .env
 .env.*
 **/node_modules
@@ -13,6 +18,8 @@
 **/secrets
 **/backups
 **/coverage
+**/test
+**/tests
 **/__tests__
 **/*.test.*
 **/*.spec.*

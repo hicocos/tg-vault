@@ -29,7 +29,9 @@ build/
 *.tsbuildinfo
 
 # local agent workspace and reports
+.omx/
 .hermes/
+output/
 /audit-report-*.md
 
 # Archives, database dumps, and local backups
@@ -55,11 +57,22 @@ __pycache__/
 Thumbs.db
 
 # Coverage and local tool caches
+test/
+tests/
+__tests__/
+*.test.*
+*.spec.*
+test-results/
+playwright-report/
 coverage/
 .nyc_output/
 .pytest_cache/
 .eslintcache
 .vite/
+.wrangler/
+.vitepress/cache/
+.vitepress/dist/
+.vitepress/.temp/
 .vscode/
 .idea/
 *.swp

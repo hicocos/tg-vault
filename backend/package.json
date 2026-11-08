@@ -1,21 +1,25 @@
 {
     "name": "tg-vault-backend",
-    "version": "2.6.0",
+    "version": "3.0.0",
     "type": "module",
     "scripts": {
         "dev": "tsx watch src/index.ts",
         "typecheck": "tsc --noEmit --pretty false",
-        "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external && esbuild src/services/telegramUserWorker.ts --bundle --platform=node --format=esm --outfile=dist/telegramUserWorker.js --packages=external && esbuild src/scripts/login_telegram_user.ts --bundle --platform=node --format=esm --outfile=dist/scripts/login_telegram_user.js --packages=external && esbuild src/scripts/database.ts --bundle --platform=node --format=esm --outfile=dist/scripts/database.js --packages=external && node scripts/sync_dist_schema.mjs && node scripts/sync_dist_schema.mjs --check",
+        "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --packages=external && esbuild src/services/telegramUserWorker.ts --bundle --platform=node --format=esm --outfile=dist/telegramUserWorker.js --packages=external && esbuild src/scripts/login_telegram_user.ts --bundle --platform=node --format=esm --outfile=dist/scripts/login_telegram_user.js --packages=external && esbuild src/scripts/database.ts --bundle --platform=node --format=esm --outfile=dist/scripts/database.js --packages=external && esbuild src/mcp/stdio.ts --bundle --platform=node --format=esm --outfile=dist/mcp-stdio.js --packages=external && node scripts/sync_dist_schema.mjs && node scripts/sync_dist_schema.mjs --check",
         "start": "npm run build && node dist/index.js",
         "login:telegram-user": "node dist/scripts/login_telegram_user.js",
         "schema:generate": "tsx scripts/database-snapshot.ts",
         "schema:generate-init": "tsx scripts/database-snapshot.ts",
         "schema:check": "tsx scripts/database-snapshot.ts --check",
-        "schema:check-dist": "node scripts/sync_dist_schema.mjs --check"
+        "schema:check-dist": "node scripts/sync_dist_schema.mjs --check",
+        "mcp:stdio": "node dist/mcp-stdio.js"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.1075.0",
         "@aws-sdk/s3-request-presigner": "^3.1075.0",
+        "@modelcontextprotocol/client": "2.4.0",
+        "@modelcontextprotocol/node": "2.1.2",
+        "@modelcontextprotocol/server": "2.4.0",
         "ali-oss": "^6.23.0",
         "axios": "^1.18.1",
         "check-disk-space": "^3.4.0",
@@ -37,7 +41,8 @@
         "ua-parser-js": "^2.0.10",
         "undici": "^7.30.1",
         "uuid": "^11.1.1",
-        "webdav": "^5.10.0"
+        "webdav": "^5.10.0",
+        "zod": "4.6.7"
     },
     "devDependencies": {
         "@types/ali-oss": "^6.23.3",
@@ -53,5 +58,10 @@
         "esbuild": "^0.28.1",
         "tsx": "^4.22.4",
         "typescript": "^6.0.3"
+    },
+    "overrides": {
+        "webdav": {
+            "minimatch": "^11.0.5"
+        }
     }
 }

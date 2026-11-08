@@ -2,7 +2,7 @@ import { Api, TelegramClient } from 'telegram';
 import { query } from '../db/index.js';
 import { channelRuntimeView } from './telegramChannelRuntimeView.js';
 import { getChannelExecutionGroup } from './telegramUpload.js';
-import { channelTaskCenterItem, buildTaskCenterDetail } from './telegramTaskCenter.js';
+import { channelTaskCenterItem, buildTaskCenterDetail, taskCenterTransferProgress } from './telegramTaskCenter.js';
 import { registerProgressCard, taskCenterCardKey, taskCenterCardOwners } from './telegramProgressControls.js';
 import { getTelegramUserLocaleOrDefault } from './telegramLocalePreferences.js';
 import { formatBytes, t, type TelegramLocale } from '../i18n/telegram.js';
@@ -49,7 +49,9 @@ export function channelProgressText(row: Record<string, unknown>, locale: Telegr
             : runtime === 'pausing' ? 'taskCenter.state.pausing' : runtime === 'failed' ? 'taskCenter.state.failed'
                 : runtime === 'cooling' ? 'taskCenter.state.cooling' : runtime === 'awaiting_selection' ? 'taskCenter.state.awaitingSelection'
                     : row.scan_status !== 'done' ? 'bot.legacy.state.scanning'
-                    : Number(row.downloading_count) > 0 ? 'bot.legacy.state.downloading' : 'taskCenter.state.waiting');
+                    : Number(row.runtime_downloading) > 0 ? 'bot.legacy.state.downloading'
+                        : Number(row.runtime_uploading) > 0 ? 'bot.legacy.state.uploading'
+                            : Number(row.downloading_count) > 0 ? 'taskCenter.state.running' : 'taskCenter.state.waiting');
     const params = row.params && typeof row.params === 'object' ? row.params as Record<string, unknown> : {};
     const { total, processed: done, failed, skipped, active, pending } = telegramChannelJobCounts(row);
     const item = channelTaskCenterItem(row, locale);
@@ -61,7 +63,9 @@ export function channelProgressText(row: Record<string, unknown>, locale: Telegr
         item?.targetFolder ? t(locale, 'taskCenter.detail.targetFolder', { value: item.targetFolder }) : '',
         scanProgressText,
         t(locale, 'channelCard.progress', { done, total }),
-        [t(locale, 'channelCard.queue', { active, pending }), failed > 0 ? t(locale, 'channelCard.failures', { count: failed }) : ''].filter(Boolean).join(' · '),
+        [item ? taskCenterTransferProgress(item, locale) : '',
+            pending > 0 ? t(locale, 'taskCenter.progress.pending', { count: pending }) : '',
+            failed > 0 ? t(locale, 'channelCard.failures', { count: failed }) : ''].filter(Boolean).join(' · '),
         skipped > 0 ? t(locale, 'channelCard.skipped', { count: skipped }) : '',
         item?.byteProgressText,
         active > 0 ? t(locale, 'bot.legacy.speed', { speed: formatBytes(Number(row.speed_bytes_per_second || 0), locale) }) : '',
@@ -119,6 +123,7 @@ export async function syncTelegramChannelCards(client: TelegramClient): Promise<
         if (owner) owner.interactive = false;
         const signature = JSON.stringify([row.status, row.runtime_status, row.scan_status, row.total_count, row.success_count,
             row.failed_count, row.skipped_count_items, row.pending_count, row.downloading_count,
+            row.runtime_downloading, row.runtime_uploading, row.runtime_waiting_upload, row.runtime_retrying,
             Math.round(row.speed_bytes_per_second / 1024), row.scan_cursor, row.error, locale,
             row.params?.availableFileTypes, row.params?.selectedFileTypes, row.params?.fileSelectionConfirmed,
             row.params?.excludedCount, row.params?.storageProvider, row.params?.storageAccountName,

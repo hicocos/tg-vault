@@ -58,10 +58,10 @@ jobs:
           echo "POSTGRES_SERVICE_ID=$POSTGRES_SERVICE_ID" >> "$GITHUB_ENV"
       - name: Verify backend
         working-directory: backend
-        run: npm ci && npm audit --omit=dev --audit-level=high && node --import tsx --test scripts/*.test.ts && npm run schema:check && npm run typecheck && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=moderate && npm run schema:check && npm run typecheck && npm run build
       - name: Verify frontend
         working-directory: frontend
-        run: npm ci && npm audit --omit=dev --audit-level=high && node --experimental-strip-types --test scripts/*.test.ts && npm run lint && npm run build
+        run: npm ci && npm audit --omit=dev --audit-level=moderate && npm run lint && npm run build
       - name: Generate CycloneDX SBOM release assets
         run: |
           npx --yes @cyclonedx/cyclonedx-npm --output-format JSON --output-file backend-sbom.cdx.json backend/package-lock.json

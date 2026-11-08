@@ -1,10 +1,10 @@
 export const qbittorrent = {
     nav: 'BT-загрузки', title: 'BT-загрузки', extension: 'Расширение qBittorrent', enabled: 'Включить qBittorrent',
-    apiUrl: 'Адрес Web API', username: 'Имя пользователя', password: 'Пароль', savedPassword: 'Пароль сохранён · оставьте пустым, чтобы сохранить',
+    port: 'Порт WebUI', username: 'Имя пользователя', password: 'Пароль', savedPassword: 'Пароль сохранён · оставьте пустым, чтобы сохранить',
     downloadDir: 'Локальный каталог загрузок', targetAccount: 'Целевое хранилище', targetFolder: 'Целевая папка', local: 'Локальное хранилище',
     preserve: 'Сохранять локальные файлы после переноса (продолжать раздачу)',
     cleanupDefault: 'После успешного переноса исходные локальные файлы удаляются, если не включено их сохранение.',
-    sameServer: 'Подключите отдельный qBittorrent на этом сервере. Оба сервиса должны иметь доступ к одному абсолютному каталогу загрузок.',
+    sameServer: 'Подключение только к qBittorrent на этом сервере по порту WebUI. Оба сервиса должны иметь доступ к одному абсолютному каталогу загрузок.',
     configure: 'Просмотр / настройка', connectionTitle: 'Подключение qBittorrent', updating: 'Обновление…', saving: 'Сохранение…', testing: 'Проверка…',
     save: 'Сохранить', saved: 'Сохранено', test: 'Проверить подключение и каталог', apiTest: 'Web API', directoryTest: 'Каталог загрузок',
     success: 'Доступно', failed: 'Ошибка', loading: 'Загрузка…', reload: 'Обновить', disabled: 'qBittorrent выключен. Включите его в настройках.',

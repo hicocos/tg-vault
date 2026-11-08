@@ -162,6 +162,9 @@ export async function uploadOneDriveFile(input: UploadInput): Promise<string> {
                 input.signal?.throwIfAborted();
                 firstError ??= { error };
                 const details = errorDetails(error);
+                // A definite first-attempt conflict belongs to another writer, even if bytes match.
+                // Reconciliation is only valid after an earlier ambiguous transmission failure.
+                if ((details.status === 409 || details.status === 412) && firstError.error === error) throw error;
                 if (details.transient || details.status === 409 || details.status === 412) {
                     await delay(details.retryAfter ?? 1000 * 2 ** attempt, undefined, { signal: input.signal });
                     try {

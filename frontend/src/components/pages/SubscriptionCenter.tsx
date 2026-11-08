@@ -339,7 +339,7 @@ export function SubscriptionCenter({ onUnauthorized }: SubscriptionCenterProps) 
                             <div className="op-actions">
                                 <Button variant="outline" disabled={saving || directoryLoading} onClick={() => setEditor({ target: selected })}>{t('subscriptionCenter.editor.edit')}</Button>
                                 <Button variant="outline" disabled={saving || directoryLoading} onClick={() => void mutateSubscription(selected, false)}>{selected.enabled ? controls.pause : controls.resume}</Button>
-                                <Button variant="destructive" disabled={saving || directoryLoading} onClick={() => setDeleteTarget(selected)}>{controls.remove}</Button>
+                                <Button variant="destructive-outline" disabled={saving || directoryLoading} onClick={() => setDeleteTarget(selected)}>{controls.remove}</Button>
                             </div>
                             <p className="op-help">{selected.enabled ? controls.pauseHelp : controls.resumeHelp}</p>
                             <p className="op-help">{t('subscriptionCenter.editor.currentDestination', { destination: selected.target_mode === 'fixed' ? selected.target_provider === 'local' ? t('subscriptionCenter.editor.local') : `${selected.target_provider || '—'} / ${selected.target_account_name || selected.target_account_id || '—'}` : t('subscriptionCenter.editor.followGlobal'), folder: selected.folder_override || t('subscriptionCenter.editor.folderPlaceholder') })}</p>

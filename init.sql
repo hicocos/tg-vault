@@ -112,6 +112,115 @@ CREATE TABLE public.files (
     CONSTRAINT files_type_check CHECK (((type)::text = ANY ((ARRAY['image'::character varying, 'video'::character varying, 'audio'::character varying, 'document'::character varying, 'other'::character varying])::text[])))
 );
 
+CREATE TABLE public.mcp_audit (
+    id bigint NOT NULL,
+    client_id uuid,
+    tool text NOT NULL,
+    storage_id text,
+    status text NOT NULL,
+    code text,
+    duration_ms integer NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE SEQUENCE public.mcp_audit_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+ALTER SEQUENCE public.mcp_audit_id_seq OWNED BY public.mcp_audit.id;
+
+CREATE TABLE public.mcp_clients (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    name text NOT NULL,
+    token_hash text NOT NULL,
+    permissions text[] NOT NULL,
+    storage_ids text[] NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    last_used_at timestamp with time zone
+);
+
+CREATE TABLE public.mcp_confirmations (
+    token_hash text NOT NULL,
+    client_id uuid NOT NULL,
+    tool text NOT NULL,
+    storage_id text NOT NULL,
+    input_hash text NOT NULL,
+    preview_hash text NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+CREATE TABLE public.mcp_file_batches (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id uuid NOT NULL,
+    request_id text NOT NULL,
+    storage_id text NOT NULL,
+    operation text NOT NULL,
+    items jsonb NOT NULL,
+    results jsonb DEFAULT '[]'::jsonb NOT NULL,
+    status text NOT NULL,
+    error_code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE public.mcp_media_links (
+    token_hash text NOT NULL,
+    client_id uuid NOT NULL,
+    file_id uuid NOT NULL,
+    storage_id text NOT NULL,
+    purpose text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    CONSTRAINT mcp_media_links_purpose_check CHECK ((purpose = ANY (ARRAY['download'::text, 'preview'::text, 'thumbnail'::text])))
+);
+
+CREATE TABLE public.mcp_requests (
+    client_id uuid NOT NULL,
+    request_id text NOT NULL,
+    tool text NOT NULL,
+    storage_id text NOT NULL,
+    input_hash text NOT NULL,
+    status text NOT NULL,
+    result jsonb,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mcp_requests_status_check CHECK ((status = ANY (ARRAY['running'::text, 'completed'::text, 'failed'::text, 'interrupted'::text])))
+);
+
+CREATE TABLE public.mcp_uploads (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    client_id uuid NOT NULL,
+    request_id text NOT NULL,
+    storage_id text NOT NULL,
+    filename text NOT NULL,
+    mime_type text NOT NULL,
+    size bigint NOT NULL,
+    folder text,
+    token_hash text NOT NULL,
+    status text NOT NULL,
+    received_bytes bigint DEFAULT 0 NOT NULL,
+    transferred_bytes bigint DEFAULT 0 NOT NULL,
+    stored_path text,
+    stored_name text,
+    resolved_folder text,
+    result jsonb,
+    error_code text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    ticket_expires_at timestamp with time zone,
+    expected_sha256 text,
+    content_sha256 text,
+    CONSTRAINT mcp_uploads_content_sha256_check CHECK (((content_sha256 IS NULL) OR (content_sha256 ~ '^[a-f0-9]{64}$'::text))),
+    CONSTRAINT mcp_uploads_expected_sha256_check CHECK (((expected_sha256 IS NULL) OR (expected_sha256 ~ '^[a-f0-9]{64}$'::text))),
+    CONSTRAINT mcp_uploads_size_check CHECK ((size >= 0))
+);
+
 CREATE TABLE public.oauth_pending_flows (
     state_hash character varying(64) NOT NULL,
     provider character varying(32) NOT NULL,
@@ -509,6 +618,8 @@ CREATE TABLE public.web_sessions (
     created_at timestamp with time zone DEFAULT now()
 );
 
+ALTER TABLE ONLY public.mcp_audit ALTER COLUMN id SET DEFAULT nextval('public.mcp_audit_id_seq'::regclass);
+
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_key_hash_key UNIQUE (key_hash);
 
@@ -529,6 +640,36 @@ ALTER TABLE ONLY public.chunk_upload_sessions
 
 ALTER TABLE ONLY public.files
     ADD CONSTRAINT files_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mcp_audit
+    ADD CONSTRAINT mcp_audit_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mcp_clients
+    ADD CONSTRAINT mcp_clients_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mcp_clients
+    ADD CONSTRAINT mcp_clients_token_hash_key UNIQUE (token_hash);
+
+ALTER TABLE ONLY public.mcp_confirmations
+    ADD CONSTRAINT mcp_confirmations_pkey PRIMARY KEY (token_hash);
+
+ALTER TABLE ONLY public.mcp_file_batches
+    ADD CONSTRAINT mcp_file_batches_client_id_request_id_key UNIQUE (client_id, request_id);
+
+ALTER TABLE ONLY public.mcp_file_batches
+    ADD CONSTRAINT mcp_file_batches_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mcp_media_links
+    ADD CONSTRAINT mcp_media_links_pkey PRIMARY KEY (token_hash);
+
+ALTER TABLE ONLY public.mcp_requests
+    ADD CONSTRAINT mcp_requests_pkey PRIMARY KEY (client_id, request_id);
+
+ALTER TABLE ONLY public.mcp_uploads
+    ADD CONSTRAINT mcp_uploads_client_id_request_id_key UNIQUE (client_id, request_id);
+
+ALTER TABLE ONLY public.mcp_uploads
+    ADD CONSTRAINT mcp_uploads_pkey PRIMARY KEY (id);
 
 ALTER TABLE ONLY public.oauth_pending_flows
     ADD CONSTRAINT oauth_pending_flows_pkey PRIMARY KEY (state_hash);
@@ -742,6 +883,20 @@ CREATE INDEX idx_update_notification_pending ON public.update_notification_deliv
 
 CREATE INDEX idx_web_sessions_expires ON public.web_sessions USING btree (expires_at);
 
+CREATE INDEX mcp_audit_client_idx ON public.mcp_audit USING btree (client_id, created_at DESC);
+
+CREATE INDEX mcp_audit_created_idx ON public.mcp_audit USING btree (created_at DESC, id DESC);
+
+CREATE INDEX mcp_confirmations_expiry_idx ON public.mcp_confirmations USING btree (expires_at);
+
+CREATE INDEX mcp_file_batches_client_idx ON public.mcp_file_batches USING btree (client_id, storage_id, created_at DESC);
+
+CREATE INDEX mcp_media_links_expiry_idx ON public.mcp_media_links USING btree (expires_at);
+
+CREATE INDEX mcp_uploads_client_idx ON public.mcp_uploads USING btree (client_id, storage_id, created_at DESC);
+
+CREATE UNIQUE INDEX telegram_jobs_mcp_request_idx ON public.telegram_background_jobs USING btree (((params ->> 'mcpClientId'::text)), ((params ->> 'mcpRequestId'::text))) WHERE (params ? 'mcpClientId'::text);
+
 CREATE TRIGGER chunk_upload_sessions_updated_at BEFORE UPDATE ON public.chunk_upload_sessions FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
 
 CREATE TRIGGER files_updated_at BEFORE UPDATE ON public.files FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
@@ -795,6 +950,27 @@ ALTER TABLE ONLY public.chunk_upload_sessions
 
 ALTER TABLE ONLY public.files
     ADD CONSTRAINT files_storage_account_id_fkey FOREIGN KEY (storage_account_id) REFERENCES public.storage_accounts(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.mcp_audit
+    ADD CONSTRAINT mcp_audit_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
+
+ALTER TABLE ONLY public.mcp_confirmations
+    ADD CONSTRAINT mcp_confirmations_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
+
+ALTER TABLE ONLY public.mcp_file_batches
+    ADD CONSTRAINT mcp_file_batches_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
+
+ALTER TABLE ONLY public.mcp_media_links
+    ADD CONSTRAINT mcp_media_links_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
+
+ALTER TABLE ONLY public.mcp_media_links
+    ADD CONSTRAINT mcp_media_links_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.files(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.mcp_requests
+    ADD CONSTRAINT mcp_requests_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
+
+ALTER TABLE ONLY public.mcp_uploads
+    ADD CONSTRAINT mcp_uploads_client_id_fkey FOREIGN KEY (client_id) REFERENCES public.mcp_clients(id);
 
 ALTER TABLE ONLY public.storage_account_cooldowns
     ADD CONSTRAINT storage_account_cooldowns_storage_account_id_fkey FOREIGN KEY (storage_account_id) REFERENCES public.storage_accounts(id) ON DELETE CASCADE;

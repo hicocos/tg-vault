@@ -8,6 +8,16 @@ import type { Pool, PoolClient } from 'pg';
 
 export type ChunkUploadStatus = 'open' | 'completing' | 'completed' | 'cancelled' | 'failed';
 
+// Web and MCP reserve space on the same temporary-upload volume. Expired rows
+// keep their reservation until cleanup releases their bytes or resolves a write.
+export async function getReservedUploadBytes(db: Pick<Pool, 'query'>): Promise<number> {
+    const result = await db.query(`SELECT (
+        COALESCE((SELECT SUM(total_size) FROM chunk_upload_sessions WHERE status IN ('open','completing','failed')),0)
+        + COALESCE((SELECT SUM(size) FROM mcp_uploads WHERE status IN ('open','receiving','receiving_chunk','ready','queued','running','paused','failed','reconciliation_required')),0)
+    )::text AS reserved_bytes`);
+    return Number(result.rows[0].reserved_bytes);
+}
+
 export interface ChunkUploadSession {
     uploadId: string;
     ownerId: string;
@@ -347,12 +357,7 @@ export class PostgresChunkUploadSessionRepository implements ChunkUploadSessionR
         try {
             await client.query('BEGIN');
             await client.query(`SELECT pg_advisory_xact_lock(hashtext('chunk_upload_global_budget'))`);
-            const budget = await client.query(
-                `SELECT COALESCE(SUM(total_size), 0)::text AS reserved_bytes
-                 FROM chunk_upload_sessions
-                 WHERE status IN ('open','completing','failed') AND expires_at > NOW()`,
-            );
-            const reservedBytes = Number(budget.rows[0]?.reserved_bytes || 0);
+            const reservedBytes = await getReservedUploadBytes(client);
             if (reservedBytes + value.totalSize > globalBudgetBytes) {
                 await client.query('ROLLBACK');
                 return false;
@@ -379,11 +384,7 @@ export class PostgresChunkUploadSessionRepository implements ChunkUploadSessionR
     }
 
     async getReservedBytes(): Promise<number> {
-        const result = await this.pool.query(
-            `SELECT COALESCE(SUM(total_size), 0)::text AS reserved_bytes FROM chunk_upload_sessions
-             WHERE status IN ('open','completing','failed') AND expires_at > NOW()`,
-        );
-        return Number(result.rows[0]?.reserved_bytes || 0);
+        return getReservedUploadBytes(this.pool);
     }
 
     async getSession(uploadId: string, ownerId: string): Promise<ChunkUploadSession | null> {

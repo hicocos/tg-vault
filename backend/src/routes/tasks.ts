@@ -1,23 +1,19 @@
 import { Router, type Request, type Response } from 'express';
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { query } from '../db/index.js';
 import { requireAuth, getAuthToken } from './auth.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
-import { listTransferTasks, getTransferTask, updateTransferTask } from '../services/transferTasks.js';
+import { listTransferTasks } from '../services/transferTasks.js';
 
-import { getDownloadTaskSnapshot, getDownloadTaskGroup, cancelDownloadTaskGroup, retryFailedDownloadTasks, getChannelExecutionGroup, pauseDownloadTaskGroup, resumeDownloadTaskGroup } from '../services/telegramUpload.js';
-import { cancelTelegramBackgroundJob, retryTelegramBackgroundJob, pauseTelegramBackgroundJob, resumeTelegramBackgroundJob } from '../services/telegramChannelJobs.js';
+import { getDownloadTaskSnapshot, getChannelExecutionGroup } from '../services/telegramUpload.js';
 import { filterDismissedTasks, isTaskDismissible, loadTaskCenterDismissals, saveTaskCenterDismissals } from '../services/taskCenterDismissals.js';
 import { mapTelegramChannelJob, mapTransferTask } from '../services/unifiedTaskMapper.js';
 import { channelRuntimeView } from '../services/telegramChannelRuntimeView.js';
 import { getTelegramTaskFailures, parseTaskFailurePage } from '../services/telegramTaskFailures.js';
 import crypto from 'node:crypto';
 import { qbEnabled } from '../services/qbittorrentConfig.js';
-import { controlQbTask } from '../services/qbittorrentTasks.js';
+import { controlStoredTask, TaskControlError, type StoredTaskSource, type TaskAction } from '../services/taskControl.js';
 
 const router = Router();
-const CHUNK_DIR = process.env.CHUNK_DIR || './data/chunks';
 
 async function collectUnifiedTasks(limit: number, accountId?: string): Promise<any[]> {
         const accountLimit = accountId ? 500 : limit;
@@ -315,60 +311,8 @@ router.post('/:sourceType/:id/:action', requireAuth, async (req: Request, res: R
     }
     try {
 
-        if (sourceType === 'qbittorrent') {
-            await controlQbTask(id, action);
-            return res.json({ success: true });
-        }
-        if (sourceType === 'telegram_bot') {
-            const task = await getTransferTask('telegram_bot', id);
-            if (!task) return res.status(404).json({ error: '任务不存在' });
-            if (action === 'pause' || action === 'resume') {
-                if (!task.chatId || task.ownerUserId == null) return res.status(409).json({ error: '任务缺少控制作用域' });
-                const control = action === 'pause' ? pauseDownloadTaskGroup : resumeDownloadTaskGroup;
-                const result = control(id, task.chatId, task.ownerUserId);
-                return res.status(result.status === 'ok' ? 200 : 409).json({ success: result.status === 'ok', error: result.status === 'ok' ? undefined : '任务状态已变化，请刷新后重试' });
-            }
-            if (action === 'cancel') {
-                if (['failed', 'interrupted', 'retry_required'].includes(task.status) || task.retryable) {
-                    await updateTransferTask('telegram_bot', id, {
-                        status: 'cancelled',
-                        stage: 'cancelled',
-                        retryable: false,
-                        cancelRequested: true,
-                        finishedAt: new Date(),
-                        error: 'Web 管理员放弃重试并取消任务',
-                    });
-                    return res.json({ success: true });
-                }
-                const cancelled = task.chatId && task.ownerUserId
-                    ? cancelDownloadTaskGroup(id, task.chatId, task.ownerUserId)
-                    : { status: 'not_found' as const };
-                if (cancelled.status !== 'ok') {
-                    return res.status(409).json({ error: `任务当前不能取消: ${cancelled.status}` });
-                }
-                await updateTransferTask('telegram_bot', id, { status: 'cancelled', stage: 'cancelled', retryable: false, cancelRequested: true, finishedAt: new Date(), error: 'Web 管理员取消任务' });
-                return res.json({ success: true });
-            }
-            if (!task.chatId || !task.ownerUserId || task.status === 'interrupted') {
-                return res.status(409).json({ error: '该普通 Bot 任务无法在重启后自动重建，请在 Telegram 中重新发送原文件' });
-            }
-            const result = await retryFailedDownloadTasks(50, id, task.chatId, task.ownerUserId);
-            return res.status(result.retried > 0 ? 200 : 409).json({ success: result.retried > 0, retried: result.retried, error: result.retried ? undefined : '没有可重试的失败文件' });
-        }
-        if (sourceType === 'telegram_channel') {
-            const row = (await query('SELECT user_id, chat_id FROM telegram_background_jobs WHERE id = $1', [id])).rows[0];
-            if (!row) return res.status(404).json({ error: '任务不存在' });
-            if (action === 'pause' || action === 'resume') {
-                const control = action === 'pause' ? pauseTelegramBackgroundJob : resumeTelegramBackgroundJob;
-                const task = await control(Number(row.user_id), id, row.chat_id == null ? undefined : String(row.chat_id));
-                return res.status(task ? 200 : 409).json({ success: Boolean(task), error: task ? undefined : '任务状态已变化，请刷新后重试' });
-            }
-            if (action === 'cancel') {
-                const task = await cancelTelegramBackgroundJob(Number(row.user_id), id, row.chat_id == null ? undefined : String(row.chat_id));
-                return res.status(task ? 200 : 409).json({ success: Boolean(task), error: task ? undefined : '任务当前不能取消' });
-            }
-            const task = await retryTelegramBackgroundJob(Number(row.user_id), id, row.chat_id == null ? undefined : String(row.chat_id));
-            return res.status(task ? 200 : 409).json({ success: Boolean(task), error: task ? undefined : '任务当前不能重试' });
+        if (['telegram_channel', 'telegram_bot', 'qbittorrent', 'web_upload'].includes(sourceType)) {
+            return res.json(await controlStoredTask(sourceType as StoredTaskSource, id, action as TaskAction));
         }
         if (sourceType === 'subscription') {
             if (action !== 'cancel') return res.status(400).json({ error: '频道订阅目标仅支持解除固定目标' });
@@ -397,19 +341,11 @@ router.post('/:sourceType/:id/:action', requireAuth, async (req: Request, res: R
             if ((result.rowCount || 0) === 0) return res.status(409).json({ error: 'Telegram 会话目标已过期或不存在' });
             return res.json({ success: true });
         }
-        if (sourceType === 'web_upload') {
-            if (action === 'retry') return res.status(409).json({ error: 'FILE_RESELECT_REQUIRED', message: '请在文件页重新选择原文件后续传' });
-            const result = await query(
-                `UPDATE chunk_upload_sessions SET status = 'cancelled', last_error = 'Web 管理员取消任务', updated_at = NOW()
-                 WHERE upload_id = $1 AND status IN ('open','failed') RETURNING upload_id`,
-                [id],
-            );
-            if ((result.rowCount || 0) === 0) return res.status(409).json({ error: '上传正在完成或已结束，不能取消' });
-            await fs.rm(path.join(CHUNK_DIR, id), { recursive: true, force: true });
-            return res.json({ success: true });
-        }
         return res.status(400).json({ error: '该任务类型暂不支持控制' });
     } catch (error) {
+        if (error instanceof TaskControlError) {
+            return res.status(error.code === 'NOT_FOUND' ? 404 : 409).json({ code: error.code, error: error.message });
+        }
         console.error('统一任务操作失败:', error);
         res.status(500).json({ error: error instanceof Error ? error.message : '任务操作失败' });
     }

@@ -37,6 +37,11 @@ import { loadFileDownloadConcurrencySetting } from './services/telegramFileConcu
 import { logRuntimeConfigSummary, validateRuntimeConfig } from './utils/runtimeConfig.js';
 import { APP_VERSION } from './services/appVersion.js';
 import { createUpdateChecker } from './services/updateChecker.js';
+import { mcpRouter, mcpAdminRouter } from './routes/mcp.js';
+import { recoverMcpUploads, stopMcpUploads } from './mcp/uploads.js';
+import { cleanupMcpRecords } from './mcp/operations.js';
+import { closeMcpLockPools } from './mcp/lockPool.js';
+import { recoverMcpFileBatches, stopMcpFileBatches } from './mcp/fileBatches.js';
 
 dotenv.config();
 const runtimeConfigSummary = validateRuntimeConfig();
@@ -126,10 +131,14 @@ app.use(cors({
         },
     credentials: !allowAnyOrigin,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-    allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Upload-Id', 'X-Chunk-Index', 'X-Chunk-Size', 'X-Chunk-Sha256', 'X-Confirmation-Token', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'X-API-Key', 'X-Upload-Id', 'X-Chunk-Index', 'X-Chunk-Size', 'X-Chunk-Sha256', 'X-Content-SHA256', 'Content-Range', 'X-Confirmation-Token', 'X-MCP-Upload-Ticket', 'Authorization', 'MCP-Protocol-Version', 'MCP-Session-Id', 'Last-Event-ID'],
+    exposedHeaders: ['MCP-Session-Id', 'WWW-Authenticate'],
 }));
 
-app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' }));
+const parseJson = express.json({ limit: process.env.JSON_BODY_LIMIT || '2mb' });
+// One MiB of text can expand to six MiB when JSON escapes control characters.
+const parseMcpJson = express.json({ limit: '7mb' });
+app.use((req, res, next) => (req.path === '/mcp' || req.path === '/mcp/' ? parseMcpJson : parseJson)(req, res, next));
 
 app.use((req, res, next) => {
     const provided = normalizeRequestId(req.headers['x-request-id']);
@@ -170,6 +179,8 @@ app.use(helmet({
 
 // 认证路由（不需要认证）
 app.use('/api/auth', authRouter);
+app.use('/mcp', mcpRouter);
+app.use('/api/mcp/admin', mcpAdminRouter);
 
 // 静态文件服务（需要认证）
 app.use('/uploads', requireAuth, express.static(UPLOAD_DIR, {
@@ -287,6 +298,9 @@ async function initializeApplication(): Promise<void> {
     await markTransferTasksAfterRestart();
     const { storageManager } = await import('./services/storage.js');
     await storageManager.init();
+    await cleanupMcpRecords();
+    await recoverMcpUploads();
+    await recoverMcpFileBatches();
     startQbTasks();
     await applyPersistedOrphanCleanupSetting();
     startPeriodicCleanup();
@@ -362,10 +376,13 @@ async function shutdown(signal: string) {
     readinessProbeTimer = null;
     const forceTimer = setTimeout(() => process.exit(1), 30_000);
     forceTimer.unref();
+    stopMcpUploads();
+    stopMcpFileBatches();
     await Promise.allSettled([stopTelegramBot(), shutdownTelegramUserClientPool(), stopQbTasks()]);
     if (server) {
         server.close(async () => {
             try {
+                await closeMcpLockPools();
                 await pool.end();
                 process.exit(0);
             } catch (error) {
@@ -374,6 +391,7 @@ async function shutdown(signal: string) {
             }
         });
     } else {
+        await closeMcpLockPools();
         await pool.end().catch(() => undefined);
         process.exit(0);
     }

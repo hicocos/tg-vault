@@ -5,7 +5,7 @@ export const QB_CONFIG_CHANGED = 'qbittorrent-config-changed';
 export const QB_DEFAULT_PATH = '/qBittorrent/download';
 
 export interface QbSettings {
-    apiUrl: string;
+    port: number;
     username: string;
     downloadDir: string;
     targetFolder: string;
@@ -45,7 +45,7 @@ export interface QbTask {
 }
 export interface QbFile { index: number; name: string; size: number; progress: number; priority: number; }
 export const qbDefaults: QbSettings = {
-    apiUrl: '', username: '', downloadDir: QB_DEFAULT_PATH, targetFolder: QB_DEFAULT_PATH,
+    port: 8080, username: '', downloadDir: QB_DEFAULT_PATH, targetFolder: QB_DEFAULT_PATH,
     targetAccountId: 'local', preserveLocalFiles: false,
 };
 const root = '/api/qbittorrent';

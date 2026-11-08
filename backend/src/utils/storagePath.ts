@@ -137,12 +137,7 @@ export function buildStorageFolderWithRules(options: StoragePathOptions, rules: 
     // An explicit folder is an immutable task target. Preserve its hierarchy and do
     // not append automatic source/type segments after the task has been submitted.
     if (options.folder) {
-        const explicitPath = options.folder
-            .split('/')
-            .filter(Boolean)
-            .map(segment => normalizeSegment(segment, 'folder'))
-            .join('/');
-        return explicitPath || null;
+        return options.folder;
     }
 
     if (!shouldClassifyStoragePath()) {

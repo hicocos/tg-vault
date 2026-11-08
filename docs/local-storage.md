@@ -9,7 +9,6 @@
 - 目录必须尚不存在，上级目录已存在；安装器创建权限 `0700`、所有者 UID/GID `1000:1000`，不递归修改其他目录。
 - 仅支持绝对路径中的 ASCII 字母、数字、空格、`/`、`-`、`_`、`.`，拒绝 `..`、符号链接、系统/磁盘根目录及特殊字符。权限不足时按安装器提示使用 sudo。
 - 目录映射到容器 `/data`；原文件在 `uploads` 子目录，缩略图、预览、分片、session 和密钥也在该持久目录下。不要只备份 uploads。
-- **不要预先复制 `.env.example`**，已有 `.env` 会被当作旧部署，不应用新的目录默认值。
 
 ## 已有部署
 
@@ -38,7 +37,7 @@ python3 deploy/install-storage.py metadata /actual/host/data-root volume
 
 命令输出 **JSON 对象**。将各字段的值分别保存为原 `.env` 中的 `LOCAL_STORAGE_HOST_ROOT`、`LOCAL_STORAGE_CONTAINER_ROOT`、`LOCAL_STORAGE_DEVICE`、`LOCAL_STORAGE_INODE`、`LOCAL_STORAGE_MOUNT_TYPE`，不要把整段 JSON 直接粘入 `.env`。保留其他配置与秘密，不要因此修改 `LOCAL_STORAGE_SOURCE`。
 
-路径显示校验设备号/inode、真实路径和子目录关系。元数据缺失、过期、符号链接或文件系统不匹配时显示“未确认”。rootless/远程 Docker 或重挂载后标识可能不同，应重新核对实际挂载，不能伪造标识让检查通过；该检查不是对恶意宿主机的信任证明。
+路径元数据缺失、过期或与实际文件系统不匹配时显示“未确认”。迁移、重挂载或更换 Docker 运行方式后，重新核对实际挂载并更新展示信息。
 
 ## 备份边界
 
@@ -50,8 +49,6 @@ python3 deploy/install-storage.py metadata /actual/host/data-root volume
 
 ## English summary
 
-Fresh installs ask for a new, dedicated server directory (default: `<installation>/data`). The parent must already exist. The installer creates the directory with mode `0700` and UID/GID `1000:1000`; supported path characters are ASCII letters, digits, spaces, `/`, `-`, `_` and `.`. Symlinks and `..` are rejected. Do not copy `.env.example` before a fresh installer run: an existing `.env` selects the existing-deployment path.
+Fresh installs ask for a new server directory (default: `<installation>/data`) under an existing parent. The installer creates the directory with mode `0700` and UID/GID `1000:1000`, then mounts it at `/data`. Existing installations retain their mounts without automatic migration. The web card shows server paths and shared filesystem free space; it cannot change the storage location.
 
-The directory mounts at `/data`; original files live in `/data/uploads`, but backup must include the entire `/data`, the database and `.env`. Existing installations keep their original bind mount or named volume, with no automatic migration. The web card is read-only and displays verified server paths and shared filesystem free space; it does not refer to your browser's computer. Missing or stale path metadata remains unconfirmed.
-
-Backup reads the backend's actual mounts, including a stopped backend; do not remove that container before backup. `.env`, proxy configuration and remote storage objects are not included. Archives contain secrets and sessions: encrypt them and store them off-site. Archive verification is not a restore drill. See the [deployment guide](../deploy/DEPLOY.md#7-备份与恢复) for coordinated backup and isolated recovery.
+Back up the database and entire `/data`, including secrets and Telegram sessions. Keep the backend container until backup completes; back up `.env`, proxy configuration and remote storage objects separately. Encrypt backups and test recovery in isolation. See the [deployment guide](../deploy/DEPLOY.md#7-备份与恢复).

@@ -26,6 +26,7 @@ case "$argument" in
 
 检查源码更新和服务器环境，再填写 Web/API 地址。仅输入 1 才授权安装缺少的软件。
 首次部署创建 .env 并生成密钥；已有地址按 Enter 保留。生产环境需配置 HTTPS。
+未设置 MCP 地址时自动使用 API 地址的 /mcp，无需额外填写。
 --non-interactive  不读取输入或安装软件；从 .env 或环境变量取值，配置不足时退出。
 --skip-source-update  使用当前源码，不拉取 Git 更新。
 --build  跳过 latest 镜像拉取，强制使用当前源码构建。
@@ -131,6 +132,10 @@ prompt_origin() {
   done
 }
 
+resolve_mcp_url() {
+  python3 "$SCRIPT_DIR/install-config.py" mcp-url "$VITE_API_URL_VALUE" "$CONFIGURED_MCP_PUBLIC_URL"
+}
+
 confirm_install() {
   local choice
   while true; do
@@ -138,6 +143,7 @@ confirm_install() {
     echo "配置确认"
     echo "Web 前端 URL：$CORS_ORIGIN_VALUE"
     echo "后端 API URL：$VITE_API_URL_VALUE"
+    echo "MCP 接入：${MCP_PUBLIC_URL_VALUE:-仅本机（远程接入需要 HTTPS）}"
     echo
     printf '按 Enter 保存配置并开始安装，输入 e 重新编辑，输入 q 退出：'
     if ! IFS= read -r choice; then
@@ -184,12 +190,15 @@ export STORAGE_EXISTING
 LOCAL_STORAGE_NEW_PATH=""
 CURRENT_CORS_ORIGIN=""
 CURRENT_VITE_API_URL=""
+CURRENT_MCP_PUBLIC_URL=""
 if [[ -f .env ]]; then
   CURRENT_CORS_ORIGIN="$(read_env CORS_ORIGIN)"
   CURRENT_VITE_API_URL="$(read_env VITE_API_URL)"
+  CURRENT_MCP_PUBLIC_URL="$(read_env MCP_PUBLIC_URL)"
 else
   created_env=true
 fi
+CONFIGURED_MCP_PUBLIC_URL="${CURRENT_MCP_PUBLIC_URL:-${MCP_PUBLIC_URL:-}}"
 
 if [[ "$NON_INTERACTIVE" == true && "$created_env" == false ]]; then
   # Existing installations treat .env as the source of truth. Ambient shell variables
@@ -219,6 +228,7 @@ if [[ "$NON_INTERACTIVE" == false ]]; then
   while true; do
     CORS_ORIGIN_VALUE="$(prompt_origin '请输入 Web 前端 URL' 'https://cloud.example.com' "$CORS_ORIGIN_VALUE")"
     VITE_API_URL_VALUE="$(prompt_origin '请输入后端 API URL' 'https://api.example.com' "$VITE_API_URL_VALUE")"
+    MCP_PUBLIC_URL_VALUE="$(resolve_mcp_url)"
     if [[ "$CORS_ORIGIN_VALUE" != https://* || "$VITE_API_URL_VALUE" != https://* ]]; then
       echo "警告：HTTP 不加密请求，默认安全 Cookie 无法用于 HTTP 登录；生产环境请改用 HTTPS。" >&2
     fi
@@ -245,6 +255,7 @@ else
     exit 2
   fi
 fi
+MCP_PUBLIC_URL_VALUE="$(resolve_mcp_url)"
 
 # Runtime dependency startup is required even with a pre-existing .env.
 source "$SCRIPT_DIR/install-runtime.sh"
@@ -264,6 +275,7 @@ if [[ "$created_env" == true ]]; then
 fi
 upsert_env CORS_ORIGIN "$CORS_ORIGIN_VALUE"
 upsert_env VITE_API_URL "$VITE_API_URL_VALUE"
+upsert_env MCP_PUBLIC_URL "$MCP_PUBLIC_URL_VALUE"
 if [[ "$created_env" == true ]]; then
   upsert_env COOKIE_SECURE true
   upsert_env COOKIE_SECURE_FORCE true
@@ -303,6 +315,7 @@ PY
 # in the actual child environment as well as the file.
 CORS_ORIGIN="$CORS_ORIGIN_VALUE"
 VITE_API_URL="$VITE_API_URL_VALUE"
+MCP_PUBLIC_URL="$MCP_PUBLIC_URL_VALUE"
 DB_PASSWORD="$(read_env DB_PASSWORD)"
 DB_PASSWORD_URI="$(python3 - "$DB_PASSWORD" <<'PY'
 import sys
@@ -312,7 +325,7 @@ PY
 )"
 SESSION_SECRET="$(read_env SESSION_SECRET)"
 STORAGE_CREDENTIALS_SECRET="$(read_env STORAGE_CREDENTIALS_SECRET)"
-export CORS_ORIGIN VITE_API_URL DB_PASSWORD DB_PASSWORD_URI SESSION_SECRET STORAGE_CREDENTIALS_SECRET
+export CORS_ORIGIN VITE_API_URL MCP_PUBLIC_URL DB_PASSWORD DB_PASSWORD_URI SESSION_SECRET STORAGE_CREDENTIALS_SECRET
 prepare_install_compose
 start_installation
 
@@ -323,6 +336,7 @@ else
 fi
 echo "Web：$CORS_ORIGIN_VALUE"
 echo "API：$VITE_API_URL_VALUE"
+echo "MCP：${MCP_PUBLIC_URL_VALUE:-仅本机（远程接入需要 HTTPS）}"
 echo
 API_PORT="${PORT:-$(read_env PORT)}"
 API_PORT="${API_PORT:-51947}"

@@ -14,5 +14,6 @@ import { mergeCatalogs } from '../../i18n/mergeCatalogs';
 import { storageAccount } from './storageAccount';
 import { qbittorrent } from './qbittorrent';
 import { storageSettings } from './storageSettings';
+import { mcp } from './mcp';
 
-export default mergeCatalogs(base, { common, auth, files, errors: { ...errors, services: serviceErrors }, appCopy, management, storageAccount, storageSettings, qbittorrent }, remainingPages, redesign, uiAudit, botConnection);
+export default mergeCatalogs(base, { common, auth, files, errors: { ...errors, services: serviceErrors }, appCopy, management, storageAccount, storageSettings, qbittorrent, mcp }, remainingPages, redesign, uiAudit, botConnection);

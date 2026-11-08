@@ -6,43 +6,59 @@
 
 ## 1. 前置条件
 
-- Linux、Bash 4+、Python 3.7+、Git、Docker Engine 和 Compose 插件；当前用户能访问 Docker daemon。镜像安装无需 Node.js、npm 或 Buildx。
-- Compose 需支持健康等待和镜像拉取策略，检查基线为 2.18+。仅源码兜底需要 Buildx；默认构建证明要求 Compose 2.39+，较旧构建环境可加 `--compat`。不支持 Python `docker-compose` v1；源码兜底遇到额外 Compose 覆盖文件会停止，避免丢失自定义部署配置。
+- Linux、Bash 4+、Python 3.7+、Git、Docker Engine 和 Compose 插件；一键下载入口还需要 curl。当前用户能访问 Docker daemon。镜像安装无需 Node.js、npm 或 Buildx。
+- Compose 需支持健康等待和镜像拉取策略，检查基线为 2.18+。源码构建需要 Buildx；默认构建证明要求 Compose 2.39+，较旧构建环境可加 `--compat`。不支持 Python `docker-compose` v1；源码兜底遇到额外 Compose 覆盖文件会停止，避免丢失自定义部署配置。
 - Web 与 API 两个域名解析到服务器，例如 `cloud.example.com`、`api.example.com`。使用同一主域名下的 HTTPS 子域名，避免 `SameSite=Lax` Cookie 的跨站限制。
 - 宿主机 Nginx、管理面板或其他反向代理与证书；独立存储磁盘应提前挂载，并留足下载暂存和备份空间。
 
-环境检查默认只读。缺少组件时，输入 `1` 才授权从 apt（Debian/Ubuntu）或 dnf/yum 的现有仓库安装，可能请求 sudo 密码；按 Enter 或 `q` 退出。脚本不添加软件仓库、关闭签名校验或放宽 Docker socket 权限。
+环境检查默认只读。缺少组件时，输入 `1` 可从系统软件仓库安装，可能请求 sudo 密码；按 Enter 或 `q` 退出。
 
 ## 2. 首次安装
 
 ```bash
-git clone https://github.com/hicocos/tg-vault.git
-cd tg-vault
-./deploy/install.sh
+curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | bash
 ```
 
-**不要先复制 `.env.example`**：安装器会生成 `.env`，而已有 `.env` 会被视为旧部署，不套用新的存储目录默认值。按提示填写：
+入口需要 Bash 4+、curl 和 Git，自动下载项目到当前目录下的 `tg-vault` 并运行 `deploy/install.sh`，无需手动下载或 `cd`。通过管道执行时，向导从终端读取输入。
+
+指定安装目录（当前用户需有写入权限）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | TG_VAULT_INSTALL_DIR=/opt/tg-vault bash
+```
+
+在项目根目录重复执行会复用当前项目；从其他目录运行时，使用相同的 `TG_VAULT_INSTALL_DIR` 可更新已有部署。已有非项目目录不会被覆盖。`--build`、`--compat`、`--skip-source-update` 和 `--non-interactive` 可通过 `bash -s -- <参数>` 传入。
+
+后续手动执行 Compose 或运维脚本时，先进入项目根目录（默认 `cd tg-vault`）。
+
+安装器会自动生成 `.env`。按提示填写：
 
 ```dotenv
 VITE_API_URL=https://api.example.com
 CORS_ORIGIN=https://cloud.example.com
 ```
 
-使用实际完整 origin（协议、域名及可选端口），不要路径、查询、片段或末尾 `/`。已有值按 Enter 保留，包括误填的示例地址，必须主动替换。安装器不替换 Nginx 示例中的域名。
+填写实际 origin（协议、域名及可选端口），不带路径、查询、片段或末尾 `/`。已有值按 Enter 保留，示例地址须主动替换；Nginx 示例域名也需另行修改。MCP 地址按 API 地址自动配置，自定义值见[配置参考](../docs/configuration.md)。
 
-新安装还会询问服务器文件目录，默认为 `<项目目录>/data`。应选择尚不存在的专用子目录，上级目录必须已存在；安装器以 `0700` 创建并设置 UID/GID `1000:1000`，不递归改其他目录权限。路径支持 ASCII 字母、数字、空格、`/`、`-`、`_`、`.`，不接受符号链接或 `..`。详见[本地存储](../docs/local-storage.md)。
+新安装还会询问服务器文件目录，默认为 `<项目目录>/data`。选择尚不存在的专用子目录，上级目录须已存在；安装器创建权限 `0700`、UID/GID `1000:1000`。路径字符与挂载要求见[本地存储](../docs/local-storage.md)。
 
 确认页按 Enter 保存并部署，输入 `e` 重填，`q` 取消。脚本自动生成数据库密码、`SESSION_SECRET` 与 `STORAGE_CREDENTIALS_SECRET`，将 `.env` 权限设为 `0600`。保留这些值；已有数据库不能换成新密码。
 
 Telegram 凭证不需要写入 `.env`。完成 HTTPS 和管理员初始化后，在 Web 设置中配置 Bot、允许用户和个人账号。
 
-非交互安装不安装缺失软件，也不读取终端输入。全新部署可使用：
+非交互安装不安装缺失软件，也不读取终端输入。已下载项目并进入项目根目录时，可使用：
 
 ```bash
 CORS_ORIGIN=https://cloud.example.com \
 VITE_API_URL=https://api.example.com \
 INSTALL_STORAGE_PATH=/mnt/archive/tg-vault-data \
 ./deploy/install.sh --non-interactive
+```
+
+如果尚未下载项目，可直接运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | CORS_ORIGIN=https://cloud.example.com VITE_API_URL=https://api.example.com INSTALL_STORAGE_PATH=/mnt/archive/tg-vault-data bash -s -- --non-interactive
 ```
 
 `INSTALL_STORAGE_PATH` 仅用于全新非交互安装；已有部署不会因此迁移文件。完整环境变量见[配置参考](../docs/configuration.md)。
@@ -52,11 +68,11 @@ INSTALL_STORAGE_PATH=/mnt/archive/tg-vault-data \
 安装器更新当前分支源码后，依次：
 
 1. 校验部署配置与原有 `/data` 挂载。
-2. 拉取 GHCR 最新前后端镜像（`latest`），核对两端源码修订一致；拉取失败、架构不支持或发布不完整时再顺序本地构建。
-3. 启动并等待 PostgreSQL 健康，已有数据库容器使用 `--no-recreate` 保留。
-4. 停止旧 backend/frontend，使用本次选定的 backend 镜像依次运行数据库 `plan` 和 `migrate`；迁移成功后以 `--no-deps` 替换前后端并等待健康检查，避免再触发一次迁移。迁移失败时应用保持停止，不自动重启旧镜像。
+2. 拉取配套的 GHCR `latest` 镜像；拉取失败、架构不支持或发布不完整时尝试源码构建。
+3. 启动并等待 PostgreSQL 健康，保留已有数据库容器。
+4. 停止旧应用，使用目标 backend 镜像执行数据库迁移；成功后替换前后端并检查健康状态。迁移失败时保持应用停止。
 
-默认等待 180 秒，可用 `INSTALL_HEALTH_TIMEOUT=600 ./deploy/install.sh` 调整（30–1800 秒）。应用镜像始终使用 `latest`，不会使用旧缓存冒充拉取成功；已拉取后启动阶段禁止再次拉取。强制源码构建使用 `--build`，需要时加 `--compat`；构建版本信息从 package 与 Git 临时读取。替换前完成镜像准备，失败不自动清库或重置密钥。
+健康检查默认等待 180 秒，可用 `INSTALL_HEALTH_TIMEOUT=600 ./deploy/install.sh` 调整（30–1800 秒）。强制源码构建使用 `--build`，较旧构建环境可加 `--compat`。
 
 手动运行 Compose 需要自行准备 `.env` 和数据库密码；密码包含 URL 保留字符时还要为连接串提供 URL 编码后的 `DB_PASSWORD_URI`，数据库原密码不变。直接 Compose 使用历史 named volume 默认值，不会执行安装器的目录选择/密钥保护逻辑。首次安装确认配置后可运行：
 
@@ -66,19 +82,19 @@ docker compose pull backend frontend db-migrate
 docker compose up -d --no-build --pull never --wait
 ```
 
-基础 Compose 的独立 `db-migrate` 服务使用与 backend 相同的镜像和数据库配置；PostgreSQL 健康后运行迁移，成功退出后才允许 backend 启动。普通 `docker compose up` 也适用于空库，不再向 PostgreSQL 挂载 `init.sql`。backend 启动和就绪检查只验证迁移状态，不执行 DDL；下载执行的重启恢复仍仅由应用启动负责。本地编译配置位于 `docker-compose.build.yml`，backend 与 db-migrate 共享同一构建镜像，建议由安装器 `--build` 调用。前后端镜像发布支持 amd64/arm64；其他平台会尝试源码兜底。首次安装不能只启动 `--no-deps backend frontend`，必须先有 PostgreSQL 并完成迁移。
+Compose 会在 PostgreSQL 健康后运行独立 `db-migrate` 服务，迁移成功才启动 backend，适用于空库安装。backend 启动只检查迁移状态，不执行 DDL；不要挂载 `init.sql` 代替迁移。首次安装不能只启动 `--no-deps backend frontend`。预构建镜像支持 amd64/arm64；源码构建使用 `docker-compose.build.yml`，建议通过安装器 `--build` 调用。
 
-容器构建/后端运行使用 Node.js 24，前端运行由 Nginx 提供。后端通过镜像自带的进程外监督器启动；不要覆盖为 `node dist/index.js`，否则绕过活性保护。监督器针对 `/livez` 连续失败重启进程组，单纯 `/readyz` 降级不会触发此重启。
+后端使用 Node.js 24，前端由 Nginx 提供。保留镜像自带的启动命令，以启用进程活性保护。
 
 ### 源码部署
 
 部署当前工作区时，所有 Compose 命令均附加 `-f docker-compose.yml -f docker-compose.build.yml`；只用基础文件会选择 GHCR 镜像。数据库仍按下文先检查、迁移，再替换应用，保留原数据库与数据卷。
 
-不要用 `git clean -fdx` 清理部署目录，或删除被容器引用的文件。依赖和构建在镜像中生成，源码与行为测试保留；开发及发布检查使用[独立副本](../docs/development.md)。
+不要用 `git clean -fdx` 清理部署目录或删除容器引用的文件。开发及发布检查使用[独立副本](../docs/development.md)。
 
 ### 数据库命令与手动升级
 
-数据库 CLI 为 `node dist/scripts/database.js status|plan|migrate|check`。`status` 与 `plan` 只读：查看账本、校验迁移文件并显示待执行迁移，不建表、不修复数据；`check` 只读验证数据库是否为当前版本。只有显式 `migrate` 执行初始化及迁移，历史迁移无需手工逐个应用。`DB_MIGRATION_LOCK_TIMEOUT_MS` 默认 `10000` 毫秒，限制迁移锁等待；`DB_MIGRATION_STATEMENT_TIMEOUT_MS` 默认 `300000` 毫秒，限制迁移语句执行时间。
+数据库 CLI 为 `node dist/scripts/database.js status|plan|migrate|check`。`status` 查看账本，`plan` 列出待执行迁移，`check` 验证版本，三者均只读；只有 `migrate` 执行初始化及迁移。超时参数见[配置参考](../docs/configuration.md)。
 
 已有部署必须先完成第 7 节的协调备份并准备好目标镜像，再停止旧应用，不能让旧 workers 与 DDL 同时运行。以下命令逐条执行；任何一步失败立即停止，保持应用停止，不继续最后一步：
 
@@ -91,8 +107,7 @@ docker compose run --rm --no-deps --pull never backend node dist/scripts/databas
 docker compose up -d --no-build --pull never --no-deps --wait backend frontend
 ```
 
-所有命令必须使用同一套 Compose 覆盖文件和选定镜像；自定义 backend 镜像时也要将 db-migrate 指向完全相同的镜像。迁移失败先检查错误与账本，保留数据库并前向修复后重试；不要删除数据卷、篡改已发布迁移或将失败隐藏为成功。
-
+所有命令必须使用同一套 Compose 覆盖文件和选定镜像；自定义 backend 镜像时也要将 db-migrate 指向相同镜像。迁移失败先检查错误与账本，保留数据库并前向修复；不要删除数据卷或修改已发布迁移。
 
 ## 4. 配置宿主机反向代理
 
@@ -111,15 +126,15 @@ TLS 证书由宿主机或面板管理；Compose 没有 `certbot` 服务。[`ngin
 
 ## 5. 更新部署
 
-先完成下一节的备份，从实际项目根目录运行：
+先完成[协调备份](#协调备份)，从实际项目根目录运行：
 
 ```bash
-./deploy/install.sh
+curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | bash
 ```
 
-安装器从 `origin` 更新当前分支，只接受快进；本地修改、detached HEAD 或无法快进时停止，不丢弃文件或强行合并。已有地址按 Enter 保留；原数据库和文件挂载保留，不自动迁移数据。已手动更新、固定发布源码或离线部署可使用 `--skip-source-update`。也可通过安装器绝对路径调用，它会定位项目目录。
+安装器从 `origin` 快进更新当前分支；有本地修改、detached HEAD 或无法快进时停止。原配置、数据库和文件挂载保留，不自动迁移数据。已手动更新、固定发布源码或离线部署可使用 `--skip-source-update`。
 
-替换前后端会短暂中断服务；仅重启旧容器不会升级源码或容器内 Node。数据库迁移在新应用启动前由独立 CLI 明确执行，应用不会自行迁移。迁移失败后即使已提交部分迁移也不得自动恢复旧应用；优先前向修复。需要回退时，不能假设旧镜像兼容新 schema：先在隔离环境验证，必要时恢复升级前同一批数据库、文件与密钥，再运行匹配镜像。
+替换前后端会短暂中断服务；重启旧容器不会完成升级。迁移失败后保持应用停止，优先前向修复。回退前须验证旧镜像与 schema 的兼容性，必要时恢复升级前同一批数据库、文件与密钥，再运行匹配镜像。
 
 部署后检查：
 
@@ -133,7 +148,7 @@ docker inspect --format='{{index .Config.Labels "org.opencontainers.image.revisi
 
 两端镜像标签应对应预期源码提交/版本；另用浏览器检查实际 Web/API HTTPS 地址、登录、文件访问与 Telegram 状态。不要仅凭容器运行就认定公网部署完成。
 
-从旧版编译部署切换到预构建镜像时，自定义 Compose 也必须把 `.env` 的 `VITE_API_URL` 作为前端容器环境变量传入，不能继续只写在 build args。打开 `/runtime-config.js` 核对生效值；显式空值会使用 Web 同源 `/api`。OAuth 回调必须与实际登录 API 使用同一主机，否则 host-only Cookie 不会随回调发送。Web 与 API 分域时，前后端镜像应配套更新，以保持 `callbackOrigin` 授权结果契约一致。
+自定义 Compose 须把 `VITE_API_URL` 传入前端容器环境，不能只写在 build args；可通过 `/runtime-config.js` 核对，空值使用同源 `/api`。OAuth 回调与登录 API 须使用同一主机，前后端镜像应配套更新。
 
 ## 6. 常用运维命令
 
@@ -227,3 +242,7 @@ docker compose logs --tail=200 postgres
 ### HTTPS、502 或登录失败
 
 检查宿主机代理、证书、Web/API upstream、请求体与超时限制，核对前端容器启动时注入的 API 地址和运行时 CORS。同站 HTTPS 子域名与安全 Cookie 应一致。Compose 内没有 `nginx` 或 `certbot` 服务；只调整实际负责入口的代理。提交日志前脱敏，不公开 `.env`、session 或数据库归档。
+
+### 视频拖动或断点下载返回整文件
+
+对比后端直连与公开 HTTPS 的相同 Range 请求。正常范围应返回 `206`、`Content-Range` 和对应片段；越界范围应返回 `416`。宿主机反代须显式转发 `Range`、`If-Range` 并设置 `proxy_cache off`、`proxy_buffering off`，避免继承面板全局 `proxy_cache` 后把范围请求变成整文件 `200`。仓库的 `nginx-site.conf` 已包含这些设置；修改实际站点后先 `nginx -t`，再平滑重载。

@@ -19,6 +19,7 @@ export type FileDeletionResult =
 export interface FileDeletionDependencies {
     removePhysicalFile(file: IndexedFile): Promise<void>;
     deleteIndex(id: string): Promise<boolean>;
+    onFailure?(error: unknown, stage: 'physical' | 'index'): void;
 }
 
 function errorMessage(error: unknown): string {
@@ -45,6 +46,7 @@ export function createFileDeletionService(dependencies: FileDeletionDependencies
                 await dependencies.removePhysicalFile(file);
             } catch (error) {
                 if (!isPhysicalFileNotFound(error)) {
+                    dependencies.onFailure?.(error, 'physical');
                     return { status: 'failed', error: errorMessage(error) };
                 }
                 physicalNotFound = true;
@@ -53,9 +55,11 @@ export function createFileDeletionService(dependencies: FileDeletionDependencies
             try {
                 const deleted = await dependencies.deleteIndex(file.id);
                 if (!deleted) {
+                    dependencies.onFailure?.(Object.assign(new Error('File index changed during deletion'), { code: 'INDEX_CHANGED' }), 'index');
                     return { status: 'failed', error: '文件索引删除失败或已发生并发变更' };
                 }
             } catch (error) {
+                dependencies.onFailure?.(error, 'index');
                 return { status: 'failed', error: errorMessage(error) };
             }
 

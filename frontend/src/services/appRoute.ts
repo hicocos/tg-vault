@@ -23,7 +23,7 @@ const CATEGORY_PATHS: Record<FileCategory, string> = {
 };
 
 const PATH_CATEGORIES = new Map(Object.entries(CATEGORY_PATHS).map(([category, path]) => [path, category as FileCategory]));
-const SETTINGS_SECTIONS = new Set<SettingsSectionId>(['general', 'security', 'telegram', 'storage', 'maintenance']);
+const SETTINGS_SECTIONS = new Set<SettingsSectionId>(['general', 'security', 'telegram', 'storage', 'mcp', 'maintenance']);
 
 function filesRoute(category: FileCategory = 'all', folder: string | null = null, query = '', needsReplace = false): AppRoute {
     return { kind: 'files', category, folder, query, needsReplace };

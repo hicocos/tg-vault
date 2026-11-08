@@ -467,9 +467,9 @@ export function TelegramUserAccountsPanel({
                                 {!account.enabled && <p className="mt-2 text-[12px] text-muted-foreground">{t('management.telegramAccounts.account.disabledHint')}</p>}
                             </div>
                             <div className="settings-actions settings-telegram-account__actions">
-                                {account.enabled && !account.connected && (account.health === 'expired' || account.health === 'error') && <Button size="sm" variant={account.health === 'expired' ? 'default' : 'outline'} disabled={!configured || busyAccountId !== null} onClick={() => { setLoginTarget(account); setLoginOpen(true); }}><KeyRound className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.reauth.action')}</Button>}
+                                {account.enabled && !account.connected && (account.health === 'expired' || account.health === 'error') && <Button size="sm" variant={account.health === 'expired' ? 'default' : 'outline'} className="settings-telegram-account__reauth" disabled={!configured || busyAccountId !== null} onClick={() => { setLoginTarget(account); setLoginOpen(true); }}><KeyRound className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.reauth.action')}</Button>}
                                 {account.enabled ? <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'disable')}><PowerOff className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.disable')}</Button> : <Button size="sm" variant="outline" disabled={busy} onClick={() => void mutateAccount(account, 'enable')}><Power className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.enable')}</Button>}
-                                <Button size="sm" variant="destructive" disabled={busy} onClick={() => void mutateAccount(account, 'unlink')}><Trash2 className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.delete')}</Button>
+                                <Button size="sm" variant="destructive-outline" disabled={busy} onClick={() => void mutateAccount(account, 'unlink')}><Trash2 className="mr-1.5 h-3.5 w-3.5" />{t('management.telegramAccounts.account.delete')}</Button>
                             </div>
                         </div>
                     </article>;

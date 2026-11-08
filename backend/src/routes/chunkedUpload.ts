@@ -12,7 +12,7 @@ import { storageManager } from '../services/storage.js';
 import { assertStorageTargetWritable, isStorageCooldownError, sendStorageCooldownHttpError } from '../services/storageCooldownGuard.js';
 
 import { getSignedUrl } from '../middleware/signedUrl.js';
-import { getUniqueStoredName } from '../utils/fileUtils.js';
+import { reserveStoredName, type StoredNameReservation } from '../utils/fileUtils.js';
 import { getFileType } from '../utils/fileMetadata.js';
 import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
 import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
@@ -99,18 +99,6 @@ function stableWebAdminPrincipalId(): string {
     return crypto.createHash('sha256').update('tg-vault:web-admin:v1').digest('hex');
 }
 
-function decodeFilename(filename: string): string {
-    try {
-        const decoded = decodeURIComponent(filename);
-        if (decoded !== filename) return decoded;
-    } catch { /* keep original */ }
-    try {
-        const decoded = Buffer.from(filename, 'binary').toString('utf8');
-        if (!decoded.includes('\ufffd') && decoded !== filename) return decoded;
-    } catch { /* keep original */ }
-    return filename;
-}
-
 function safeChunkPath(uploadId: string, chunkIndex: number): string {
     return path.join(path.resolve(CHUNK_DIR), uploadId, `chunk_${chunkIndex}`);
 }
@@ -174,7 +162,7 @@ router.post('/init', async (req: Request, res: Response) => {
         const session: ChunkUploadSession = {
             uploadId: crypto.randomUUID(),
             ownerId: ownerId(req),
-            filename: decodeFilename(filename).slice(0, 255),
+            filename: filename.slice(0, 255),
             mimeType: mimeType.slice(0, 100),
             folder: normalizedFolder,
             totalSize: bytes,
@@ -286,6 +274,7 @@ router.post('/complete', async (req: Request, res: Response) => {
     let token = '';
     let tempMergedPath = '';
     let storageLease: StorageAccountOperationLease | null = null;
+    let nameReservation: StoredNameReservation | undefined;
     let completionHeartbeat: ReturnType<typeof setInterval> | null = null;
     let completionLeaseError: unknown = null;
     try {
@@ -331,8 +320,7 @@ router.post('/complete', async (req: Request, res: Response) => {
         const storageFolder = buildStorageFolderWithRules({
             source: 'web', folder: session.folder, mimeType: session.mimeType, fileName: session.filename,
         }, await getStoragePathRules());
-        const storedName = await getUniqueStoredName(session.filename, storageFolder, session.targetAccountId);
-        tempMergedPath = path.join(path.resolve(UPLOAD_DIR), `${uploadId}-${storedName}`);
+        tempMergedPath = path.join(path.resolve(UPLOAD_DIR), `${uploadId}.merged`);
         await mergeChunks(uploadId, claim.chunks, tempMergedPath, session.totalSize);
 
         const duplicate = (await getDuplicateMode()) === 'skip'
@@ -355,6 +343,8 @@ router.post('/complete', async (req: Request, res: Response) => {
                 },
             });
         }
+        nameReservation = await reserveStoredName(target.provider, session.filename, storageFolder, session.targetAccountId);
+        const { storedName } = nameReservation;
 
         const type = getFileType(session.mimeType);
         const derivativeStatus = type === 'image' || type === 'video' ? 'queued' : 'not_required';
@@ -460,7 +450,8 @@ router.post('/complete', async (req: Request, res: Response) => {
         sendProtocolError(res, error);
     } finally {
         if (completionHeartbeat) clearInterval(completionHeartbeat);
-        await storageLease?.release();
+        try { await nameReservation?.release(); }
+        finally { await storageLease?.release(); }
     }
 });
 

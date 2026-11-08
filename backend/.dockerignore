@@ -27,6 +27,8 @@ build/
 Thumbs.db
 
 # Tests
+test/
+tests/
 coverage/
 .nyc_output/
 **/__tests__/
@@ -61,6 +63,8 @@ telegram_user_session*.txt
 *.zip
 backups/
 .hermes/
+.omx/
+output/
 
 # Git
 .git/

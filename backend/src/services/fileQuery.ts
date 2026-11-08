@@ -2,6 +2,11 @@ export type FileQuerySort = 'date' | 'name';
 export type FileQueryDirection = 'asc' | 'desc';
 export type FileQueryScope = { kind: 'local' } | { kind: 'account'; accountId: string };
 
+// Keep PostgreSQL microseconds for cursors and MCP timestamps without changing
+// the Date columns consumed by the web UI and file version checks.
+export const FILE_TIMESTAMP_PROJECTION = `to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at_iso,
+    to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS updated_at_iso`;
+
 // Fallback for callers that do not have the database-projected sort key. Paged SQL
 // returns its own LOWER(name) value and cursorForFile always prefers that value.
 export function normalizeNameSortValue(value: string): string {
@@ -52,10 +57,15 @@ function normalizeDateBound(value: unknown, field: 'after' | 'before'): string |
         const timestamp = Date.UTC(Number(year), Number(month) - 1, Number(day), field === 'before' ? 23 : 0, field === 'before' ? 59 : 0, field === 'before' ? 59 : 0, field === 'before' ? 999 : 0);
         const parsed = new Date(timestamp);
         if (parsed.getUTCFullYear() !== Number(year) || parsed.getUTCMonth() !== Number(month) - 1 || parsed.getUTCDate() !== Number(day)) throw new Error(`invalid ${field}`);
-        return parsed.toISOString();
+        return field === 'before' ? parsed.toISOString().replace('.999Z', '.999999Z') : parsed.toISOString();
     }
     const timestamp = Date.parse(raw);
     if (!Number.isFinite(timestamp)) throw new Error(`invalid ${field}`);
+    const iso = raw.match(/^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.(\d{1,6}))?(?:Z|[+-]\d{2}:\d{2})$/i);
+    if (iso) {
+        if (new Date(`${iso[1]}T00:00:00Z`).toISOString().slice(0, 10) !== iso[1]) throw new Error(`invalid ${field}`);
+        return new Date(timestamp).toISOString().replace(/\.\d{3}Z$/, `.${(iso[2] || '').padEnd(6, '0')}Z`);
+    }
     return new Date(timestamp).toISOString();
 }
 
@@ -172,8 +182,8 @@ function addFilters(options: NormalizedFileQuery, where: string[], params: unkno
     }
 }
 
-export function buildFilePageQuery(scope: FileQueryScope, options: NormalizedFileQuery): BuiltQuery {
-    const where: string[] = [];
+export function buildFilePageQuery(scope: FileQueryScope, options: NormalizedFileQuery, additionalWhere: string[] = []): BuiltQuery {
+    const where: string[] = [...additionalWhere];
     const params: unknown[] = [];
     addScope(scope, where, params);
     addFilters(options, where, params);
@@ -196,8 +206,8 @@ export function buildFilePageQuery(scope: FileQueryScope, options: NormalizedFil
     return {
         text: `SELECT
     id, name, stored_name, type, mime_type, size, thumbnail_path, preview_path,
-    width, height, source, folder, storage_account_id, is_favorite, created_at, updated_at,
-    LOWER(name) AS sort_value
+    width, height, source, folder, storage_account_id, is_favorite, derivative_status, created_at, updated_at,
+    LOWER(name) AS sort_value, ${FILE_TIMESTAMP_PROJECTION}
 FROM files
 WHERE ${where.join(' AND ')}
 ORDER BY ${sortColumn} ${direction}, id ${direction}
@@ -249,6 +259,7 @@ ORDER BY ${order}`,
 export function cursorForFile(file: Record<string, unknown>, sort: FileQuerySort, direction: FileQueryDirection): string {
     const value = sort === 'name'
         ? String(file.sort_value ?? normalizeNameSortValue(String(file.name || '')))
-        : new Date(String(file.created_at)).toISOString();
+        : String(file.created_at_iso ?? (file.created_at instanceof Date
+            ? file.created_at.toISOString() : new Date(String(file.created_at)).toISOString()));
     return encodeFileQueryCursor({ sort, direction, value, id: String(file.id) });
 }

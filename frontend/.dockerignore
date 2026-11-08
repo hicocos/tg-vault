@@ -27,6 +27,8 @@ build/
 Thumbs.db
 
 # Tests
+test/
+tests/
 coverage/
 .nyc_output/
 **/__tests__/
@@ -41,6 +43,8 @@ logs/
 data/
 secrets/
 .hermes/
+.omx/
+output/
 backups/
 *.session
 *.session-journal

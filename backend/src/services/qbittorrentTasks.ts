@@ -4,14 +4,14 @@ import path from 'node:path';
 import parseTorrent from 'parse-torrent';
 import { pool, query } from '../db/index.js';
 import { createTransferTask, getTransferTask, listTransferTasks, updateTransferTask, type TransferTaskRecord } from './transferTasks.js';
-import { QbittorrentClient, type QbFile, type QbTorrent } from './qbittorrentClient.js';
+import { QbittorrentClient, qbApiUrl, type QbFile, type QbTorrent } from './qbittorrentClient.js';
 import { getQbConfig, qbEnabled, type QbConfig } from './qbittorrentConfig.js';
 import { storageManager } from './storage.js';
 import { withStorageAccountOperationLease } from './storageAccountOperation.js';
 import { assertStorageTargetWritable } from './storageCooldownGuard.js';
 import { saveAndIndexWithCompensation } from './storageWrite.js';
 import { normalizeFolderPath } from '../utils/folderPath.js';
-import { getUniqueStoredName } from '../utils/fileUtils.js';
+import { reserveStoredName } from '../utils/fileUtils.js';
 import { getMimeTypeFromFilename } from '../utils/telegramUtils.js';
 import { getFileType } from '../utils/fileMetadata.js';
 import { enqueueMediaDerivatives } from './mediaDerivatives.js';
@@ -86,7 +86,7 @@ async function taskLock<T>(id: string, operation: () => Promise<T>): Promise<T> 
 }
 
 function assertConnection(payload: QbPayload, config: QbConfig): void {
-    if (payload.connection !== `${config.apiUrl}|${config.username}`) throw new Error('下载器连接已变更，请恢复原连接后重试此任务');
+    if (payload.connection !== `${qbApiUrl(config.port)}|${config.username}`) throw new Error('任务记录与当前本机 qBittorrent 连接不一致，已停止处理');
 }
 
 function assertQbTaskDirectory(task: TransferTaskRecord): void {
@@ -180,7 +180,7 @@ export async function resolveQbSource(savePath: string, file: QbFile): Promise<s
 export async function createQbTask(input: { magnet?: string; torrent?: Buffer; targetAccountId?: string; targetFolder?: string; preserveLocalFiles?: boolean }) {
     const config = await getQbConfig();
     if (!config.enabled) throw new Error('qBittorrent 扩展未开启');
-    if (!config.apiUrl || !config.username || !config.password) throw new Error('请先配置 qBittorrent 连接');
+    if (!config.username || !config.password) throw new Error('请先配置 qBittorrent 连接');
     if (Boolean(input.magnet) === Boolean(input.torrent)) throw new Error('请提交一个磁力链接或种子文件');
     if (input.magnet && (!input.magnet.startsWith('magnet:?') || input.magnet.length > 65536)) throw new Error('磁力链接格式无效');
     if (input.torrent && input.torrent[0] !== 100) throw new Error('种子文件必须是有效的 bencode 字典');
@@ -204,7 +204,7 @@ export async function createQbTask(input: { magnet?: string; torrent?: Buffer; t
         if ((await client.torrents(hash)).length) throw new Error('该种子已存在于 qBittorrent，请勿重复添加');
         const id = crypto.randomUUID();
         const payload: QbPayload = {
-            hash, connection: `${config.apiUrl}|${config.username}`,
+            hash, connection: `${qbApiUrl(config.port)}|${config.username}`,
             savePath: path.join(config.downloadDir, id), downloadRoot: config.downloadDir,
             preserveLocalFiles: input.preserveLocalFiles ?? config.preserveLocalFiles,
             magnet: input.magnet, torrent: input.torrent?.toString('base64'), files: [], downloadProgress: 0, downloadSpeed: 0,
@@ -223,11 +223,6 @@ async function transferFile(task: TransferTaskRecord, payload: QbPayload, file: 
     const folder = normalizeFolderPath(`${task.targetFolder}${sourceDirectory === '.' ? '' : `/${sourceDirectory}`}`);
     const name = path.posix.basename(file.name);
     let entry = payload.files.find(item => item.index === file.index);
-    if (!entry) {
-        entry = { index: file.index, name: file.name, size: file.size, storedName: await getUniqueStoredName(name, folder, task.targetAccountId) };
-        payload.files.push(entry);
-        await updateTransferTask('qbittorrent', task.id, { payload });
-    }
     const target = storageManager.getTarget(task.targetProvider!, task.targetAccountId);
     await withStorageAccountOperationLease(pool, task.targetAccountId, `qbittorrent:${task.id}`, async () => {
         await assertStorageTargetWritable(target);
@@ -244,7 +239,15 @@ async function transferFile(task: TransferTaskRecord, payload: QbPayload, file: 
             } });
         let temporary: string | null = null;
         let derivativeSource: string | null = null;
+        const nameReservation = await reserveStoredName(target.provider, name, folder, task.targetAccountId);
         try {
+            if (!entry) {
+                entry = { index: file.index, name: file.name, size: file.size, storedName: nameReservation.storedName };
+                payload.files.push(entry);
+            } else {
+                entry.storedName = nameReservation.storedName;
+            }
+            await updateTransferTask('qbittorrent', task.id, { payload });
             // The local provider consumes its input; never hand it a seeding file.
             if (target.provider.name === 'local') {
                 const dir = path.join(process.env.CHUNK_DIR || './data/chunks', 'qbittorrent');
@@ -293,6 +296,7 @@ async function transferFile(task: TransferTaskRecord, payload: QbPayload, file: 
             await progress.close();
             if (temporary) await fs.rm(temporary, { force: true }).catch(() => undefined);
             if (derivativeSource) await fs.rm(derivativeSource, { force: true }).catch(() => undefined);
+            await nameReservation.release();
         }
     });
 }

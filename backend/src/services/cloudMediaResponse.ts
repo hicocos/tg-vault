@@ -9,14 +9,12 @@ export interface CloudMediaResponse {
     headers: Record<string, string>;
 }
 
-function firstHeader(headers: CloudMediaResponseInput['upstreamHeaders'], name: string): string | undefined {
+export function firstHeader(headers: CloudMediaResponseInput['upstreamHeaders'], name: string): string | undefined {
     if (!headers) return undefined;
     const getter = (headers as { get?: (headerName: string) => unknown }).get;
     const value = typeof getter === 'function'
         ? getter.call(headers, name)
-        : (headers as Record<string, string | number | string[] | undefined>)[name]
-            ?? (headers as Record<string, string | number | string[] | undefined>)[name.toLowerCase()]
-            ?? (headers as Record<string, string | number | string[] | undefined>)[name.toUpperCase()];
+        : Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     if (Array.isArray(value)) return value[0];
     return value === undefined || value === null ? undefined : String(value);
 }

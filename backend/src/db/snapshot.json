@@ -1,6 +1,6 @@
 {
   "baselineChecksum": "9e7cc7ee2f07f9563d0bb8bdcfdd54719c0b9c203bf9023fd2c88ff1d15235c1",
-  "schemaChecksum": "54e874c5652232f808855f926b60c8c20e1cbf1521df2f74bc8cb4ad139c9a89",
+  "schemaChecksum": "b4c51506e67fcb3502229433d675effe714c8eb84229972a0bfaa3e4418afb16",
   "migrations": [
     {
       "version": "2026082901",
@@ -86,6 +86,16 @@
       "version": "2026101802",
       "name": "database_schema_ownership",
       "checksum": "490c97455b697e986ebd398787085f44330843f5a3b9f4fb815383a732b47181"
+    },
+    {
+      "version": "2026110601",
+      "name": "mcp",
+      "checksum": "4c8fb7135c28cf79391b61de6388733c4e6eae6689966f7ced669bbd9956721e"
+    },
+    {
+      "version": "2026110701",
+      "name": "mcp_upload_transport",
+      "checksum": "07cd008ded219da46c55ebc2de907da2c0eb81ffaa424fd2a926ad2077e42270"
     }
   ]
 }

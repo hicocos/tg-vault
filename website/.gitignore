@@ -1,0 +1,17 @@
+node_modules/
+.vitepress/cache/
+.vitepress/dist/
+.vitepress/.temp/
+.wrangler/
+src/deploy/installation.md
+src/reference/configuration.md
+src/storage/local.md
+src/reference/development.md
+src/usage/mcp.md
+src/reference/changelog.md
+src/public/logo.webp
+src/public/favicon-32.png
+src/public/favicon.ico
+src/public/apple-touch-icon.png
+src/public/LICENSE.txt
+src/public/fonts/

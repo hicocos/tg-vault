@@ -163,7 +163,7 @@ export const BulkActionToolbar = ({
                     <Button variant={showShareSettings ? 'secondary' : 'outline'} size="sm" onClick={handleShareClick} disabled={!canShare} title={shareUnavailableReason} aria-expanded={showShareSettings}>
                         <Share2 aria-hidden="true" />{t('files.ui.share.action')}
                     </Button>
-                    {canDelete && <Button variant="destructive" size="sm" onClick={onDelete} disabled={selectedFilesCount + selectedFoldersCount === 0}><Trash2 aria-hidden="true" />{t('common.actions.delete')}</Button>}
+                    {canDelete && <Button variant="destructive-outline" size="sm" onClick={onDelete} disabled={selectedFilesCount + selectedFoldersCount === 0}><Trash2 aria-hidden="true" />{t('common.actions.delete')}</Button>}
                     <Button variant="ghost" size="sm" onClick={() => { setShowShareSettings(false); onCancel(); }}><X aria-hidden="true" />{t('common.actions.cancel')}</Button>
                 </div>
             </div>

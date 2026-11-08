@@ -7,8 +7,9 @@ import { AuthType, createClient, WebDAVClient } from 'webdav';
 import { google, type drive_v3 } from 'googleapis';
 import { query, pool } from '../db/index.js';
 import { summarizeStorageProbeFailure } from '../utils/storageProbe.js';
+import { isRecord } from '../utils/typeGuards.js';
 import { MediaSourceMissingError } from './mediaProxyError.js';
-import { type IStorageProvider, type StorageTargetSnapshot, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './storage/contracts.js';
+import { type IStorageProvider, type StorageReadOptions, type StorageTargetSnapshot, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './storage/contracts.js';
 import { LocalStorageProvider } from './storage/localStorageProvider.js';
 export { type IStorageProvider, type StorageTargetSnapshot, StorageProbeError } from './storage/contracts.js';
 export { LocalStorageProvider } from './storage/localStorageProvider.js';
@@ -29,6 +30,9 @@ import { OpenListStorageProvider } from './openListStorage.js';
 import { uploadGoogleDriveFile } from './googleDriveUpload.js';
 import { uploadOneDriveFile } from './oneDriveUpload.js';
 import { addAbortSignal } from 'node:stream';
+import { randomUUID } from 'node:crypto';
+import { buildStorageAccountDetails, editableStorageCredentials } from '../utils/storageAccountDetails.js';
+import { setTimeout as delay } from 'node:timers/promises';
 import { trackUploadProgress } from './storage/uploadProgress.js';
 
 export class StorageQuotaCooldownError extends Error {
@@ -144,6 +148,17 @@ export class AliyunOSSStorageProvider implements IStorageProvider {
         }
     }
 
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        const objectKey = folder ? `${folder}/${fileName}` : fileName;
+        try {
+            await this.client.head(objectKey);
+            return true;
+        } catch (error: unknown) {
+            if (isRecord(error) && error.code === 'NoSuchKey') return false;
+            throw error;
+        }
+    }
+
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             const objectKey = folder ? `${folder}/${fileName}` : fileName;
@@ -160,23 +175,32 @@ export class AliyunOSSStorageProvider implements IStorageProvider {
                     finally { source.destroy(); }
                 };
             }
-            const result = await client.put(objectKey, tempPath);
+            const result = await client.put(objectKey, tempPath, { headers: { 'x-oss-forbid-overwrite': 'true' } });
             options?.onProgress?.(size, size);
             console.log('[AliyunOSS] Upload successful:', result.name);
             return result.name;
         } catch (error: any) {
             console.error('[AliyunOSS] Upload failed:', error.message);
-            throw new Error(`Aliyun OSS upload failed: ${error.message}`);
+            throw new Error(`Aliyun OSS upload failed: ${error.message}`, { cause: error });
         }
     }
 
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
         try {
+            if (options?.signal) {
+                options.signal.throwIfAborted();
+                // ali-oss getStream does not expose request cancellation before headers.
+                const response = await axios.get(this.client.signatureUrl(storedPath, { expires: 60 }), {
+                    responseType: 'stream', signal: options.signal,
+                    headers: options.range ? { Range: options.range } : undefined,
+                });
+                return Object.assign(response.data, { upstreamStatus: response.status, upstreamHeaders: response.headers });
+            }
             const result = await this.client.getStream(storedPath);
             return result.stream;
         } catch (error: any) {
             console.error('[AliyunOSS] Get stream failed:', error.message);
-            throw new Error(`Aliyun OSS get stream failed: ${error.message}`);
+            throw new Error(`Aliyun OSS get stream failed: ${error.message}`, { cause: error });
         }
     }
 
@@ -253,6 +277,17 @@ export class S3StorageProvider implements IStorageProvider {
         }
     }
 
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        const objectKey = folder ? `${folder}/${fileName}` : fileName;
+        try {
+            await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }));
+            return true;
+        } catch (error: unknown) {
+            if (isRecord(error) && (error.name === 'NotFound' || error.name === 'NoSuchKey')) return false;
+            throw error;
+        }
+    }
+
     async saveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             const objectKey = folder ? `${folder}/${fileName}` : fileName;
@@ -264,6 +299,7 @@ export class S3StorageProvider implements IStorageProvider {
                 Body: body,
                 ContentType: mimeType,
                 ContentLength: stats.size,
+                IfNoneMatch: '*',
             });
             try { await this.client.send(command, { abortSignal: options?.signal }); }
             finally { body.destroy(); }
@@ -271,22 +307,27 @@ export class S3StorageProvider implements IStorageProvider {
             return objectKey;
         } catch (error: any) {
             console.error('[S3] Upload failed:', error.message);
-            throw new Error(`S3 upload failed: ${error.message}`);
+            throw new Error(`S3 upload failed: ${error.message}`, { cause: error });
         }
     }
 
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
         try {
             const command = new GetObjectCommand({
                 Bucket: this.bucket,
                 Key: storedPath,
+                ...(options?.signal && options.range ? { Range: options.range } : {}),
             });
-            const response = await this.client.send(command);
+            const response = await this.client.send(command, { abortSignal: options?.signal });
+            if (options?.signal) return Object.assign(response.Body as NodeJS.ReadableStream, {
+                upstreamStatus: response.$metadata.httpStatusCode,
+                upstreamHeaders: { 'content-range': response.ContentRange, etag: response.ETag, 'last-modified': response.LastModified?.toUTCString() },
+            });
             // AWS SDK v3 response.Body is a SDK stream, which can be piped
             return response.Body as NodeJS.ReadableStream;
         } catch (error: any) {
             console.error('[S3] Get stream failed:', error.message);
-            throw new Error(`S3 get stream failed: ${error.message}`);
+            throw new Error(`S3 get stream failed: ${error.message}`, { cause: error });
         }
     }
 
@@ -408,6 +449,21 @@ export class WebDAVStorageProvider implements IStorageProvider {
         }
     }
 
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        if (!this.authenticationReady && (this.username || this.password)) await this.probe();
+        const remotePath = folder ? `${folder}/${fileName}` : fileName;
+        try {
+            await this.withRequestTimeout(
+                signal => this.client.stat(`/${remotePath}`, { signal }),
+                'WebDAV existence check',
+            );
+            return true;
+        } catch (error: unknown) {
+            if (isRecord(error) && error.status === 404) return false;
+            throw error;
+        }
+    }
+
     async saveFile(tempPath: string, fileName: string, _mimeType?: string, folder?: string | null, options?: StorageWriteOptions): Promise<string> {
         try {
             if (!this.authenticationReady && (this.username || this.password)) await this.probe();
@@ -424,7 +480,12 @@ export class WebDAVStorageProvider implements IStorageProvider {
                 async signal => {
                     const uploadSignal = options?.signal ? AbortSignal.any([signal, options.signal]) : signal;
                     const body = trackUploadProgress(fs.createReadStream(tempPath, { signal: uploadSignal }), size, options?.onProgress);
-                    try { return await this.client.putFileContents(`/${remotePath}`, body, { signal: uploadSignal }); }
+                    try {
+                        const created = await this.client.putFileContents(`/${remotePath}`, body, { signal: uploadSignal, overwrite: false });
+                        // webdav returns false, rather than throwing, for a failed create-only precondition.
+                        if (!created) throw new Error('WebDAV upload target already exists; refusing to overwrite');
+                        return created;
+                    }
                     finally { body.destroy(); }
                 },
                 'WebDAV upload',
@@ -435,30 +496,41 @@ export class WebDAVStorageProvider implements IStorageProvider {
             return remotePath;
         } catch (error: any) {
             console.error('[WebDAV] Upload failed:', error.message);
-            throw new Error(`WebDAV upload failed: ${error.message}`);
+            throw new Error(`WebDAV upload failed: ${error.message}`, { cause: error });
         }
     }
 
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
             const controller = new AbortController();
-            let timeout: ReturnType<typeof setTimeout>;
             const refresh = () => {
                 clearTimeout(timeout);
                 timeout = setTimeout(() => {
                     controller.abort(new Error(`WebDAV download timed out after ${this.requestTimeoutMs}ms`));
                 }, this.requestTimeoutMs);
             };
-            const stream = this.client.createReadStream(`/${storedPath}`, { signal: controller.signal });
+            const signal = options?.signal ? AbortSignal.any([controller.signal, options.signal]) : controller.signal;
             refresh();
+            let stream: NodeJS.ReadableStream;
+            if (options?.range || options?.signal) {
+                const response = await this.client.customRequest(`/${storedPath}`, {
+                    method: 'GET', ...(options.range ? { headers: { Range: options.range } } : {}), signal,
+                });
+                if (!response.body) throw new Error('WebDAV download returned no response body');
+                stream = Object.assign(response.body, { upstreamStatus: response.status, upstreamHeaders: response.headers });
+            } else {
+                stream = this.client.createReadStream(`/${storedPath}`, { signal });
+            }
             stream.on('data', refresh);
             stream.once('end', () => clearTimeout(timeout));
             stream.once('close', () => clearTimeout(timeout));
             stream.once('error', () => clearTimeout(timeout));
             return stream;
         } catch (error: any) {
+            clearTimeout(timeout);
             console.error('[WebDAV] Get stream failed:', error.message);
-            throw new Error(`WebDAV get stream failed: ${error.message}`);
+            throw new Error(`WebDAV get stream failed: ${error.message}`, { cause: error });
         }
     }
 
@@ -505,7 +577,8 @@ export class OneDriveStorageProvider implements IStorageProvider {
         private clientId: string,
         private clientSecret: string,
         private refreshToken: string,
-        private tenantId: string = 'common'
+        private tenantId: string = 'common',
+        private credentialRevision: string | null = null,
     ) {
         console.log(`[OneDrive] Provider initialized: ${id}`);
     }
@@ -549,7 +622,8 @@ export class OneDriveStorageProvider implements IStorageProvider {
     /**
      * 获取有效的访问令牌，自动刷新过期令牌
      */
-    private async getAccessToken(): Promise<string> {
+    private async getAccessToken(signal?: AbortSignal): Promise<string> {
+        signal?.throwIfAborted();
         // 提前5分钟刷新令牌
         if (this.accessToken && Date.now() < this.tokenExpiresAt - 300000) {
             return this.accessToken;
@@ -583,7 +657,8 @@ export class OneDriveStorageProvider implements IStorageProvider {
                     params.toString(),
                     {
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        timeout: 30000
+                        timeout: 30000,
+                        signal,
                     }
                 );
 
@@ -595,11 +670,12 @@ export class OneDriveStorageProvider implements IStorageProvider {
                 if (response.data.refresh_token && response.data.refresh_token !== this.refreshToken) {
                     console.log(`[OneDrive] New refresh token received for account ${this.id}, updating database...`);
                     this.refreshToken = response.data.refresh_token;
-                    await StorageManager.updateAccountToken(this.id, this.refreshToken);
+                    await StorageManager.updateAccountToken(this.id, this.refreshToken, this.credentialRevision);
                 }
 
                 return this.accessToken!;
             } catch (error: any) {
+                signal?.throwIfAborted();
                 lastError = error;
                 const errorData = error.response?.data;
                 console.error(`[OneDrive] Token refresh attempt ${attempt}/3 failed:`, {
@@ -609,7 +685,7 @@ export class OneDriveStorageProvider implements IStorageProvider {
                 });
 
                 if (attempt < 3) {
-                    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+                    await delay(1000 * attempt, undefined, { signal });
                 }
             }
         }
@@ -630,6 +706,22 @@ export class OneDriveStorageProvider implements IStorageProvider {
             });
         } catch (error) {
             throw storageProbeError(this.name, error);
+        }
+    }
+
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        const token = await this.getAccessToken();
+        const targetPath = [this.ONEDRIVE_FOLDER, folder, fileName].filter(Boolean).join('/');
+        try {
+            await axios.get(`https://graph.microsoft.com/v1.0/me/drive/root:/${this.encodeOneDrivePath(targetPath)}:`, {
+                headers: { Authorization: `Bearer ${token}` },
+                params: { $select: 'id' },
+                timeout: 30_000,
+            });
+            return true;
+        } catch (error: unknown) {
+            if (axios.isAxiosError(error) && error.response?.status === 404) return false;
+            throw error;
         }
     }
 
@@ -711,26 +803,27 @@ export class OneDriveStorageProvider implements IStorageProvider {
     /**
      * 获取文件流用于下载
      */
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
-        const token = await this.getAccessToken();
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
+        const token = await this.getAccessToken(options?.signal);
 
         try {
             const response = await axios.get(
                 `https://graph.microsoft.com/v1.0/me/drive/items/${storedPath}/content`,
                 {
-                    headers: { 'Authorization': `Bearer ${token}` },
+                    headers: { 'Authorization': `Bearer ${token}`, ...(options?.signal && options.range ? { Range: options.range } : {}) },
                     responseType: 'stream',
-                    timeout: 60000
+                    timeout: 60000,
+                    signal: options?.signal,
                 }
             );
-            return response.data;
+            return options?.signal ? Object.assign(response.data, { upstreamStatus: response.status, upstreamHeaders: response.headers }) : response.data;
         } catch (error: any) {
             console.error('[OneDrive] Get file stream failed:', {
                 fileId: storedPath,
                 status: error.response?.status,
                 error: error.response?.data?.error
             });
-            throw new Error(`OneDrive download failed: ${error.response?.data?.error?.message || error.message}`);
+            throw new Error(`OneDrive download failed: ${error.response?.data?.error?.message || error.message}`, { cause: error });
         }
     }
 
@@ -989,16 +1082,58 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         }
     }
 
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        await this.ensureAuthenticated();
+        const segments = [this.GOOGLE_DRIVE_FOLDER, ...(folder ? folder.split('/').filter(Boolean) : [])];
+        let parentId: string | null = null;
+        for (const segment of segments) {
+            parentId = await this.findFolderId(segment, parentId);
+            if (!parentId) return false;
+        }
+        // Use the same parent resolution as uploads, but never ensure/create a folder here.
+        const drive: drive_v3.Drive = this.drive;
+        let pageToken: string | undefined;
+        do {
+            const response = await drive.files.list(this.withSharedDriveSupport({
+                q: `name = '${this.escapeDriveQuery(fileName)}' and '${this.escapeDriveQuery(parentId!)}' in parents and trashed = false`,
+                fields: 'incompleteSearch,nextPageToken,files(id)',
+                spaces: 'drive',
+                pageSize: 1,
+                pageToken,
+            }, true));
+            if (response.data.incompleteSearch || !Array.isArray(response.data.files)) {
+                throw new Error('Google Drive returned an incomplete existence check');
+            }
+            if (response.data.files.length > 0) return true;
+            pageToken = response.data.nextPageToken || undefined;
+        } while (pageToken);
+        return false;
+    }
+
     private async findFolderId(segment: string, parentId: string | null): Promise<string | null> {
         const parentClause: string = `'${parentId || this.getRootParentId()}' in parents`;
-        const response: any = await this.drive.files.list(this.withSharedDriveSupport({
-            q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
-            fields: 'files(id, name, createdTime)',
-            orderBy: 'createdTime',
-            spaces: 'drive',
-            pageSize: 10,
-        }, true));
-        return response.data.files?.[0]?.id || null;
+        const drive: drive_v3.Drive = this.drive;
+        let pageToken: string | undefined;
+        do {
+            const response = await drive.files.list(this.withSharedDriveSupport({
+                q: `name = '${this.escapeDriveQuery(segment)}' and mimeType = 'application/vnd.google-apps.folder' and ${parentClause} and trashed = false`,
+                fields: 'incompleteSearch,nextPageToken,files(id, name, createdTime)',
+                orderBy: 'createdTime',
+                spaces: 'drive',
+                pageSize: 10,
+                pageToken,
+            }, true));
+            if (response.data.incompleteSearch || !Array.isArray(response.data.files)) {
+                throw new Error('Google Drive returned an incomplete folder search');
+            }
+            if (response.data.files.length > 0) {
+                const folderId = response.data.files[0].id;
+                if (!folderId) throw new Error('Google Drive returned a folder without an ID');
+                return folderId;
+            }
+            pageToken = response.data.nextPageToken || undefined;
+        } while (pageToken);
+        return null;
     }
 
     private async ensureChildFolder(segment: string, parentId: string | null): Promise<string> {
@@ -1135,14 +1270,28 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
         }
     }
 
-    async getFileStream(storedPath: string, options?: { range?: string }): Promise<NodeJS.ReadableStream> {
-        await this.getFileAvailability(storedPath);
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
+        let drive = this.drive;
         try {
-            const response = await this.drive.files.get(
+            if (options?.signal) {
+                options.signal.throwIfAborted();
+                // A request-scoped transporter also cancels token refresh, without
+                // aborting another operation using the account's shared OAuth client.
+                const auth = new google.auth.OAuth2({ clientId: this.clientId, clientSecret: this.clientSecret,
+                    redirectUri: this.redirectUri, transporterOptions: { signal: options.signal } });
+                auth.setCredentials({ ...this.oauth2Client.credentials });
+                drive = google.drive({ version: 'v3', auth });
+                const metadata = await drive.files.get(this.withSharedDriveSupport({ fileId: storedPath, fields: 'id,trashed' }), { signal: options.signal });
+                if (metadata.data.trashed) throw new MediaSourceMissingError('trashed');
+            } else {
+                await this.getFileAvailability(storedPath);
+            }
+            const response = await drive.files.get(
                 this.withSharedDriveSupport({ fileId: storedPath, alt: 'media' }),
                 {
                     responseType: 'stream',
                     ...(options?.range ? { headers: { Range: options.range } } : {}),
+                    signal: options?.signal,
                 }
             );
             const stream = response.data as NodeJS.ReadableStream & {
@@ -1153,6 +1302,7 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
             stream.upstreamHeaders = response.headers as Record<string, string | number | string[] | undefined>;
             return stream;
         } catch (error: any) {
+            if (options?.signal && (error?.code === 404 || error?.response?.status === 404)) throw new MediaSourceMissingError('not_found');
             console.error('[GoogleDrive] Get stream failed:', error.message);
             throw error; // Preserve upstream status/reason for media error classification.
         }
@@ -1166,15 +1316,52 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     async deleteFile(storedPath: string): Promise<void> {
         await this.ensureAuthenticated();
         try {
-            await this.drive.files.delete(this.withSharedDriveSupport({ fileId: storedPath }));
-            console.log('[GoogleDrive] Delete successful:', storedPath);
-        } catch (error: any) {
-            if (error.code === 404) {
-                console.log('[GoogleDrive] File not found, skipping delete:', storedPath);
-                return;
+            const publicPermissions: string[] = [];
+            let pageToken: string | undefined;
+            do {
+                const permissions = await this.drive.permissions.list(this.withSharedDriveSupport({
+                    fileId: storedPath, pageToken, pageSize: 100,
+                    fields: 'nextPageToken,permissions(id,type,permissionDetails(inherited))',
+                }));
+                for (const permission of permissions.data.permissions || []) {
+                    if (permission.type === 'anyone' && !permission.permissionDetails?.some((detail: { inherited?: boolean }) => detail.inherited)) publicPermissions.push(permission.id);
+                }
+                pageToken = permissions.data.nextPageToken;
+            } while (pageToken);
+            for (const permissionId of publicPermissions) {
+                await this.drive.permissions.delete(this.withSharedDriveSupport({ fileId: storedPath, permissionId }));
             }
-            console.error('[GoogleDrive] Delete failed:', error.message);
-            throw new Error(`Google Drive delete failed: ${error.message}`);
+            const response = await this.drive.files.update(this.withSharedDriveSupport({
+                fileId: storedPath, requestBody: { trashed: true }, fields: 'id,trashed',
+            }));
+            if (response.data.trashed !== true) throw Object.assign(new Error('Google Drive did not confirm moving the file to trash.'), { code: 'DELETE_NOT_CONFIRMED', status: 409 });
+            console.log(JSON.stringify({ event: 'storage.google_drive_trashed', accountId: this.id,
+                fileId: storedPath, upstreamStatus: response.status }));
+        } catch (error: any) {
+            let failure = error;
+            const upstreamStatus = Number(error?.response?.status ?? error?.status ?? error?.code);
+            if (upstreamStatus === 404) {
+                try {
+                    const remaining = await this.drive.files.get(this.withSharedDriveSupport({
+                        fileId: storedPath, fields: 'id,trashed,capabilities(canTrash)',
+                    }));
+                    if (remaining.data.trashed === true) return;
+                    const forbidden = remaining.data.capabilities?.canTrash === false;
+                    failure = Object.assign(new Error(forbidden
+                        ? 'Google Drive does not permit moving this file to trash.'
+                        : 'Google Drive deletion was not confirmed; the file is not in trash.'),
+                    { code: forbidden ? 'DELETE_FORBIDDEN' : 'DELETE_NOT_CONFIRMED', status: forbidden ? 403 : 409 });
+                } catch (verificationError: any) {
+                    if (Number(verificationError?.response?.status ?? verificationError?.status ?? verificationError?.code) !== 404) {
+                        failure = verificationError;
+                    }
+                }
+            }
+            const status = Number(failure?.response?.status ?? failure?.status ?? failure?.code);
+            console.error(JSON.stringify({ event: 'storage.google_drive_delete_failed', accountId: this.id,
+                fileId: storedPath, upstreamStatus: Number.isFinite(upstreamStatus) ? upstreamStatus : undefined,
+                status: Number.isFinite(status) ? status : undefined }));
+            throw failure;
         }
     }
 
@@ -1246,12 +1433,17 @@ export class GoogleDriveStorageProvider implements IStorageProvider {
     }
 }
 
+export class StorageAccountUpdateError extends Error {
+    constructor(public readonly status: 400 | 404, message: string) { super(message); }
+}
+
 // 存储管理器
 export class StorageManager {
     private static instance: StorageManager;
     private activeProvider: IStorageProvider;
     private providers: Map<string, IStorageProvider> = new Map();
     private activeAccountId: string | null = null;
+    private configurationPublication: Promise<void> = Promise.resolve();
 
     private constructor() {
         // 默认初始化 LocalProvider
@@ -1267,8 +1459,110 @@ export class StorageManager {
         return StorageManager.instance;
     }
 
+    private createAccountProvider(id: string, type: string, config: Record<string, any>, globalOneDriveSecret = ''): IStorageProvider | null {
+        switch (type) {
+            case 'onedrive': return new OneDriveStorageProvider(id, config.clientId, config.clientSecret || globalOneDriveSecret || '',
+                config.refreshToken, config.tenantId || 'common', config.credentialRevision ?? null);
+            case 'aliyun_oss': return new AliyunOSSStorageProvider(id, config.region, config.accessKeyId, config.accessKeySecret, config.bucket);
+            case 's3': return new S3StorageProvider(id, config.endpoint, config.region, config.accessKeyId, config.accessKeySecret,
+                config.bucket, config.forcePathStyle || false);
+            case 'webdav': return new WebDAVStorageProvider(id, config.url, config.username, config.password);
+            case 'openlist': return new OpenListStorageProvider(id, config.baseUrl, config.rootPath || '/', config.username, config.password);
+            case 'google_drive': return new GoogleDriveStorageProvider(id, config.clientId, config.clientSecret, config.refreshToken,
+                config.redirectUri, config.sharedDriveId);
+            default: return null;
+        }
+    }
+
+    private async withConfigurationPublication<T>(operation: () => Promise<T>): Promise<T> {
+        const previous = this.configurationPublication;
+        let release!: () => void;
+        this.configurationPublication = new Promise<void>(resolve => { release = resolve; });
+        await previous;
+        try { return await operation(); }
+        finally { release(); }
+    }
+
+    updateAccount(accountId: string, input: unknown) {
+        return this.withConfigurationPublication(() => this.updateAccountConfiguration(accountId, input));
+    }
+
+    private async updateAccountConfiguration(accountId: string, input: unknown) {
+        const invalid = (message: string): never => { throw new StorageAccountUpdateError(400, message); };
+        if (!isRecord(input) || Object.keys(input).some(key => key !== 'name' && key !== 'credentials') || !Object.keys(input).length) {
+            invalid('仅允许修改显示名称和认证信息');
+        }
+        const patch = input as Record<string, unknown>;
+        let name: string | undefined;
+        if (Object.hasOwn(patch, 'name')) {
+            if (typeof patch.name !== 'string') invalid('存储账户名称须为 1 至 100 个字符');
+            name = (patch.name as string).trim();
+            if (!name.length || name.length > 100) invalid('存储账户名称须为 1 至 100 个字符');
+        }
+        if (Object.hasOwn(patch, 'credentials') && !isRecord(patch.credentials)) invalid('认证信息须为字段对象');
+        const credentials = (patch.credentials ?? {}) as Record<string, unknown>;
+        const client = await pool.connect();
+        let replacement: IStorageProvider | null = null;
+        let row: any;
+        let credentialsUpdated = false;
+        let changed = false;
+        try {
+            await client.query('BEGIN');
+            row = (await client.query('SELECT * FROM storage_accounts WHERE id=$1 FOR UPDATE', [accountId])).rows[0];
+            if (!row) throw new StorageAccountUpdateError(404, '存储账户不存在');
+            const allowed = editableStorageCredentials(row.type);
+            for (const [key, value] of Object.entries(credentials)) {
+                if (!allowed.includes(key) || typeof value !== 'string' || value.length > 65536) invalid('认证信息包含不支持的字段或字段值');
+            }
+            const nonEmpty = Object.entries(credentials).filter(([, value]) => value !== '') as Array<[string, string]>;
+            let config = row.config;
+            if (nonEmpty.length) {
+                const current = decryptStorageConfig(row.config);
+                const updates = Object.fromEntries(nonEmpty.filter(([key, value]) => current[key] !== value));
+                credentialsUpdated = Object.keys(updates).length > 0;
+                if (credentialsUpdated) {
+                    config = { ...row.config, ...encryptStorageConfig(updates), credentialRevision: randomUUID() };
+                    const decrypted = decryptStorageConfig(config);
+                    let globalSecret = '';
+                    if (row.type === 'onedrive' && !decrypted.clientSecret) {
+                        const secretRow = (await client.query("SELECT value FROM system_settings WHERE key='onedrive_client_secret'")).rows[0];
+                        globalSecret = secretRow?.value ? decryptSettingValue('onedrive_client_secret', secretRow.value) : '';
+                    }
+                    replacement = this.createAccountProvider(row.id, row.type, decrypted, globalSecret);
+                    if (!replacement) invalid('该存储类型不支持更新认证信息');
+                }
+            }
+            changed = credentialsUpdated || (name !== undefined && name !== row.name);
+            if (changed) {
+                row = (await client.query(`UPDATE storage_accounts SET name=$2, config=$3::jsonb, updated_at=NOW(),
+                    last_probe_status=CASE WHEN $4 THEN NULL ELSE last_probe_status END,
+                    last_probe_error=CASE WHEN $4 THEN NULL ELSE last_probe_error END,
+                    last_probed_at=CASE WHEN $4 THEN NULL ELSE last_probed_at END WHERE id=$1 RETURNING *`,
+                [accountId, name ?? row.name, JSON.stringify(config), credentialsUpdated])).rows[0];
+            }
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally { client.release(); }
+        if (replacement) {
+            const key = `${row.type}:${accountId}`;
+            const previous = this.providers.get(key);
+            if (previous) {
+                for (const [alias, provider] of this.providers) if (provider === previous) this.providers.set(alias, replacement);
+            }
+            this.providers.set(key, replacement);
+            if (this.activeAccountId === accountId) this.activeProvider = replacement;
+        }
+        return { success: true, id: row.id, name: row.name, changed, credentialsUpdated, details: buildStorageAccountDetails(row) };
+    }
+
     // 初始化：从数据库加载配置
-    async init() {
+    init() {
+        return this.withConfigurationPublication(() => this.initializeAccounts());
+    }
+
+    private async initializeAccounts() {
         try {
             // 1. 迁移旧配置（如果存在且尚未迁移）
             await this.migrateLegacyConfig();
@@ -1312,65 +1606,8 @@ export class StorageManager {
                     await query('UPDATE storage_accounts SET config = $1, updated_at = NOW() WHERE id = $2', [JSON.stringify(encryptStorageConfig(rawConfig)), row.id]);
                     console.log(`[StorageManager] Encrypted stored credentials for account ${row.id}`);
                 }
-                let provider: IStorageProvider | null = null;
-
-                if (row.type === 'onedrive') {
-                    provider = new OneDriveStorageProvider(
-                        row.id,
-                        config.clientId,
-                        config.clientSecret || globalSecret || '',
-                        config.refreshToken,
-                        config.tenantId || 'common'
-                    );
-                    this.providers.set(`onedrive:${row.id}`, provider);
-                } else if (row.type === 'aliyun_oss') {
-                    provider = new AliyunOSSStorageProvider(
-                        row.id,
-                        config.region,
-                        config.accessKeyId,
-                        config.accessKeySecret,
-                        config.bucket
-                    );
-                    this.providers.set(`aliyun_oss:${row.id}`, provider);
-                } else if (row.type === 's3') {
-                    provider = new S3StorageProvider(
-                        row.id,
-                        config.endpoint,
-                        config.region,
-                        config.accessKeyId,
-                        config.accessKeySecret,
-                        config.bucket,
-                        config.forcePathStyle || false
-                    );
-                    this.providers.set(`s3:${row.id}`, provider);
-                } else if (row.type === 'webdav') {
-                    provider = new WebDAVStorageProvider(
-                        row.id,
-                        config.url,
-                        config.username,
-                        config.password
-                    );
-                    this.providers.set(`webdav:${row.id}`, provider);
-                } else if (row.type === 'openlist') {
-                    provider = new OpenListStorageProvider(
-                        row.id,
-                        config.baseUrl,
-                        config.rootPath || '/',
-                        config.username,
-                        config.password
-                    );
-                    this.providers.set(`openlist:${row.id}`, provider);
-                } else if (row.type === 'google_drive') {
-                    provider = new GoogleDriveStorageProvider(
-                        row.id,
-                        config.clientId,
-                        config.clientSecret,
-                        config.refreshToken,
-                        config.redirectUri,
-                        config.sharedDriveId
-                    );
-                    this.providers.set(`google_drive:${row.id}`, provider);
-                }
+                const provider = this.createAccountProvider(row.id, row.type, config, globalSecret);
+                if (provider) this.providers.set(`${row.type}:${row.id}`, provider);
 
                 if (provider && row.is_active) {
                     this.activeProvider = provider;
@@ -1481,12 +1718,12 @@ export class StorageManager {
         );
     }
 
-    static async updateAccountToken(accountId: string, refreshToken: string) {
+    static async updateAccountToken(accountId: string, refreshToken: string, credentialRevision: string | null = null) {
         await query(
             `UPDATE storage_accounts 
              SET config = config || jsonb_build_object('refreshToken', $2::text), updated_at = NOW()
-             WHERE id = $1`,
-            [accountId, encryptCredential(refreshToken)]
+             WHERE id = $1 AND (config->>'credentialRevision') IS NOT DISTINCT FROM $3::text`,
+            [accountId, encryptCredential(refreshToken), credentialRevision]
         );
     }
 
@@ -1531,31 +1768,24 @@ export class StorageManager {
     }
 
     async probeAccount(accountId: string): Promise<{ accountId: string; provider: string; status: 'available'; checkedAt: string }> {
-        const result = await query('SELECT id, type FROM storage_accounts WHERE id = $1', [accountId]);
-        const account = result.rows[0];
-        if (!account) throw new StorageProbeError('storage', '存储账户不存在', 'ACCOUNT_NOT_FOUND');
-        const provider = this.providers.get(`${account.type}:${account.id}`);
-        if (!provider) throw new StorageProbeError(String(account.type), '存储账户客户端未初始化，请检查配置后重启服务', 'PROVIDER_NOT_INITIALIZED');
-        try {
-            await provider.probe();
-            const checkedAt = new Date().toISOString();
-            await query(
-                `UPDATE storage_accounts
-                 SET last_probe_status = 'available', last_probe_error = NULL, last_probed_at = $2
-                 WHERE id = $1`,
-                [accountId, checkedAt],
-            );
-            return { accountId, provider: provider.name, status: 'available', checkedAt };
-        } catch (error) {
-            const failure = storageProbeError(provider.name, error);
-            await query(
-                `UPDATE storage_accounts
-                 SET last_probe_status = 'failed', last_probe_error = $2, last_probed_at = NOW()
-                 WHERE id = $1`,
-                [accountId, failure.message],
-            );
-            throw failure;
-        }
+        const { provider, credentialRevision } = await this.withConfigurationPublication(async () => {
+            const result = await query("SELECT id,type,config->>'credentialRevision' AS credential_revision FROM storage_accounts WHERE id=$1", [accountId]);
+            const account = result.rows[0];
+            if (!account) throw new StorageProbeError('storage', '存储账户不存在', 'ACCOUNT_NOT_FOUND');
+            const provider = this.providers.get(`${account.type}:${account.id}`);
+            if (!provider) throw new StorageProbeError(String(account.type), '存储账户客户端未初始化，请检查配置后重启服务', 'PROVIDER_NOT_INITIALIZED');
+            return { provider, credentialRevision: account.credential_revision as string | null };
+        });
+        let failure: StorageProbeError | undefined;
+        try { await provider.probe(); }
+        catch (error) { failure = storageProbeError(provider.name, error); }
+        const checkedAt = new Date().toISOString();
+        const stored = await query(`UPDATE storage_accounts SET last_probe_status=$2,last_probe_error=$3,last_probed_at=$4
+            WHERE id=$1 AND (config->>'credentialRevision') IS NOT DISTINCT FROM $5::text`,
+        [accountId, failure ? 'failed' : 'available', failure?.message ?? null, checkedAt, credentialRevision]);
+        if (!stored.rowCount) throw new StorageProbeError(provider.name, '认证信息已变更，请重新测试连接', 'CREDENTIALS_CHANGED');
+        if (failure) throw failure;
+        return { accountId, provider: provider.name, status: 'available', checkedAt };
     }
 
     // 从内存中移除 Provider

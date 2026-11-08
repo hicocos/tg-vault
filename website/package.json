@@ -1,0 +1,21 @@
+{
+  "name": "tg-vault-docs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/prepare.mjs && vitepress dev --host 127.0.0.1",
+    "build": "node scripts/prepare.mjs && vitepress build && node scripts/check-links.mjs",
+    "preview": "vitepress preview --host 127.0.0.1",
+    "deploy": "npm run build && wrangler pages deploy .vitepress/dist --project-name=tgvault --branch=main"
+  },
+  "devDependencies": {
+    "@fontsource-variable/noto-sans-sc": "5.3.1",
+    "vitepress": "1.6.4",
+    "vue": "3.5.44",
+    "wrangler": "4.154.0"
+  },
+  "overrides": {
+    "vite": "6.4.5"
+  }
+}

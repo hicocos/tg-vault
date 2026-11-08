@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { safeJoin } from '../../utils/localPath.js';
-import { type IStorageProvider, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './contracts.js';
+import { type IStorageProvider, type StorageReadOptions, type StorageUploadProgress, type StorageWriteOptions, StorageProbeError } from './contracts.js';
 
 export class LocalStorageProvider implements IStorageProvider {
     name = 'local';
@@ -20,6 +20,18 @@ export class LocalStorageProvider implements IStorageProvider {
         await fs.promises.access(this.uploadDir, fs.constants.R_OK | fs.constants.W_OK);
     }
 
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
+        try {
+            // lstat also reserves dangling symlinks, which exclusive creation cannot replace.
+            await fs.promises.lstat(safeJoin(destDir, fileName));
+            return true;
+        } catch (error: unknown) {
+            if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false;
+            throw error;
+        }
+    }
+
     async prepareSaveFile(tempPath: string, fileName: string, mimeType: string, folder?: string | null) {
         const destDir = folder ? safeJoin(this.uploadDir, folder) : this.uploadDir;
         return { storedPath: safeJoin(destDir, fileName), save: async (signal?: AbortSignal, onProgress?: StorageUploadProgress) => {
@@ -36,16 +48,13 @@ export class LocalStorageProvider implements IStorageProvider {
         }
         const destPath = safeJoin(destDir, fileName);
         try {
-            await fs.promises.rename(tempPath, destPath);
-        } catch (error: any) {
-            // 如果是跨设备移动 (EXDEV)，则使用复制+删除
-            if (error.code === 'EXDEV') {
-                await fs.promises.copyFile(tempPath, destPath);
-                await fs.promises.unlink(tempPath);
-            } else {
-                throw error;
-            }
+            await fs.promises.link(tempPath, destPath);
+        } catch (error: unknown) {
+            // Cross-device copies must also create exclusively; a conflict leaves the source intact.
+            if (!(error instanceof Error) || !('code' in error) || error.code !== 'EXDEV') throw error;
+            await fs.promises.copyFile(tempPath, destPath, fs.constants.COPYFILE_EXCL);
         }
+        await fs.promises.unlink(tempPath);
         if (options?.onProgress) {
             const { size } = await fs.promises.stat(destPath);
             options.onProgress(size, size);
@@ -53,7 +62,7 @@ export class LocalStorageProvider implements IStorageProvider {
         return destPath; // 返回绝对路径
     }
 
-    async getFileStream(storedPath: string): Promise<NodeJS.ReadableStream> {
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
         const safePath = safeJoin(this.uploadDir, path.relative(this.uploadDir, storedPath));
         if (safePath !== path.resolve(storedPath)) {
             throw new Error('Unsafe local file path');
@@ -61,7 +70,7 @@ export class LocalStorageProvider implements IStorageProvider {
         if (!fs.existsSync(safePath)) {
             throw new Error(`File not found: ${safePath}`);
         }
-        return fs.createReadStream(safePath);
+        return fs.createReadStream(safePath, { signal: options?.signal });
     }
 
     async getPreviewUrl(storedPath: string): Promise<string> {

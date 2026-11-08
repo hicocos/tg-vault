@@ -26,7 +26,7 @@ import { deleteStorageAccountWithClient, StorageAccountConflictError, StorageAcc
 import { logOperationalEvent } from '../services/operationalEvents.js';
 import { webDestructiveConfirmationStore } from '../services/webDestructiveConfirmation.js';
 import { buildStorageDeletePreviewQueries } from '../services/storageDeletePreview.js';
-import { StorageProbeError } from '../services/storage.js';
+import { StorageProbeError, StorageAccountUpdateError, storageManager } from '../services/storage.js';
 import { getTelegramUserClientStatus } from '../services/telegramUserClientStatus.js';
 import { getTelegramBotStatus } from '../services/telegramBotStatus.js';
 import { formatBytes } from '../utils/fileMetadata.js';
@@ -1131,19 +1131,11 @@ router.get('/accounts/:id/details', requireAuth, async (req: Request, res: Respo
 router.patch('/accounts/:id', requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     if (!STORAGE_ACCOUNT_ID_PATTERN.test(id)) return res.status(400).json({ error: '无效的存储账户 ID' });
-    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
-    if (name.length < 1 || name.length > 100) {
-        return res.status(400).json({ error: '存储账户名称须为 1 至 100 个字符' });
-    }
     try {
-        const result = await query(
-            'UPDATE storage_accounts SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING id, name',
-            [name, id],
-        );
-        if (!result.rows[0]) return res.status(404).json({ error: '存储账户不存在' });
-        return res.json({ success: true, id: result.rows[0].id, name: result.rows[0].name });
-    } catch {
-        return res.status(500).json({ error: '重命名存储账户失败' });
+        return res.json(await storageManager.updateAccount(id, req.body));
+    } catch (error) {
+        if (error instanceof StorageAccountUpdateError) return res.status(error.status).json({ error: error.message });
+        return res.status(500).json({ error: '保存存储账户失败' });
     }
 });
 

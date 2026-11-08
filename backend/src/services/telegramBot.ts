@@ -72,7 +72,7 @@ import { getSetting, setSetting } from '../utils/settings.js';
 import { TelegramBotSupervisor, botRetryDelay } from './telegramBotLifecycle.js';
 import { setTelegramBotRuntimeProbe } from './telegramBotStatus.js';
 import { withTelegramOperationDeadline } from './telegramOperationDeadline.js';
-import { TelegramIngressLimit } from './telegramIngressLimit.js';
+import { telegramIngressLimit as ingressLimit } from './telegramIngressLimit.js';
 import { TelegramQueueCapacityError } from './telegramOrdinaryRecovery.js';
 import { botDownloadRuntime } from './telegramBotDownloadRuntime.js';
 
@@ -369,14 +369,7 @@ const pendingSubscriptionCancels = new Map<string, {
 }>();
 const TELEGRAM_SUBSCRIPTION_CONFIRM_TTL_MS = 2 * 60 * 1000;
 
-const TELEGRAM_MESSAGE_RATE_WINDOW_MS = Math.max(10_000, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || '60000', 10) || 60_000);
-const TELEGRAM_MESSAGE_RATE_MAX = Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || '30', 10) || 30);
-const TELEGRAM_HEAVY_RATE_WINDOW_MS = Math.max(60_000, parseInt(process.env.TELEGRAM_HEAVY_RATE_WINDOW_MS || '600000', 10) || 600_000);
-const TELEGRAM_HEAVY_RATE_MAX = Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || '5', 10) || 5);
 const TELEGRAM_HEAVY_COMMANDS = new Set(['/tg_download', '/tg_date', '/tg_tag', '/cleanup_settings']);
-const ingressLimit = new TelegramIngressLimit({ windowMs: TELEGRAM_MESSAGE_RATE_WINDOW_MS, messageMax: TELEGRAM_MESSAGE_RATE_MAX,
-    fileMax: Number(process.env.TELEGRAM_FILE_RATE_MAX || 120), controlMax: Number(process.env.TELEGRAM_CONTROL_RATE_MAX || 60),
-    heavyWindowMs: TELEGRAM_HEAVY_RATE_WINDOW_MS, heavyMax: TELEGRAM_HEAVY_RATE_MAX });
 const transferControlCommands: Record<string, true> = { '/status': true, '/tasks': true, '/task_pause': true, '/task_resume': true,
     '/task_cancel': true, '/stop_tasks': true, '/stop': true, '/cancel_tasks': true, '/tg_retry': true };
 const ingressRejections = new Map<string, { count: number; timer: NodeJS.Timeout }>();

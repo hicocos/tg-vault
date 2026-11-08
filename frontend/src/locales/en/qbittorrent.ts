@@ -1,10 +1,10 @@
 export const qbittorrent = {
     nav: 'BT downloads', title: 'BT downloads', extension: 'qBittorrent extension', enabled: 'Enable qBittorrent',
-    apiUrl: 'Web API URL', username: 'Username', password: 'Password', savedPassword: 'Saved password · leave blank to keep',
+    port: 'WebUI port', username: 'Username', password: 'Password', savedPassword: 'Saved password · leave blank to keep',
     downloadDir: 'Local download directory', targetAccount: 'Target storage', targetFolder: 'Target folder', local: 'Local storage',
     preserve: 'Keep local files after successful transfer (continue seeding)',
     cleanupDefault: 'Local source files are deleted after successful transfer unless you keep them.',
-    sameServer: 'Use an independent qBittorrent on this server. Both services must access the same absolute download directory.',
+    sameServer: 'Connect to qBittorrent on this server using its WebUI port. Both services must access the same absolute download directory.',
     configure: 'View / edit configuration', connectionTitle: 'qBittorrent connection', updating: 'Updating…', saving: 'Saving…', testing: 'Testing…',
     save: 'Save', saved: 'Saved', test: 'Test connection and directory', apiTest: 'Web API', directoryTest: 'Download directory',
     success: 'Available', failed: 'Failed', loading: 'Loading…', reload: 'Reload', disabled: 'qBittorrent is disabled. Enable it in Settings.',

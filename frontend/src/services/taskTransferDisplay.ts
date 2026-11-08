@@ -13,8 +13,18 @@ export function taskTransferDisplay(task: UnifiedTask) {
         : task.status === 'running' && typeof task.detail.speed === 'string' ? task.detail.speed : null;
     const transferred = Number.isFinite(task.bytes.transferred) ? Math.max(0, task.bytes.transferred) : 0;
     const total = Number.isFinite(task.bytes.total) ? Math.max(0, task.bytes.total) : 0;
+    const stages = ['telegram_channel', 'telegram_bot'].includes(task.sourceType)
+        && ['running', 'pending', 'pausing', 'paused'].includes(task.status)
+        ? (['downloading', 'uploading', 'waitingUpload', 'retrying'] as const)
+            .flatMap(phase => {
+                const count = task.detail[phase];
+                return typeof count === 'number' && Number.isFinite(count) && count > 0
+                    ? [{ phase, count }] : [];
+            })
+        : [];
     return {
         speed,
+        stages,
         showBytes: task.sourceType === 'telegram_channel'
             ? total > 0 || transferred > 0
             : task.detail.bytesKnown !== false && (total > 0 || transferred > 0 || downloading),

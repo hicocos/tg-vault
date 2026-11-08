@@ -15,6 +15,19 @@ const PROVIDER_FIELDS: Record<string, ProviderFields> = {
 };
 const URL_FIELDS: Record<string, true> = { endpoint: true, redirectUri: true, url: true, baseUrl: true };
 
+const EDITABLE_CREDENTIALS: Record<string, readonly string[]> = {
+    google_drive: ['clientId', 'clientSecret', 'refreshToken'],
+    onedrive: ['clientId', 'clientSecret', 'refreshToken'],
+    s3: ['accessKeyId', 'accessKeySecret'],
+    aliyun_oss: ['accessKeyId', 'accessKeySecret'],
+    webdav: ['username', 'password'],
+    openlist: ['username', 'password'],
+};
+
+export function editableStorageCredentials(provider: string): readonly string[] {
+    return Object.hasOwn(EDITABLE_CREDENTIALS, provider) ? EDITABLE_CREDENTIALS[provider] : [];
+}
+
 export interface StorageAccountDetailsRow {
     id: string;
     name: string;
@@ -80,5 +93,6 @@ export function buildStorageAccountDetails(row: StorageAccountDetailsRow) {
         updatedAt: row.updated_at,
         fields,
         secrets,
+        editableCredentials: editableStorageCredentials(row.type),
     };
 }

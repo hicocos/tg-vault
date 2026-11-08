@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import type { Readable } from 'node:stream';
 import { classifyMediaProxyError } from './mediaProxyError.js';
+import { firstHeader, type CloudMediaResponseInput } from './cloudMediaResponse.js';
 
 /** A failed media response must never become a second JSON response. */
 export function sendMediaError(res: Response, error: unknown): void {
@@ -24,6 +25,20 @@ export function sendMediaError(res: Response, error: unknown): void {
         res.removeHeader(name);
     }
     res.set('Cache-Control', 'no-store');
+    type RangeFailure = { cause?: unknown; status?: number; response?: { status?: number; headers?: CloudMediaResponseInput['upstreamHeaders'] } };
+    let unsatisfiedRange = false;
+    for (let current = error; current && typeof current === 'object'; current = (current as RangeFailure).cause) {
+        const failure = current as RangeFailure;
+        if ((failure.response?.status ?? failure.status) !== 416) continue;
+        unsatisfiedRange = true;
+        const contentRange = firstHeader(failure.response?.headers, 'content-range');
+        if (contentRange && /^bytes \*\/\d+$/.test(contentRange)) res.set('Content-Range', contentRange);
+    }
+    if (unsatisfiedRange) {
+        res.set('Accept-Ranges', 'bytes');
+        res.status(416).end();
+        return;
+    }
     const response = classifyMediaProxyError(error);
     if (response.retryAfter) res.set('Retry-After', String(response.retryAfter));
     res.status(response.status).json({

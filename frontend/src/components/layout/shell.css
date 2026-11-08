@@ -1,17 +1,11 @@
 /* Console geometry mirrors the reference; business content keeps its scroll root. */
 .tv-shell,
 .tv-login-page {
-  --tv-mesh-opacity: .2;
-  --tv-texture-opacity: .48;
-  --tv-chrome-mesh-opacity: .2;
   --tv-shell-shadow: 0 8px 28px hsl(var(--primary) / .06), inset 0 1px 0 hsl(var(--card));
   color: hsl(var(--foreground));
   background-color: var(--tv-canvas, hsl(var(--background)));
 }
 .dark :is(.tv-shell, .tv-login-page) {
-  --tv-mesh-opacity: .055;
-  --tv-texture-opacity: .065;
-  --tv-chrome-mesh-opacity: .055;
   --tv-shell-shadow: 0 8px 28px hsl(220 60% 3% / .2), inset 0 1px 0 hsl(var(--foreground) / .035);
 }
 .tv-textured-canvas,
@@ -24,8 +18,8 @@
   z-index: -2;
   pointer-events: none;
   opacity: var(--tv-mesh-opacity);
-  background-color: #99c5ff;
-  background-image: radial-gradient(at 23% 26%, hsl(178 100% 51%) 0, transparent 50%), radial-gradient(at 3% 60%, hsl(272 100% 73%) 0, transparent 50%), radial-gradient(at 53% 16%, hsl(318 100% 70%) 0, transparent 50%), radial-gradient(at 95% 14%, hsl(278 100% 71%) 0, transparent 50%), radial-gradient(at 34% 75%, hsl(359 100% 82%) 0, transparent 50%), radial-gradient(at 86% 16%, hsl(241 100% 73%) 0, transparent 50%), radial-gradient(at 26% 40%, hsl(260 100% 78%) 0, transparent 50%);
+  background-color: var(--tv-mesh-base);
+  background-image: var(--tv-mesh);
 }
 .tv-textured-canvas::after,
 .tv-textured-chrome::after {
@@ -43,11 +37,6 @@
 .tv-textured-chrome { background-color: hsl(var(--card)); }
 .tv-textured-chrome::before,
 .tv-textured-chrome::after { position: absolute; inset: 0; }
-.tv-textured-chrome::before {
-  opacity: var(--tv-chrome-mesh-opacity);
-  background-size: 100vw 100dvh;
-  background-repeat: no-repeat;
-}
 .tv-shell {
   display: flex;
   width: 100%;
@@ -451,9 +440,7 @@
   .tv-login-card { background: hsl(var(--card)); }
 }
 
-/* Quiet chrome and one desktop language entry. */
-.tv-shell, .tv-login-page { --tv-mesh-opacity:.08; --tv-texture-opacity:.14; --tv-chrome-mesh-opacity:.07; }
-.dark :is(.tv-shell,.tv-login-page) { --tv-mesh-opacity:.03; --tv-texture-opacity:.04; --tv-chrome-mesh-opacity:.03; }
+/* One desktop language entry. */
 @media(min-width:761px) { .tv-sidebar-preferences { justify-content:flex-end; } .tv-sidebar-preferences > label { display:none; } }
 @media(max-width:760px) {
  .tv-topbar { height:calc(58px + env(safe-area-inset-top)); }

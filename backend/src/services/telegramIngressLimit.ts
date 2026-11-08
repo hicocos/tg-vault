@@ -30,3 +30,13 @@ export class TelegramIngressLimit {
         return { limited: retryAfterSeconds > 0, retryAfterSeconds };
     }
 }
+
+// Bot messages and MCP actions share the same owner buckets and configured limits.
+export const telegramIngressLimit = new TelegramIngressLimit({
+    windowMs: Math.max(10_000, parseInt(process.env.TELEGRAM_RATE_WINDOW_MS || '60000', 10) || 60_000),
+    messageMax: Math.max(5, parseInt(process.env.TELEGRAM_RATE_MAX || '30', 10) || 30),
+    fileMax: Number(process.env.TELEGRAM_FILE_RATE_MAX || 120),
+    controlMax: Number(process.env.TELEGRAM_CONTROL_RATE_MAX || 60),
+    heavyWindowMs: Math.max(60_000, parseInt(process.env.TELEGRAM_HEAVY_RATE_WINDOW_MS || '600000', 10) || 600_000),
+    heavyMax: Math.max(1, parseInt(process.env.TELEGRAM_HEAVY_RATE_MAX || '5', 10) || 5),
+});

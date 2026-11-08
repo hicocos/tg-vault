@@ -4,23 +4,17 @@ import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
-import { pool, query } from '../db/index.js';
+import { pool } from '../db/index.js';
 import { validateApiKey, requireApiKeyPermission } from '../middleware/apiKey.js';
 
+import { uploadIndexedFile } from '../services/indexedUpload.js';
+import { isStorageCooldownError, sendStorageCooldownHttpError } from '../services/storageCooldownGuard.js';
 import { storageManager } from '../services/storage.js';
-import { assertStorageTargetWritable, isStorageCooldownError, sendStorageCooldownHttpError } from '../services/storageCooldownGuard.js';
 import { getSignedUrl } from '../middleware/signedUrl.js';
-import { getUniqueStoredName } from '../utils/fileUtils.js';
-import { buildStorageFolderWithRules, getStoragePathRules } from '../utils/storagePath.js';
-import { findDuplicateFile, getDuplicateMode } from '../utils/duplicatePolicy.js';
-import { saveAndIndexWithCompensation } from '../services/storageWrite.js';
 import { rateLimit } from 'express-rate-limit';
-import { acquireStorageAccountOperationLease, type StorageAccountOperationLease } from '../services/storageAccountOperation.js';
 import { lockStorageAccountForUse } from '../services/storageAccountLifecycle.js';
 import { normalizeFolderPath } from '../utils/folderPath.js';
 import { buildUploadCapabilities, SIMPLE_UPLOAD_MAX_BYTES } from '../utils/uploadCapabilities.js';
-import { getFileType } from '../utils/fileMetadata.js';
-import { enqueueMediaDerivatives } from '../services/mediaDerivatives.js';
 
 const router = Router();
 export const apiRouter = Router();
@@ -35,15 +29,6 @@ const uploadLimiter = rateLimit({
 
 // 修复中文文件名编码问题
 function decodeFilename(filename: string): string {
-    try {
-        const urlDecoded = decodeURIComponent(filename);
-        if (urlDecoded !== filename) {
-            return urlDecoded;
-        }
-    } catch {
-        // 解码失败，继续尝试其他方法
-    }
-
     try {
         const bytes = Buffer.from(filename, 'binary');
         const decoded = bytes.toString('utf8');
@@ -93,7 +78,6 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
     const mimeType = file.mimetype;
     const size = file.size;
     const tempPath = path.resolve(file.path);
-    let storageLease: StorageAccountOperationLease | null = null;
 
     let target;
     try {
@@ -122,104 +106,25 @@ const handleUpload = async (req: Request, res: Response, source: string = 'web')
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         return res.status(409).json({ error: error instanceof Error ? error.message : '上传目标无效' });
     }
-    const { provider, accountId: activeAccountId } = target;
-    let requestedFolder: string | null = null;
+    let requestedFolder: string | null;
     try {
         requestedFolder = folder ? normalizeFolderPath(folder) : null;
     } catch (error) {
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
         return res.status(400).json({ error: error instanceof Error ? error.message : '文件夹路径无效' });
     }
-    const storageRules = await getStoragePathRules();
-    const storageFolder = buildStorageFolderWithRules({ source, folder: requestedFolder, mimeType, fileName: originalName }, storageRules);
-    // 3. 生成唯一的存储文件名
-    const storedName = await getUniqueStoredName(originalName, storageFolder, activeAccountId);
-
-    console.log(`[Upload] 📁 Received file: ${originalName} (${mimeType}, ${size} bytes)`);
-    console.log(`[Upload] 🏠 Local temp path: ${tempPath}`);
-
     try {
-        storageLease = await acquireStorageAccountOperationLease(pool, activeAccountId, 'web_upload');
-        // 1. 使用请求开始时捕获的不可变存储目标
-        await assertStorageTargetWritable(target);
-        console.log(`[Upload] 🛠️  Current storage provider: ${provider.name}, activeAccountId: ${activeAccountId || 'none (local)'}`);
-
-        const duplicateMode = await getDuplicateMode();
-        if (duplicateMode === 'skip') {
-            const duplicate = await findDuplicateFile(originalName, storageFolder, size, activeAccountId);
-            if (duplicate) {
-                if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-                return res.json({
-                    success: true,
-                    skipped: true,
-                    reason: 'duplicate',
-                    file: {
-                        id: duplicate.id,
-                        name: duplicate.name,
-                        size: duplicate.size,
-                        folder: duplicate.folder,
-                        date: duplicate.created_at,
-                    }
-                });
-            }
-        }
-
-        const type = getFileType(mimeType);
-        const derivativeStatus = type === 'image' || type === 'video' ? 'queued' : 'not_required';
-
-        let result: Awaited<ReturnType<typeof query>>;
-        const storedPath = await saveAndIndexWithCompensation(provider, tempPath, storedName, mimeType, storageFolder, async savedPath => {
-            result = await query(
-                `INSERT INTO files
-                (name, stored_name, type, mime_type, size, path, source, folder, storage_account_id,
-                 derivative_status, derivative_source_path, derivative_cleanup_source)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                RETURNING id, created_at, name, type, size`,
-                [originalName, storedName, type, mimeType, size, savedPath, provider.name, storageFolder, activeAccountId,
-                    derivativeStatus, derivativeStatus === 'queued' ? (provider.name === 'local' ? savedPath : tempPath) : null,
-                    derivativeStatus === 'queued' && provider.name !== 'local']
-            );
-        });
-        const newFile = result!.rows[0];
-
-        if (derivativeStatus === 'queued') {
-            enqueueMediaDerivatives({
-                fileId: String(newFile.id),
-                sourcePath: provider.name === 'local' ? storedPath : tempPath,
-                storedName,
-                mimeType,
-                cleanupSource: provider.name !== 'local',
-            });
-        } else if (fs.existsSync(tempPath)) {
-            fs.unlinkSync(tempPath);
-        }
-
-        res.json({
-            success: true,
-            file: {
-                id: newFile.id,
-                name: newFile.name,
-                type: newFile.type,
-                size: newFile.size,
-                derivativeStatus,
-                previewUrl: getSignedUrl(newFile.id, 'preview'),
-                date: newFile.created_at,
-                source: provider.name,
-                folder: storageFolder,
-                storageAccountId: activeAccountId,
-                target: { provider: provider.name, accountId: activeAccountId, folder: storageFolder },
-            }
-        });
+        const result = await uploadIndexedFile({ target, source: source === 'api' ? 'api' : 'web',
+            originalName, mimeType, size, tempPath, folder: requestedFolder });
+        res.json({ ...result, file: { ...result.file,
+            ...('skipped' in result ? {} : { previewUrl: getSignedUrl(result.file.id, 'preview') }) } });
     } catch (error) {
         console.error('上传处理失败:', error);
         if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        if (isStorageCooldownError(error)) {
-            return sendStorageCooldownHttpError(res, error);
-        }
+        if (isStorageCooldownError(error)) return sendStorageCooldownHttpError(res, error);
         res.status(500).json({ error: '文件上传失败' });
-    } finally {
-        await storageLease?.release();
     }
+
 };
 
 // 服务端上传能力契约（前端必须以此决定直传/分片与展示真实限制）

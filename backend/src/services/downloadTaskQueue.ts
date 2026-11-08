@@ -122,6 +122,7 @@ export interface DownloadFileTaskSnapshot {
 }
 
 interface DownloadFileTask extends DownloadFileTaskSnapshot {
+    executionPaused?: boolean;
     speedSampler?: DownloadSpeedSampler;
     execute: () => Promise<void>;
     rawExecute: (signal: AbortSignal, taskId?: string) => Promise<void | DownloadTaskExecutionResult>;
@@ -505,6 +506,15 @@ export class DownloadTaskQueue {
     stopProgress(taskId: string): void {
         const task = this.active.find(item => item.id === taskId);
         if (!task) return;
+        task.speedSampler?.reset(Date.now(), task.downloadedSize || 0);
+        const group = this.groups.get(task.groupId);
+        if (group) { group.updatedAt = this.nextGroupVersion(group); this.notifyGroup(group); }
+    }
+
+    setExecutionPaused(taskId: string, paused: boolean): void {
+        const task = this.active.find(item => item.id === taskId);
+        if (!task || Boolean(task.executionPaused) === paused) return;
+        task.executionPaused = paused;
         task.speedSampler?.reset(Date.now(), task.downloadedSize || 0);
         const group = this.groups.get(task.groupId);
         if (group) { group.updatedAt = this.nextGroupVersion(group); this.notifyGroup(group); }
@@ -925,6 +935,7 @@ export class DownloadTaskQueue {
 
     private snapshotGroup(group: DownloadTaskGroupRecord): DownloadTaskGroupSnapshot {
         const activeTasks = this.active.filter(task => task.groupId === group.id);
+        const executingTasks = activeTasks.filter(task => !task.executionPaused);
         const pendingTasks = this.queue.filter(task => task.groupId === group.id);
         const settled = group.completed + group.failed + group.cancelled;
         const total = Math.max(group.expectedTotal, activeTasks.length + pendingTasks.length + settled);
@@ -933,6 +944,8 @@ export class DownloadTaskQueue {
             state = group.stateOverride;
         } else if (settled > 0 && settled >= total && activeTasks.length === 0 && pendingTasks.length === 0) {
             state = 'completed';
+        } else if (group.stateOverride === 'pausing') {
+            state = executingTasks.length > 0 ? 'pausing' : 'paused';
         } else if (group.stateOverride) {
             state = group.stateOverride;
         } else if (activeTasks.length > 0) {
@@ -943,12 +956,12 @@ export class DownloadTaskQueue {
             state = settled > 0 ? 'completed' : 'waiting';
         }
         const scopedPause = this.getScopedUserPause(group);
-        const downloading = activeTasks.filter(task => task.phase === 'downloading');
-        const retrying = activeTasks.filter(task => task.phase === 'retrying');
-        const uploading = activeTasks.filter(task => task.phase === 'uploading');
-        const waitingUpload = activeTasks.filter(task => task.phase === 'waiting_upload' || task.phase === 'waiting_storage');
+        const downloading = executingTasks.filter(task => task.phase === 'downloading');
+        const retrying = executingTasks.filter(task => task.phase === 'retrying');
+        const uploading = executingTasks.filter(task => task.phase === 'uploading');
+        const waitingUpload = executingTasks.filter(task => task.phase === 'waiting_upload' || task.phase === 'waiting_storage');
         if ((this.isGloballyPaused() || scopedPause) && ['running', 'waiting', 'pausing'].includes(state)) {
-            state = 'paused';
+            state = executingTasks.length > 0 ? 'pausing' : 'paused';
         }
         return {
             id: group.id,
@@ -964,13 +977,13 @@ export class DownloadTaskQueue {
             hidden: group.hidden,
             state,
             total,
-            active: activeTasks.length,
+            active: executingTasks.length,
             downloading: downloading.length,
             uploading: uploading.length,
             waitingUpload: waitingUpload.length,
             retrying: retrying.length,
             stage: downloading.length + retrying.length > 0 ? 'downloading' : uploading.length + waitingUpload.length > 0 ? 'uploading' : 'waiting',
-            pending: pendingTasks.length,
+            pending: pendingTasks.length + activeTasks.length - executingTasks.length,
             completed: group.completed,
             failed: group.failed,
             cancelled: group.cancelled,
@@ -979,10 +992,11 @@ export class DownloadTaskQueue {
             byteProgressKnown: total > 0 && (group.settledKnown || 0) + [...activeTasks, ...pendingTasks].filter(task => validBytes(task.totalSize) > 0).length === total,
             speedBytesPerSecond: ['running', 'pausing'].includes(state) ? activeTasks.reduce((sum, task) => sum + (task.speedSampler?.speed(Date.now()) || 0), 0) : 0,
             speedUpdatedAt: Date.now(),
-            currentFileName: downloading[0]?.fileName || retrying[0]?.fileName || activeTasks[0]?.fileName,
+            currentFileName: downloading[0]?.fileName || retrying[0]?.fileName || executingTasks[0]?.fileName,
             reason: !['completed', 'cancelled'].includes(state)
-                ? this.systemPause?.reason || activeTasks.find(task => task.reason)?.reason || (state === 'paused' && (scopedPause || this.userPaused)
-                    ? scopedPause?.reason || '用户已暂停下载队列' : undefined)
+                ? this.systemPause?.reason || executingTasks.find(task => task.reason)?.reason || (state === 'paused'
+                    ? scopedPause?.reason || '用户已暂停任务'
+                    : state === 'pausing' ? '等待正在执行的读写到达暂停检查点' : undefined)
                 : undefined,
             systemPause: ['completed', 'cancelled'].includes(state) ? undefined : this.systemPause,
             createdAt: group.createdAt,
@@ -1052,11 +1066,12 @@ export class DownloadTaskQueue {
         status: DownloadTaskGroupControlStatus,
         group?: DownloadTaskGroupRecord,
     ): DownloadTaskGroupControlResult {
+        const snapshot = group ? this.snapshotGroup(group) : undefined;
         return {
             status,
-            group: group ? this.snapshotGroup(group) : undefined,
-            active: group ? this.active.filter(task => task.groupId === group.id).length : 0,
-            pending: group ? this.queue.filter(task => task.groupId === group.id).length : 0,
+            group: snapshot,
+            active: snapshot?.active || 0,
+            pending: snapshot?.pending || 0,
         };
     }
 }

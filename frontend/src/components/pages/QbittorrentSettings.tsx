@@ -10,12 +10,12 @@ import { errorMessage } from '../../services/unknownError';
 import { SettingsField, SettingsRow, SettingsSection } from './SettingsPresentation';
 import './qbittorrent-settings.css';
 
-type ConnectionDraft = Pick<QbSettings, 'apiUrl' | 'username' | 'downloadDir'>;
+type ConnectionDraft = Pick<QbSettings, 'username' | 'downloadDir'> & { port: string };
 
 export function QbittorrentSettings() {
     const { t } = useTranslation();
     const [config, setConfig] = useState<QbConfig | null>(null);
-    const [draft, setDraft] = useState<ConnectionDraft>({ apiUrl: qbDefaults.apiUrl, username: qbDefaults.username, downloadDir: qbDefaults.downloadDir });
+    const [draft, setDraft] = useState<ConnectionDraft>({ port: String(qbDefaults.port), username: qbDefaults.username, downloadDir: qbDefaults.downloadDir });
     const [password, setPassword] = useState('');
     const [busy, setBusy] = useState<'toggle' | 'save' | 'test' | null>(null);
     const [open, setOpen] = useState(false);
@@ -25,8 +25,8 @@ export function QbittorrentSettings() {
     const apply = (next: QbConfig) => {
         setConfig(next);
         if (next.enabled) {
-            const { apiUrl, username, downloadDir } = next;
-            setDraft({ apiUrl, username, downloadDir });
+            const { port, username, downloadDir } = next;
+            setDraft({ port: String(port), username, downloadDir });
         }
         setPassword('');
     };
@@ -45,7 +45,7 @@ export function QbittorrentSettings() {
         catch (cause) { setError(errorMessage(cause)); }
         finally { setBusy(null); }
     };
-    const configInput = { ...draft, ...(password ? { password } : {}) };
+    const configInput = { ...draft, port: Number(draft.port), ...(password ? { password } : {}) };
     const save = async () => {
         if (busy) return;
         setBusy('save'); setError(null); setSaved(false); setTest(null);
@@ -68,8 +68,8 @@ export function QbittorrentSettings() {
         <SettingsRow icon={Download} label={t('qbittorrent.enabled')} stackActionOnMobile={false} action={
             <div className="qb-extension-controls">
                 {config?.enabled && <Button variant="outline" className="qb-config-trigger" disabled={busy !== null} onClick={() => {
-                    const { apiUrl, username, downloadDir } = config;
-                    setDraft({ apiUrl, username, downloadDir }); setPassword(''); setError(null); setSaved(false); setTest(null); setOpen(true);
+                    const { port, username, downloadDir } = config;
+                    setDraft({ port: String(port), username, downloadDir }); setPassword(''); setError(null); setSaved(false); setTest(null); setOpen(true);
                 }}><Settings size={16} aria-hidden="true" />{t('qbittorrent.configure')}</Button>}
                 <button type="button" role="switch" aria-label={t('qbittorrent.enabled')} aria-checked={config?.enabled ?? false} disabled={busy !== null || !config} className="settings-switch-target" onClick={() => void toggle(!config?.enabled)}>
                     <span aria-hidden="true" className={`settings-switch-track qb-extension-switch${config?.enabled ? ' is-enabled' : ''}`}><span /></span>
@@ -83,7 +83,7 @@ export function QbittorrentSettings() {
             <header className="qb-connection-header"><div><h2 id="qb-connection-title">{t('qbittorrent.connectionTitle')}</h2><p id="qb-connection-description">{t('qbittorrent.sameServer')}</p></div><Button size="icon" variant="ghost" disabled={busy !== null} aria-label={t('qbittorrent.close')} onClick={closeEditor}><X size={20} aria-hidden="true" /></Button></header>
             <form onSubmit={event => { event.preventDefault(); void save(); }}>
                 <div className="qb-connection-scroll"><fieldset disabled={busy !== null}>
-                    <SettingsField label={t('qbittorrent.apiUrl')}><input name="apiUrl" type="url" required value={draft.apiUrl} placeholder="http://127.0.0.1:8080" autoCapitalize="none" spellCheck={false} onChange={event => patch({ apiUrl: event.target.value })} /></SettingsField>
+                    <SettingsField label={t('qbittorrent.port')}><input name="port" type="number" inputMode="numeric" min={1} max={65535} step={1} required value={draft.port} placeholder="8080" onChange={event => patch({ port: event.target.value })} /></SettingsField>
                     <SettingsField label={t('qbittorrent.username')}><input name="username" autoComplete="username" autoCapitalize="none" spellCheck={false} value={draft.username} onChange={event => patch({ username: event.target.value })} /></SettingsField>
                     <SettingsField label={t('qbittorrent.password')}><input name="password" type="password" autoComplete="new-password" value={password} placeholder={config.hasPassword ? t('qbittorrent.savedPassword') : ''} onChange={event => { setPassword(event.target.value); setSaved(false); setTest(null); }} /></SettingsField>
                     <SettingsField label={t('qbittorrent.downloadDir')}><input name="downloadDir" required value={draft.downloadDir} autoCapitalize="none" spellCheck={false} onChange={event => patch({ downloadDir: event.target.value })} /></SettingsField>

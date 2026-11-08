@@ -1,5 +1,7 @@
 export type StorageUploadProgress = (transferredBytes: number, totalBytes: number) => void;
 
+export interface StorageReadOptions { range?: string; signal?: AbortSignal }
+
 export interface StorageWriteOptions {
     signal?: AbortSignal;
     onProgress?: StorageUploadProgress;
@@ -15,6 +17,8 @@ export interface IStorageProvider {
     name: string;
     /** Performs a read-only connectivity and authorization check. */
     probe(): Promise<void>;
+    /** Checks the exact destination without reading file bytes or creating folders; only missing destinations return false. */
+    fileExists(fileName: string, folder?: string | null): Promise<boolean>;
     /**
      * 保存文件
      * @param tempPath 临时文件路径
@@ -30,7 +34,7 @@ export interface IStorageProvider {
      * 获取文件流（用于下载）
      * @param storedPath 存储路径或标识符
      */
-    getFileStream(storedPath: string, options?: { range?: string }): Promise<NodeJS.ReadableStream>;
+    getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream>;
 
     /** Checks whether a remote media source still exists without downloading its bytes. */
     getFileAvailability?(storedPath: string): Promise<{ available: true }>;

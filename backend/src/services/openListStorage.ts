@@ -4,9 +4,10 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { IStorageProvider } from './storage.js';
-import type { StorageWriteOptions } from './storage/contracts.js';
+import type { StorageReadOptions, StorageWriteOptions } from './storage/contracts.js';
 import { trackUploadProgress } from './storage/uploadProgress.js';
 import { fetchPublicHttpUrl } from '../utils/networkSecurity.js';
+import { isRecord } from '../utils/typeGuards.js';
 
 interface OpenListEnvelope<T = unknown> {
     code: number;
@@ -31,8 +32,9 @@ export class OpenListRequestError extends Error {
     code?: string;
     response?: { status: number };
     cause?: unknown;
+    remoteMessage?: string;
 
-    constructor(message: string, options: { status?: number; code?: number | string; cause?: unknown } = {}) {
+    constructor(message: string, options: { status?: number; code?: number | string; cause?: unknown; remoteMessage?: string } = {}) {
         super(message);
         this.name = 'OpenListRequestError';
         this.status = options.status;
@@ -40,7 +42,16 @@ export class OpenListRequestError extends Error {
         this.code = options.code === undefined ? undefined : String(options.code);
         this.response = options.status ? { status: options.status } : undefined;
         this.cause = options.cause;
+        this.remoteMessage = options.remoteMessage;
     }
+}
+
+function isMissingOpenListObject(error: unknown): boolean {
+    // OpenList wraps its ObjectNotFound sentinel in an envelope with code 500.
+    // Do not treat generic HTTP 404s, provider/login failures, or arbitrary "not found" text as absence.
+    return error instanceof OpenListRequestError && error.code === '500'
+        && typeof error.remoteMessage === 'string'
+        && /(?:^|: )object not found$/.test(error.remoteMessage);
 }
 
 function normalizeAddress(value: string): string {
@@ -94,7 +105,8 @@ export async function fetchResponseWithBodyTimeout(
     }, timeoutMs);
 
     try {
-        const response = await fetchImpl(url, { ...init, signal: controller.signal });
+        const signal = init.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal;
+        const response = await fetchImpl(url, { ...init, signal });
         if (!response.body) {
             clear();
             return response;
@@ -125,6 +137,7 @@ export async function fetchResponseWithBodyTimeout(
         return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
     } catch (error) {
         clear();
+        init.signal?.throwIfAborted();
         if (timedOut || controller.signal.aborted) throw timeoutError;
         throw new OpenListRequestError('OpenList 文件读取失败', { cause: error });
     }
@@ -151,11 +164,12 @@ export class OpenListStorageProvider implements IStorageProvider {
         this.rootPath = normalizeRoot(rootPath);
     }
 
-    private async login(): Promise<string> {
+    private async login(signal?: AbortSignal): Promise<string> {
         const response = await this.fetchWithTimeout('/api/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: this.username, password: this.password }),
+            signal,
         }, this.probeTimeoutMs);
         const envelope = await this.parseEnvelope<OpenListLoginData>(response);
         const token = String(envelope.data?.token || '');
@@ -164,9 +178,10 @@ export class OpenListStorageProvider implements IStorageProvider {
         return token;
     }
 
-    private async getToken(force = false): Promise<string> {
+    private async getToken(force = false, signal?: AbortSignal | null): Promise<string> {
+        signal?.throwIfAborted();
         if (!force && this.token) return this.token;
-        return this.login();
+        return this.login(signal ?? undefined);
     }
 
     private async fetchWithTimeout(relativeUrl: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -196,14 +211,14 @@ export class OpenListStorageProvider implements IStorageProvider {
         if (!response.ok || envelope.code !== 200) {
             throw new OpenListRequestError(
                 envelope.message ? `OpenList 请求失败：${envelope.message}` : `OpenList 请求失败（HTTP ${response.status}）`,
-                { status: response.ok ? envelope.code : response.status, code: envelope.code },
+                { status: response.ok ? envelope.code : response.status, code: envelope.code, remoteMessage: envelope.message },
             );
         }
         return envelope;
     }
 
     private async api<T>(relativeUrl: string, init: RequestInit, timeoutMs = this.requestTimeoutMs, retry = true): Promise<OpenListEnvelope<T>> {
-        const token = await this.getToken();
+        const token = await this.getToken(false, init.signal);
         const headers = new Headers(init.headers);
         headers.set('Authorization', token);
         const response = await this.fetchWithTimeout(relativeUrl, { ...init, headers }, timeoutMs);
@@ -212,18 +227,19 @@ export class OpenListStorageProvider implements IStorageProvider {
         } catch (error) {
             const code = Number((error as OpenListRequestError)?.code || (error as OpenListRequestError)?.status || 0);
             if (retry && (code === 401 || code === 403)) {
-                await this.getToken(true);
+                await this.getToken(true, init.signal);
                 return this.api<T>(relativeUrl, init, timeoutMs, false);
             }
             throw error;
         }
     }
 
-    private async getInfo(storedPath: string): Promise<OpenListFileInfo> {
+    private async getInfo(storedPath: string, signal?: AbortSignal): Promise<OpenListFileInfo> {
         const envelope = await this.api<OpenListFileInfo>('/api/fs/get', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: storedPath }),
+            signal,
         });
         if (!envelope.data) throw new OpenListRequestError('OpenList 文件信息为空');
         return envelope.data;
@@ -238,8 +254,7 @@ export class OpenListStorageProvider implements IStorageProvider {
                 const info = await this.getInfo(current);
                 if (!info.is_dir) throw new OpenListRequestError(`OpenList 目标路径不是目录：${current}`);
             } catch (error) {
-                const message = String((error as Error)?.message || '');
-                if (!/not found|object not found|不存在/i.test(message)) throw error;
+                if (!isMissingOpenListObject(error)) throw error;
                 await this.api('/api/fs/mkdir', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -255,6 +270,41 @@ export class OpenListStorageProvider implements IStorageProvider {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ path: this.rootPath }),
         }, this.probeTimeoutMs);
+    }
+
+    async fileExists(fileName: string, folder?: string | null): Promise<boolean> {
+        const segments = joinRemotePath(this.rootPath, folder).split('/').filter(Boolean);
+        let current = '/';
+        // Resolve every parent from successful fresh listings. Some mounted drivers flatten lookup
+        // failures into "object not found", so that error alone cannot prove a missing folder.
+        for (let index = 0; index <= segments.length; index++) {
+            const envelope = await this.api<unknown>('/api/fs/list', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: current, page: 1, per_page: 0, refresh: true }),
+            });
+            const listing = envelope.data;
+            if (!isRecord(listing) || typeof listing.total !== 'number' || listing.total < 0) {
+                throw new OpenListRequestError('OpenList 返回了无效目录信息');
+            }
+            if (listing.total === 0 && listing.content === null) return false;
+            if (!Array.isArray(listing.content) || listing.content.length !== listing.total) {
+                throw new OpenListRequestError('OpenList 返回了不完整目录信息');
+            }
+            const target = index === segments.length ? fileName : segments[index];
+            let match: Record<string, unknown> | undefined;
+            for (const entry of listing.content) {
+                if (!isRecord(entry) || typeof entry.name !== 'string') {
+                    throw new OpenListRequestError('OpenList 返回了无效目录条目');
+                }
+                if (entry.name === target) match = entry;
+            }
+            if (!match) return false;
+            if (index === segments.length) return true;
+            if (match.is_dir !== true) throw new OpenListRequestError('OpenList 目标路径不是目录');
+            current = joinRemotePath(current, target);
+        }
+        throw new OpenListRequestError('OpenList 目录解析失败');
     }
 
     async probeWritable(timeoutMs = this.probeTimeoutMs): Promise<void> {
@@ -327,15 +377,6 @@ export class OpenListStorageProvider implements IStorageProvider {
                 await this.getToken(true);
                 await uploadOnce();
             } else {
-                try {
-                    const remote = await this.getInfo(storedPath);
-                    if (!remote.is_dir && Number(remote.size) === stats.size) {
-                        options?.onProgress?.(stats.size, stats.size);
-                        return storedPath;
-                    }
-                } catch {
-                    // Preserve the original upload error when the remote result cannot prove success.
-                }
                 throw error;
             }
         }
@@ -348,8 +389,8 @@ export class OpenListStorageProvider implements IStorageProvider {
         return storedPath;
     }
 
-    async getFileStream(storedPath: string, options?: { range?: string }): Promise<NodeJS.ReadableStream> {
-        const info = await this.getInfo(storedPath);
+    async getFileStream(storedPath: string, options?: StorageReadOptions): Promise<NodeJS.ReadableStream> {
+        const info = await this.getInfo(storedPath, options?.signal);
         if (!info.raw_url) throw new OpenListRequestError('OpenList 未返回可读取的文件地址');
         let rawUrl: URL;
         try {
@@ -359,10 +400,17 @@ export class OpenListStorageProvider implements IStorageProvider {
         }
         const headers = new Headers();
         if (options?.range) headers.set('Range', options.range);
-        const response = await this.fetchWithTimeoutAbsolute(rawUrl.toString(), { method: 'GET', headers }, this.requestTimeoutMs);
+        const response = await this.fetchWithTimeoutAbsolute(rawUrl.toString(), { method: 'GET', headers, signal: options?.signal }, this.requestTimeoutMs);
         if (!response.ok && response.status !== 206) {
             response.body?.cancel().catch(() => undefined);
-            throw new OpenListRequestError(`OpenList 文件读取失败（HTTP ${response.status}）`, { status: response.status });
+            const errorHeaders = new Headers(response.headers);
+            if (response.status === 416 && !errorHeaders.has('Content-Range') && Number.isSafeInteger(info.size) && Number(info.size) >= 0) {
+                errorHeaders.set('Content-Range', `bytes */${info.size}`);
+            }
+            throw new OpenListRequestError(`OpenList 文件读取失败（HTTP ${response.status}）`, {
+                status: response.status,
+                cause: { status: response.status, response: { status: response.status, headers: errorHeaders } },
+            });
         }
         if (!response.body) throw new OpenListRequestError('OpenList 文件读取响应为空');
         return copyResponseMetadata(Readable.fromWeb(response.body as any), response);

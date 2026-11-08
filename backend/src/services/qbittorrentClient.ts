@@ -1,7 +1,11 @@
 export interface QbConnection {
-    apiUrl: string;
+    port: number;
     username: string;
     password: string;
+}
+
+export function qbApiUrl(port: number): string {
+    return new URL(`http://127.0.0.1:${port}`).origin;
 }
 
 export interface QbTorrent {
@@ -29,7 +33,7 @@ export class QbittorrentClient {
     constructor(private readonly config: QbConnection) {}
 
     private async request(method: string, body?: URLSearchParams | FormData, authenticated = true): Promise<Response> {
-        const base = this.config.apiUrl.replace(/\/+$/, '');
+        const base = qbApiUrl(this.config.port);
         const response = await fetch(`${base}/api/v2/${method}`, {
             method: body ? 'POST' : 'GET',
             body,

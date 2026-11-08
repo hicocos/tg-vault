@@ -4,10 +4,11 @@
 
 ## 仓库文件边界
 
-提交源码、行为回归测试、锁文件、部署脚本、脱敏模板及数据库迁移/快照。以下内容仅在本地保留并独立备份，不提交：
+提交源码、锁文件、部署脚本、脱敏模板及数据库迁移/快照。测试文件、测试脚本和验证报告放在工作区外，不随仓库提交。以下内容仅在本地保留，不提交：
 
 - 实际 `.env`、文件数据、Telegram session、密钥和存储凭证。
 - 数据库导出、备份、原始日志、依赖、构建产物及缓存。
+- 智能体运行状态、选图稿等与源码无关的本地产物。
 
 `.gitignore` 不会取消已跟踪文件或清除历史秘密。不要用 `git clean -fdx` 清理部署目录；Docker 构建上下文另行排除测试与私有数据。
 
@@ -73,17 +74,15 @@ VITE_API_URL=http://localhost:51947 npm --prefix frontend run dev -- --host 127.
 在独立开发副本根目录执行：
 
 ```bash
-(cd backend && node --import tsx --test scripts/*.test.ts)
-(cd frontend && node --experimental-strip-types --test scripts/*.test.ts)
 npm --prefix backend run typecheck
 npm --prefix backend run build
 npm --prefix frontend run lint
 npm --prefix frontend run build
-npm --prefix backend audit --omit=dev --audit-level=high
-npm --prefix frontend audit --omit=dev --audit-level=high
+npm --prefix backend audit --omit=dev --audit-level=moderate
+npm --prefix frontend audit --omit=dev --audit-level=moderate
 ```
 
-后端 `build` 不替代类型检查，同时打包数据库 CLI 与迁移资源。回归测试使用合成数据，无需真实 Telegram 或存储账号。
+后端 `build` 不替代类型检查，同时打包数据库 CLI 与迁移资源。需要回归验证时，在工作区外使用合成数据与临时目录，不依赖真实 Telegram 或存储账号。
 
 schema 快照检查会创建并删除临时数据库，**必须使用独立、可丢弃的 PostgreSQL 16 服务**，账号需有 `CREATE DATABASE` 权限。不要将它指向生产，即使命令名是 `check`。配置该服务的 `DATABASE_URL` 后运行：
 
@@ -97,14 +96,28 @@ npm --prefix backend run schema:check
 - `backend/src/db/snapshot.json`
 - 根目录 `init.sql`
 
-不要手工编辑生成文件、修改已发布迁移，或使用旧的“复制 schema”脚本代替迁移重放。升级固定依赖 GramJS 2.26.22 前，必须重新验证下载分片、请求取消、sender 清理和账号隔离；项目适配层使用了其内部 API。
+不要手工编辑生成文件或修改已发布迁移。GramJS 适配层使用了内部 API，升级该依赖时需验证下载、取消、连接清理和账号隔离。
+
+## MCP 验证
+
+接入方式见 [MCP 指南](mcp.md)。集成测试使用独立 PostgreSQL 16、临时数据目录和测试密钥，脚本与报告放在工作区外。
+
+使用官方 MCP Client 验证 HTTP 和 stdio 连接，覆盖授权与存储隔离、幂等与预览确认、上传及断点恢复、后台任务和管理页。涉及存储的流程需核对实际文件内容与最终状态。
+
+报告区分模拟测试和真实外部服务测试，写明未覆盖项；单元测试或 Schema 校验不代替端到端验证。
 
 ## GitHub 公开发布检查
 
 1. 检查待提交文件与历史中的凭证、session、数据库导出及私有信息；截图与日志也需脱敏。秘密曾提交时先撤销或轮换，再协商清理历史，不能只删当前文件。
-2. 提交完整新增源码与行为测试；两端 `package.json`、锁文件根版本及 `CHANGELOG.md` 保持一致。
+2. 提交完整新增源码，确认不包含测试文件、测试脚本及无关产物；两端 `package.json`、锁文件根版本及 `CHANGELOG.md` 保持一致。
 3. 在无私有配置的干净副本完成上述检查，再以无敏感内容的小文件验证登录、上传与下载。
 4. 推送默认分支会在 CI 通过后更新 GHCR `latest`；`v<版本>` 标签发布版本镜像，PR 不推送镜像。CI 同时生成 SBOM 和 provenance；首次发布确认两个 GHCR 包可公开拉取。
 5. CI 通过且镜像就绪后创建 GitHub Release，说明取自更新日志对应版本。Fork 须同步修改镜像、部署来源和更新检测仓库。
 
-提交、推送与服务器升级是独立操作；本地整理不会替换运行容器，升级见[部署指南](../deploy/DEPLOY.md)。
+生产升级步骤见[部署指南](../deploy/DEPLOY.md)。
+
+## 文档站
+
+文档站使用独立的 `website/package.json` 与锁文件，构建、预览和 Pages 发布见 [`website/README.md`](../website/README.md)。部署、配置、本地存储、本页和更新日志在构建时从仓库原文生成；修改原文件，不编辑生成页面。专题教程维护在 `website/src/`。
+
+`website-pages.yml` 独立检查文档；只有配置 Pages 凭据和项目变量后才发布，不修改应用服务。

@@ -21,6 +21,7 @@ import { TelegramUserAccountsPanel } from "./TelegramUserAccountsPanel";
 import { StorageSettings } from './StorageSettings';
 import { SettingsField, SettingsFormLayout, SettingsRow, SettingsSection, SettingsWorkspace } from "./SettingsPresentation";
 import { QbittorrentSettings } from './QbittorrentSettings';
+import { McpSettings } from './McpSettings';
 
 interface SettingsPageProps {
     storageStats?: StorageStats | null;
@@ -709,6 +710,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                 ))}
             </nav>
 
+            {activeSection === 'mcp' && <McpSettings />}
             {activeSection === 'general' && <SettingsWorkspace guide={null} className="settings-workspace--general">
             {/* General Section: Language & Theme */}
             <div className="tv-panel settings-section">
@@ -1043,7 +1045,7 @@ export const SettingsPage = ({ storageStats, onSignedOut, onOpenTasksForAccount,
                                     title={botRetryBlockReason ? t(`settings.botConnection.${botRetryBlockReason}`) : t('settings.botConnection.retryHelp')}>
                                     {botRetryLabel}
                                 </Button>
-                                <Button size="sm" variant="destructive" className="settings-action" onClick={handleDeleteTelegramBot} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.027')}</Button>
+                                <Button size="sm" variant="destructive-outline" className="settings-action" onClick={handleDeleteTelegramBot} disabled={isSavingTelegramBot}>{t('settings.remaining.copy.027')}</Button>
                             </div>}
                         </div>
                         {telegramBotConfig?.configured && !telegramBotConfig.pinConfigured && <p className="mt-3 rounded-[7px] border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-[13px] settings-text-warning">{t('settings.remaining.copy.028')}</p>}

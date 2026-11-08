@@ -1,5 +1,6 @@
 import type { IStorageProvider } from './storage.js';
 import type { StorageWriteOptions } from './storage/contracts.js';
+import { isPhysicalFileNotFound } from './fileDeletion.js';
 
 export interface IndexedWriteResult {
     savedPath: string;
@@ -32,7 +33,7 @@ export async function saveAndIndexWithCompensation(
     mimeType: string,
     folder: string | null | undefined,
     indexStoredObject: (storedPath: string) => Promise<void>,
-    options?: StorageWriteOptions & { beforeSave?: (storedPath?: string) => Promise<void> },
+    options?: StorageWriteOptions & { beforeSave?: (storedPath?: string) => Promise<void>; onCompensated?: () => Promise<void> },
 ): Promise<string> {
     const prepared = await provider.prepareSaveFile?.(tempPath, storedName, mimeType, folder);
     options?.signal?.throwIfAborted();
@@ -44,9 +45,13 @@ export async function saveAndIndexWithCompensation(
         return storedPath;
     } catch (error) {
         try {
-            await provider.deleteFile(storedPath);
+            try { await provider.deleteFile(storedPath); }
+            catch (cleanupError) { if (!isPhysicalFileNotFound(cleanupError)) throw cleanupError; }
+            await options?.onCompensated?.();
         } catch (cleanupError) {
-            console.error(`存储索引失败后回滚对象失败: ${storedPath}`, cleanupError);
+            const candidate=cleanupError as {name?:unknown;code?:unknown}|null;
+            const safeCode=(value:unknown)=>typeof value==='string'&&/^[A-Za-z0-9_]{1,60}$/.test(value)?value:undefined;
+            console.error(JSON.stringify({event:'storage.write_compensation_failed',name:safeCode(candidate?.name),code:safeCode(candidate?.code)}));
         }
         throw error;
     }
