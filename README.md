@@ -35,6 +35,10 @@ curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | 
 
 安装器会自动生成部署配置。首次管理员初始化前，限制 Web/API 两个入口仅自己可访问；HTTPS 生效后创建管理员密码，再开放服务。
 
+## 一键部署
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/TG%20Vault/)
+
 ## 备份与更新
 
 升级前备份 `.env`、数据库和完整文件数据，然后在项目目录运行：
