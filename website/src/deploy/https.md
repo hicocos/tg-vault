@@ -31,7 +31,7 @@ Compose 不提供证书服务。`TRUST_PROXY` 只信任实际代理，不无条�
 
 ## 管理员与 Cookie
 
-创建管理员前，Web/API 两个入口仅允许自己访问。没有默认管理员密码。HTTPS 生效后创建强密码，验证登录，再开放入口。
+系统没有默认管理员密码；HTTPS 生效后打开 Web 地址创建至少 8 位强密码即可完成初始化。
 
 生产保持 `COOKIE_SECURE=true`；新安装器另写入 `COOKIE_SECURE_FORCE=true`。登录失败先核对 HTTPS、同站地址、实际 API 和 `CORS_ORIGIN`，不要关闭安全 Cookie。
 

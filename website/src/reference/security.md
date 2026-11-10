@@ -2,7 +2,7 @@
 
 ## 管理员与入口
 
-- 管理员创建前，Web/API 两个入口只允许自己访问。没有默认密码，第一个完成初始化的人设置管理员密码。
+- 系统没有默认密码，首次访问 Web 时设置管理员密码。
 - 使用 HTTPS 和至少 8 位强密码，生产保留 secure Cookie 与准确的 `CORS_ORIGIN`。
 - 默认应用端口仅绑定宿主机回环，不公开 PostgreSQL 或 Docker socket。
 - `TRUST_PROXY` 只信任实际代理范围。

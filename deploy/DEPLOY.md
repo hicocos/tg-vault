@@ -120,7 +120,7 @@ docker compose up -d --no-build --pull never --no-deps --wait backend frontend
 
 TLS 证书由宿主机或面板管理；Compose 没有 `certbot` 服务。[`nginx-site-init.conf`](nginx-site-init.conf) 仅提供双域名 ACME HTTP 验证，不代理应用；签发两个域名的证书后，用 [`nginx-site.conf`](nginx-site.conf) 的双域名 HTTPS 配置替换。替换域名、证书路径和非默认 API 端口，确认 ACME webroot 已存在；不要同时加载两份示例。执行 `nginx -t` 通过后再加载。示例保留上游鉴权与缓存头，不单独暴露文件目录。
 
-**管理员初始化前，仅允许自己访问 Web 和 API 两个入口**（例如临时代理 IP 白名单）。第一个完成初始化的人会设置管理员密码；没有默认管理员凭证或额外安装口令。HTTPS 生效后创建至少 8 位的强密码，再开放服务。在设置中配置 Telegram 与 TOTP，明确 Bot 用户允许列表后再分享 Bot。
+系统没有默认管理员密码；HTTPS 生效后打开 Web 地址创建至少 8 位的强密码完成初始化，再在设置中配置 Telegram 与 TOTP。
 
 默认 `COOKIE_SECURE=true`；全新安装器还写入 `COOKIE_SECURE_FORCE=true`。不要为解决生产登录失败而关闭安全 Cookie：先核对 HTTPS、Web/API 同站域名、`CORS_ORIGIN` 与代理。`VITE_API_URL` 在前端容器启动时注入，修改后重新创建容器，无需编译镜像。
 

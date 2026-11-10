@@ -17,7 +17,6 @@ docker compose logs --tail=100 backend frontend postgres
 
 ## 管理员
 
-- 初始化前，Web/API 均仅自己可访问。
 - 创建强密码后，退出并重新登录成功。
 - 启用 TOTP 后实际验证，生产 secure Cookie 保持开启。
 

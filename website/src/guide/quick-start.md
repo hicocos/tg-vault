@@ -1,16 +1,10 @@
 # 从零开始
 
-## 1. 准备环境
-
-需要 Linux（Bash 4+、curl、Git）、Docker Compose、专用数据目录和同一主域名下的两个 HTTPS 子域名，见[前置条件](/guide/prerequisites)。管理员创建前，Web/API 均仅允许自己访问。
-
-## 2. 运行安装器
+## 1. 运行安装器
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | bash
 ```
-
-默认下载到当前目录下的 `tg-vault` 并进入安装向导；在项目根目录运行时复用当前项目。指定目录和其他参数见[完整部署](/deploy/installation#_2-首次安装)。
 
 按提示填写：
 
@@ -24,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | 
 
 安装器生成数据库密码和应用密钥，准备镜像、等待 PostgreSQL、执行独立迁移，再启动前后端。详情见[完整部署](/deploy/installation)。
 
-## 3. 配置 HTTPS
+## 2. 配置 HTTPS
 
 | 入口 | 默认上游 |
 | --- | --- |
@@ -35,21 +29,19 @@ curl -fsSL https://raw.githubusercontent.com/hicocos/tg-vault/main/install.sh | 
 
 代理需支持上传、媒体 Range 和相应超时，见[HTTPS 配置](/deploy/https)。Compose 不负责证书管理。
 
-## 4. 创建管理员
+## 3. 创建管理员
 
 1. 打开自己的 HTTPS Web 地址。
-2. 确认 Web/API 仍仅自己可访问，创建至少 8 位强密码。
-3. 退出后重新登录，按需启用 TOTP，再开放入口。
+2. 创建至少 8 位强密码完成管理员初始化。
+3. 登录后按需启用 TOTP 双重验证。
 
-没有默认管理员密码，第一个完成初始化的人会设置密码。生产环境保持安全 Cookie 开启。
-
-## 5. 上传测试文件
+## 4. 上传测试文件
 
 在 **设置 → 存储**确认本地目录可写、空间充足，再从 **上传中心**上传一个小文件。任务完成后，从文件管理下载并核对内容。
 
 需要 Telegram 或云端保存时，继续看[第一次转存](/usage/first-transfer)。
 
-## 6. 检查服务
+## 5. 检查服务
 
 进入项目目录（默认 `cd tg-vault`）后运行：
 
@@ -61,7 +53,7 @@ curl -fsS http://127.0.0.1:51947/readyz
 
 按[验收清单](/deploy/verification)检查公网登录和实际文件操作，然后建立备份。
 
-## 7. 升级已有部署
+## 6. 升级已有部署
 
 先备份 `.env`、数据库和完整文件数据，步骤见[协调备份](/operations/maintenance#协调备份)。在原项目根目录运行同一条命令：
 
